@@ -165,8 +165,8 @@ Skill Patch 等の更新案が、**既存の良い挙動を壊さないか**を�
 ## Quick Start
 
 ```bash
-git clone https://github.com/nob-git-dev/claude-skills.git
-cd claude-skills/learning-skills
+git clone https://github.com/nob-git-dev/local-sdlc-agent.git
+cd local-sdlc-agent/learning-skills
 ./scripts/install.sh
 ```
 
@@ -177,8 +177,8 @@ cd claude-skills/learning-skills
 ### このパックだけ取得（sparse-checkout）
 
 ```bash
-git clone --no-checkout https://github.com/nob-git-dev/claude-skills.git
-cd claude-skills
+git clone --no-checkout https://github.com/nob-git-dev/local-sdlc-agent.git
+cd local-sdlc-agent
 git sparse-checkout init --cone
 git sparse-checkout set learning-skills
 git checkout main
@@ -261,7 +261,7 @@ learning-skills/
 
 | 利用目的 | ライセンス |
 |---|---|
-| 個人・研究・非営利・OSS（同ライセンスで公開） | [CC BY-NC-SA 4.0](LICENSE)（無償） |
+| 個人・研究・非営利・公開ソース利用（同ライセンスで公開） | [CC BY-NC-SA 4.0](LICENSE)（無償） |
 | 営利企業での利用・商用サービスへの組み込み | [商用ライセンス](LICENSE-COMMERCIAL.md)（要申請） |
 
-商用ライセンスのお問い合わせ: [GitHub Issues](https://github.com/nob-git-dev/claude-skills/issues)（タイトルに `[Commercial License]`）
+商用ライセンスのお問い合わせ: [GitHub Issues](https://github.com/nob-git-dev/local-sdlc-agent/issues)（タイトルに `[Commercial License]`）

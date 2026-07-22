@@ -7,6 +7,10 @@ OpenAI 互換 API を提供するローカル LLM に対して、PM / Coder / Ju
 Project Policy Triage などを別々の system prompt と API call で実行し、仕様書・実行ログ・
 変更パッチなどの文書化された生成物を介して開発を進めます。
 
+> **Project status:** source-available research preview. Non-commercial use is free
+> under the public license terms. Commercial use requires a separate license. No
+> production warranty is provided.
+
 ## 現在の位置づけ
 
 | 項目 | 内容 |
@@ -134,6 +138,20 @@ agent-native に作る——など、計 12 条。詳細は
 
 ## ライセンス
 
-各スキルセットのディレクトリ内の `LICENSE` を参照してください。
-いずれのスキルセットも、個人・研究・非営利は **CC BY-NC-SA 4.0**（無償）、営利利用は**商用ライセンス**（要申請）です。
-ライセンス本文: [sdlc-skills](sdlc-skills/LICENSE) / [learning-skills](learning-skills/LICENSE)。
+このリポジトリは **source-available research preview** として公開しています。OSI 承認の
+open source license ではありません。
+
+| 対象 | 公開ライセンス |
+|---|---|
+| コード本体（`local_sdlc.py`, `local_sdlc/`, `tests/`, benchmark source code など） | [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) 相当の非商用利用 |
+| 文書・プロンプト・skill asset（`docs/`, `sdlc-skills/`, `learning-skills/` など） | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode) |
+
+個人利用、研究、学習、評価などの非商用利用は公開ライセンスの範囲で利用できます。
+営利企業内での利用、商用サービスへの組み込み、SaaS・クラウド・コンサルティング用途などは
+別途商用ライセンスが必要です。
+
+詳細:
+
+- [LICENSE](LICENSE)
+- [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)
+- [NOTICE.md](NOTICE.md)

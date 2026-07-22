@@ -194,8 +194,8 @@ Supervisor なしでも `/sdlc` を手動で呼ぶことはできる。
 ## Quick Start
 
 ```bash
-git clone https://github.com/nob-git-dev/claude-skills.git
-cd claude-skills/sdlc-skills
+git clone https://github.com/nob-git-dev/local-sdlc-agent.git
+cd local-sdlc-agent/sdlc-skills
 ./scripts/install.sh
 ```
 
@@ -221,8 +221,8 @@ cd claude-skills/sdlc-skills
 特定のスキルだけ取得したい場合は sparse-checkout が使えます：
 
 ```bash
-git clone --no-checkout https://github.com/nob-git-dev/claude-skills.git
-cd claude-skills
+git clone --no-checkout https://github.com/nob-git-dev/local-sdlc-agent.git
+cd local-sdlc-agent
 git sparse-checkout init --cone
 git sparse-checkout set sdlc-skills
 git checkout main
@@ -390,10 +390,10 @@ AI の実行力を最大限に活かしながら、人間が合意した仕様�
 
 | 利用目的 | ライセンス |
 |---|---|
-| 個人・研究・非営利・OSS（同ライセンスで公開） | [CC BY-NC-SA 4.0](LICENSE)（無償） |
+| 個人・研究・非営利・公開ソース利用（同ライセンスで公開） | [CC BY-NC-SA 4.0](LICENSE)（無償） |
 | 営利企業での利用・商用サービスへの組み込み | [商用ライセンス](LICENSE-COMMERCIAL.md)（要申請） |
 
-商用ライセンスのお問い合わせ: [GitHub Issues](https://github.com/nob-git-dev/claude-skills/issues)（タイトルに `[Commercial License]`）
+商用ライセンスのお問い合わせ: [GitHub Issues](https://github.com/nob-git-dev/local-sdlc-agent/issues)（タイトルに `[Commercial License]`）
 
 ---
 

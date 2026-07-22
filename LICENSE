@@ -1,0 +1,69 @@
+# Local SDLC Agent License Notice
+
+Copyright (c) 2026 nob-git-dev
+
+Local SDLC Agent is published as a source-available research preview.
+
+This repository is not released under an OSI-approved open source license. The public
+license terms allow non-commercial evaluation, research, learning, and adaptation.
+Commercial use requires a separate written commercial license from the copyright holder.
+
+## Code
+
+Unless a file or directory says otherwise, source code in this repository is made
+available for non-commercial use under the PolyForm Noncommercial License 1.0.0:
+
+https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+This includes, for example:
+
+- `local_sdlc.py`
+- `local_sdlc/`
+- `tests/`
+- benchmark source code under `benchmarks/`
+
+Commercial use of the code is not granted by this public license.
+
+## Documentation, Prompts, And Skill Assets
+
+Unless a file or directory says otherwise, documentation, prompt assets, skill files,
+design notes, examples, diagrams, and benchmark reports are licensed under:
+
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+CC BY-NC-SA 4.0
+
+https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
+This includes, for example:
+
+- `README.md`
+- `SPEC.md`
+- `docs/`
+- `sdlc-skills/`
+- `learning-skills/`
+
+Commercial use of these materials is not granted by this public license.
+
+## Directory-Specific Licenses
+
+Some directories contain their own license files. Those files remain authoritative for
+the materials in that directory, subject to the same commercial-use policy described
+in this repository.
+
+## Commercial Use
+
+Commercial use requires a separate written commercial license. See
+`COMMERCIAL-LICENSE.md`.
+
+Commercial use includes, but is not limited to:
+
+- use inside a for-profit company
+- use in a revenue-generating product or service
+- use in SaaS, cloud, consulting, integration, or managed-service offerings
+- redistribution under terms other than the applicable non-commercial public license
+
+## No Warranty
+
+This project is provided as a research preview, without warranty of any kind. It is not
+represented as production-ready software. You are responsible for reviewing, testing,
+and validating any use of the software or materials.
