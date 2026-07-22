@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local SDLC Coding Agent Architecture Report</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #5b6674;
+      --line: #d8dde6;
+      --accent: #0f766e;
+      --accent-2: #2563eb;
+      --warn: #b45309;
+      --bad: #b91c1c;
+      --good: #15803d;
+      --code: #111827;
+      --soft: #eef6f5;
+      --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.65;
+    }
+    header {
+      background: #10231f;
+      color: #fff;
+      padding: 34px 28px 28px;
+    }
+    .header-inner, main { max-width: 1180px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: clamp(28px, 4vw, 46px); letter-spacing: 0; line-height: 1.12; }
+    h2 { margin: 0 0 14px; font-size: 25px; }
+    h3 { margin: 0 0 10px; font-size: 18px; }
+    p { margin: 0 0 12px; }
+    .lead { color: #d7e7e2; max-width: 920px; font-size: 17px; }
+    .meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+    .pill {
+      border: 1px solid rgba(255,255,255,0.26);
+      border-radius: 999px;
+      padding: 7px 12px;
+      color: #e9fffb;
+      background: rgba(255,255,255,0.08);
+      font-size: 13px;
+    }
+    main { padding: 26px 18px 60px; }
+    .grid { display: grid; gap: 16px; }
+    .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow);
+    }
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .metric strong { display: block; font-size: 28px; line-height: 1; margin-bottom: 8px; }
+    .metric span { color: var(--muted); font-size: 13px; }
+    .status-good { color: var(--good); }
+    .status-warn { color: var(--warn); }
+    .status-bad { color: var(--bad); }
+    .tabs, .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0;
+    }
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 7px;
+      padding: 8px 11px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+    }
+    button:hover { border-color: var(--accent); }
+    button.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .timeline {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .step {
+      border-left: 4px solid var(--accent);
+      background: #fbfcfd;
+      padding: 13px 14px;
+      border-radius: 6px;
+      border-top: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .step small { color: var(--muted); display: block; margin-bottom: 3px; }
+    .code {
+      background: var(--code);
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 14px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .note {
+      background: var(--soft);
+      border-left: 4px solid var(--accent);
+      padding: 13px 14px;
+      border-radius: 6px;
+    }
+    .warn {
+      background: #fff7ed;
+      border-left: 4px solid var(--warn);
+      padding: 13px 14px;
+      border-radius: 6px;
+    }
+    .bad {
+      background: #fef2f2;
+      border-left: 4px solid var(--bad);
+      padding: 13px 14px;
+      border-radius: 6px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      background: #fff;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: #334155; background: #f8fafc; }
+    .mermaid-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 12px;
+    }
+    .chart-box { height: 300px; }
+    .hidden { display: none; }
+    @media (max-width: 900px) {
+      .grid.cols-4, .grid.cols-3, .grid.cols-2 { grid-template-columns: 1fr; }
+      header { padding: 26px 18px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>Local SDLC Coding Agent</h1>
+      <p class="lead">
+        ローカルLLMを使い、仕様書駆動・多役割・検証中心で開発を進める
+        coding agent基盤の説明資料です。
+      </p>
+      <div class="meta">
+        <span class="pill">作成日: 2026-07-07</span>
+        <span class="pill">対象: Local SDLC Agent</span>
+        <span class="pill">単一HTML / Mermaid + Chart.js CDN</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>現在地</h2>
+      <div class="grid cols-4">
+        <div class="metric"><strong class="status-good">289</strong><span>ハーネス単体テスト OK</span></div>
+        <div class="metric"><strong class="status-warn">S09</strong><span>Mini SQLite 実験は未完走</span></div>
+        <div class="metric"><strong>30</strong><span>直近S09再走行のAPI call数</span></div>
+        <div class="metric"><strong class="status-good">有効</strong><span>stream / rollback / lint guard</span></div>
+      </div>
+      <p class="note" style="margin-top:16px">
+        結論: agent基盤は「ローカルLLMが不安定でも、失敗を観測・分類・拒否・巻き戻しながら前進する」
+        方向へ進化しています。一方で、現在のLLM単体は長いコード修正でハルシネーションが多く、
+        ハーネス側の制約・検証・rollbackが必須です。
+      </p>
+    </section>
+
+    <section>
+      <h2>全体アーキテクチャ</h2>
+      <div class="mermaid-wrap">
+        <pre class="mermaid">
+flowchart LR
+  U["User / SPEC.md"] --> SR["Stage Runner"]
+  SR --> PM["PM Skill Call<br/>system prompt isolated"]
+  PM --> C["Coder Skill Call<br/>system prompt isolated"]
+  C --> SG["Stream Guard"]
+  SG --> L["Artifact Lint"]
+  L --> A["Transactional Apply"]
+  A --> V["Verification Commands"]
+  V --> J["Judge / command-only"]
+  V --> FA["Failure Analysis"]
+  FA --> PP["Patch Planner"]
+  PP --> C
+  J --> OK["Approved"]
+  L --> R["Reject / Repair Route"]
+  R --> C
+  A --> RB["Rollback on failure"]
+  RB --> C
+        </pre>
+      </div>
+      <p>
+        各役割は同じ会話の中の「気分」ではなく、API callを分け、system promptレベルで独立させる設計です。
+        スーパーバイザーは直接コードを書かず、仕様、証拠、失敗分類、許可パス、禁止パスを通じてcoderを制御します。
+      </p>
+    </section>
+
+    <section>
+      <h2>インタラクティブ解説</h2>
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="flow">実行フロー</button>
+        <button class="tab-btn" data-tab="math">数理モデル</button>
+        <button class="tab-btn" data-tab="guards">ガード群</button>
+        <button class="tab-btn" data-tab="lessons">Mini SQLiteの学び</button>
+      </div>
+
+      <div id="flow" class="tab-panel active">
+        <div class="timeline">
+          <div class="step"><small>1. Stage分割</small><strong>大きい仕様をS01...S09へ分割</strong><br>スーパーバイザーが一度に全部作らせず、ステージ単位で必要ファイル、テスト、完了条件を渡します。</div>
+          <div class="step"><small>2. Role-separated API calls</small><strong>PM / coder / judge / analysisをAPI call単位で分離</strong><br>役割ごとに温度、token budget、thinking設定を変えられる構造です。</div>
+          <div class="step"><small>3. Artifact-only制御</small><strong>coderは文章ではなく機械適用可能なartifactを返す</strong><br>BEGIN_FILE、BEGIN_SEARCH_REPLACE、JSON artifacts、unified diffなどを受け付け、曖昧な出力は拒否します。</div>
+          <div class="step"><small>4. Apply前検査</small><strong>静的lintとプロジェクトポリシーで危険な修正を拒否</strong><br>テスト改変、存在しないAPI追加、禁止された修正対象、壊れたartifact形式を弾きます。</div>
+          <div class="step"><small>5. 実行証拠</small><strong>テスト、smoke、mechanical probeを証拠化</strong><br>失敗はログとして保存され、次ラウンドの命題と制約になります。</div>
+        </div>
+      </div>
+
+      <div id="math" class="tab-panel">
+        <div class="code">State S = (Spec, Stage, Context, Artifacts, Evidence, Constraints)
+
+Goal:
+  find patch p such that Verify(Apply(p, Project)) = PASS
+
+Safety invariants:
+  I1: Artifact round is atomic
+      Apply(A1...An) = all_success OR no_project_change
+
+  I2: Evidence paths are readonly unless policy triage permits
+      path ∈ readonly => patch(path) = reject
+
+  I3: Generated tests are mutable evidence, external SPEC is authoritative
+      contradiction(test, SPEC) => repair_test_or_reject, not broaden_product
+
+  I4: LLM proposes, runner disposes
+      LLM_output => lint => apply => verify
+
+Failure transition:
+  fail_signature = normalize(test_result)
+  if repeated(fail_signature):
+      call failure_analysis
+      derive required_paths, readonly_paths, forbidden_paths
+      restrict next artifact
+        </div>
+        <p>
+          数理化の狙いは、LLMに自由作文をさせることではなく、短い命題へ分解して機械判定可能な制約に落とすことです。
+          例: 「rows exist before close but disappear after reopen」なら、CLI表示ではなく永続化境界を修正対象にする、という形です。
+        </p>
+      </div>
+
+      <div id="guards" class="tab-panel">
+        <div class="filters">
+          <button class="filter-btn active" data-filter="all">すべて</button>
+          <button class="filter-btn" data-filter="format">形式</button>
+          <button class="filter-btn" data-filter="semantic">意味</button>
+          <button class="filter-btn" data-filter="safety">安全性</button>
+        </div>
+        <table>
+          <thead><tr><th>制御</th><th>分類</th><th>目的</th><th>今回の効果</th></tr></thead>
+          <tbody id="guard-table">
+            <tr data-kind="format"><td>Stream Guard</td><td>形式</td><td>壊れたartifactを生成途中で早期停止</td><td>nested conflict markerを検出し、無駄な長時間出力を止めた</td></tr>
+            <tr data-kind="safety"><td>Transactional Apply</td><td>安全性</td><td>1ラウンドのartifactを全成功/全不変にする</td><td>後続artifact失敗時の部分適用残りを防ぐ</td></tr>
+            <tr data-kind="semantic"><td>Failure Analysis</td><td>意味</td><td>失敗を構造化JSON化し、次のrequired_pathsを出す</td><td>CLI失敗をrow persistence問題として分類</td></tr>
+            <tr data-kind="semantic"><td>Project Policy Triage</td><td>意味</td><td>テストが外部仕様かagent生成物かを判断</td><td>誤った生成テストを無条件に正典扱いしない</td></tr>
+            <tr data-kind="format"><td>Artifact Normalization</td><td>形式</td><td>軽微なJSON/関数断片の崩れを機械的に補正</td><td>単一関数置換へ安全に昇格</td></tr>
+            <tr data-kind="safety"><td>Unknown self attribute lint</td><td>安全性</td><td>存在しないself属性の導入を拒否</td><td>self._pager / self._btree型の幻覚を次回から止める</td></tr>
+            <tr data-kind="semantic"><td>Semantic Contracts</td><td>意味</td><td>仕様命題を実行ログに残し次ラウンドへ渡す</td><td>禁止対象やreadonly evidenceを継続</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div id="lessons" class="tab-panel">
+        <div class="grid cols-2">
+          <div class="warn">
+            <h3>LLMの弱点</h3>
+            <p>長い既存コードの一貫理解が弱く、存在しない属性/APIを作る、禁止方向へ戻る、形式を壊す、という傾向が出ました。</p>
+          </div>
+          <div class="note">
+            <h3>ハーネスの価値</h3>
+            <p>LLMを信頼して直接適用するのではなく、提案をlint、検証、rollback、failure analysisで囲うことで前進可能になります。</p>
+          </div>
+        </div>
+        <p>
+          S09はまだ完走していませんが、失敗が「CLIが悪い」から「row persistence境界が悪い」へ狭まり、
+          さらに「存在しない属性を使う修正は拒否すべき」という一般化された改善につながりました。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>APIプロファイルと役割</h2>
+      <div class="grid cols-2">
+        <div>
+          <table>
+            <thead><tr><th>役割/関数</th><th>温度</th><th>token方針</th><th>性格</th></tr></thead>
+            <tbody>
+              <tr><td>PM / plan_work</td><td>低〜中</td><td>8192</td><td>ステージ計画、制約整理</td></tr>
+              <tr><td>coder / generate_artifact</td><td>低</td><td>65536</td><td>artifact生成、広めの文脈</td></tr>
+              <tr><td>judge / verify_acceptance</td><td>0</td><td>8192</td><td>判定、承認、証拠確認</td></tr>
+              <tr><td>failure_analysis</td><td>0</td><td>1024</td><td>短いJSONで失敗分類</td></tr>
+              <tr><td>root_cause_analysis</td><td>0</td><td>8192</td><td>失敗命題の再定義</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="chart-box"><canvas id="profileChart"></canvas></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>コード構成</h2>
+      <div class="mermaid-wrap">
+        <pre class="mermaid">
+flowchart TB
+  CLI["local_sdlc/cli.py<br/>command wiring"] --> AR["agent_runner.py<br/>repair loop"]
+  CLI --> SR["stage_runner.py<br/>stage orchestration"]
+  AR --> ART["artifacts.py<br/>artifact parsing/lint/stream guard"]
+  AR --> VER["verification.py<br/>command/html/smoke checks"]
+  AR --> WS["workspace.py<br/>path/context/project files"]
+  AR --> LLM["llm_client.py<br/>OpenAI-compatible API"]
+  AR --> RS["run_state.py<br/>manifest/evidence documents"]
+  SR --> ST["stages.py<br/>stage definitions"]
+        </pre>
+      </div>
+      <p>
+        初期の単一ファイル実装から、現在は責務ごとに分割されています。GUIやAPIへ組み込む場合も、
+        CLI、agent loop、artifact処理、verification、workspace管理を再利用しやすい構造です。
+      </p>
+    </section>
+
+    <section>
+      <h2>今後の論点</h2>
+      <div class="grid cols-3">
+        <div class="step"><strong>1. 失敗runの扱い</strong><br>Mini SQLite側に残った失敗修正を、保持するかバックアップへ戻すか決める。</div>
+        <div class="step"><strong>2. より強い属性/API検査</strong><br>ASTベースで存在しないメソッド・属性・importを検出する。</div>
+        <div class="step"><strong>3. ステージ再開戦略</strong><br>S09全体ではなく、row persistence修復だけを小さいstageとして切り出す。</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: "default" });
+
+    document.querySelectorAll(".tab-btn").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.remove("active"));
+        button.classList.add("active");
+        document.getElementById(button.dataset.tab).classList.add("active");
+      });
+    });
+
+    document.querySelectorAll(".filter-btn").forEach((button) => {
+      button.addEventListener("click", () => {
+        const filter = button.dataset.filter;
+        document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"));
+        button.classList.add("active");
+        document.querySelectorAll("#guard-table tr").forEach((row) => {
+          row.classList.toggle("hidden", filter !== "all" && row.dataset.kind !== filter);
+        });
+      });
+    });
+
+    const ctx = document.getElementById("profileChart");
+    new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: ["PM", "Coder", "Judge", "Failure Analysis", "Root Cause"],
+        datasets: [
+          {
+            label: "max tokens",
+            data: [8192, 65536, 8192, 1024, 8192],
+            backgroundColor: ["#0f766e", "#2563eb", "#15803d", "#b45309", "#64748b"]
+          }
+        ]
+      },
+      options: {
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, ticks: { callback: (value) => value.toLocaleString() } }
+        }
+      }
+    });
+  </script>
+</body>
+</html>
