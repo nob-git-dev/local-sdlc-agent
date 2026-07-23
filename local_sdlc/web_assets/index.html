@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local SDLC Agent</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --line: #d7dce3;
+      --text: #171b22;
+      --muted: #606977;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --danger: #b42318;
+      --code: #111827;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    header {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    header h1 { margin: 0; font-size: 16px; }
+    header span, .status, label { color: var(--muted); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(270px, 350px) 1fr;
+      height: calc(100vh - 56px);
+      min-height: 560px;
+    }
+    aside {
+      overflow: auto;
+      padding: 14px;
+      border-right: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+    .chat {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 1fr auto;
+      height: 100%;
+    }
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    input, select, textarea, button { width: 100%; font: inherit; letter-spacing: 0; }
+    input, select, textarea {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      padding: 9px 10px;
+    }
+    textarea { min-height: 76px; resize: vertical; line-height: 1.45; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .checks { display: grid; gap: 8px; margin: 12px 0; }
+    .checks label {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 0;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .checks input { width: auto; }
+    .jobs { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+    .job-item {
+      margin-bottom: 8px;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .job-item strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+    .job-item small { color: var(--muted); font-size: 11px; }
+    .messages { overflow: auto; padding: 20px; }
+    .bubble {
+      max-width: 1120px;
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .bubble.user { border-color: #b7d9d5; background: #f0fdfa; }
+    .bubble h2 { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+    pre {
+      margin: 0;
+      padding: 12px;
+      overflow: auto;
+      border-radius: 6px;
+      background: var(--code);
+      color: #edf2f7;
+      line-height: 1.45;
+      font-size: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .composer { border-top: 1px solid var(--line); background: #fff; padding: 14px; }
+    .actions { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+    .actions button { width: auto; min-width: 120px; }
+    button {
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 9px 12px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .primary { background: var(--accent); color: #fff; }
+    .primary:hover { background: var(--accent-dark); }
+    .secondary { background: #fff; color: var(--text); border-color: var(--line); }
+    .danger { background: #fff; color: var(--danger); border-color: #f0b8b2; }
+    .status { font-size: 13px; }
+    @media (max-width: 860px) {
+      main { grid-template-columns: 1fr; height: auto; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      .chat { min-height: 620px; }
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Local SDLC Agent</h1>
+    <span id="server-state">local web UI</span>
+  </header>
+  <main>
+    <aside>
+      <label for="mode">実行モード</label>
+      <select id="mode">
+        <option value="agent">agent: 単一ループ</option>
+        <option value="run-stages">run-stages: 段階実行</option>
+        <option value="spec">spec: 仕様書作成</option>
+        <option value="health">health: LLM疎通</option>
+        <option value="doctor">doctor: 設定確認</option>
+      </select>
+
+      <label for="project">プロジェクト</label>
+      <input id="project" autocomplete="off">
+
+      <div class="row">
+        <div>
+          <label for="profile">モデルプロファイル</label>
+          <select id="profile"></select>
+        </div>
+        <div>
+          <label for="base-url">API URL</label>
+          <input id="base-url" autocomplete="off">
+        </div>
+      </div>
+
+      <label for="spec-file">SPEC.md</label>
+      <input id="spec-file" placeholder="省略時は project/SPEC.md">
+
+      <label for="include">include</label>
+      <textarea id="include" placeholder="既存ファイルを1行に1つ"></textarea>
+
+      <label for="new-file">new file</label>
+      <textarea id="new-file" placeholder="作成対象を1行に1つ"></textarea>
+
+      <label for="require-path">required path</label>
+      <textarea id="require-path" placeholder="承認前に存在確認するパス"></textarea>
+
+      <label for="test-command">test command</label>
+      <textarea id="test-command" placeholder="例: python3 -m unittest discover -s tests -v"></textarea>
+
+      <div class="checks">
+        <label><input id="apply" type="checkbox" checked> applyして実行</label>
+        <label><input id="allow-no-context" type="checkbox"> contextなしを許可</label>
+        <label><input id="worktree-copy" type="checkbox"> 一時コピーで実行</label>
+        <label><input id="stream" type="checkbox"> LLM streamを使う</label>
+      </div>
+
+      <div class="jobs">
+        <label>ジョブ履歴</label>
+        <div id="jobs"></div>
+      </div>
+    </aside>
+
+    <section class="chat">
+      <div class="messages" id="messages">
+        <div class="bubble">
+          <h2>System</h2>
+          <div>完全ローカルのWeb UIです。送信すると既存のCLIエージェントをローカル子プロセスとして起動します。</div>
+        </div>
+      </div>
+      <div class="composer">
+        <textarea id="brief" placeholder="例: ブラウザとキーボードで遊べるテトリスを作って"></textarea>
+        <div class="actions">
+          <button class="primary" id="run">実行</button>
+          <button class="danger" id="stop">停止</button>
+          <span class="status" id="status">idle</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = { currentJob: null, timer: null, currentBubble: null };
+    const el = (id) => document.getElementById(id);
+    function appendBubble(kind, title, text) {
+      const bubble = document.createElement("div");
+      bubble.className = "bubble " + kind;
+      const heading = document.createElement("h2");
+      heading.textContent = title;
+      bubble.appendChild(heading);
+      const body = document.createElement(kind === "assistant" ? "pre" : "div");
+      body.textContent = text;
+      bubble.appendChild(body);
+      el("messages").appendChild(bubble);
+      el("messages").scrollTop = el("messages").scrollHeight;
+      return body;
+    }
+    function lines(id) {
+      return el(id).value.split(/\n|,/).map((item) => item.trim()).filter(Boolean);
+    }
+    function payload() {
+      return {
+        mode: el("mode").value,
+        brief: el("brief").value.trim(),
+        project: el("project").value.trim(),
+        base_url: el("base-url").value.trim(),
+        model_profile: el("profile").value,
+        spec_file: el("spec-file").value.trim(),
+        include: lines("include"),
+        new_file: lines("new-file"),
+        require_path: lines("require-path"),
+        test_command: lines("test-command"),
+        apply: el("apply").checked,
+        allow_no_context: el("allow-no-context").checked,
+        worktree_copy: el("worktree-copy").checked,
+        stream: el("stream").checked,
+        skip_probes: true
+      };
+    }
+    async function api(path, options) {
+      const response = await fetch(path, options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      return data;
+    }
+    async function loadConfig() {
+      const config = await api("/api/config");
+      el("project").value = config.project;
+      el("base-url").value = config.base_url;
+      el("server-state").textContent = config.host + ":" + config.port;
+      for (const profile of config.model_profiles) {
+        const option = document.createElement("option");
+        option.value = profile;
+        option.textContent = profile;
+        if (profile === config.model_profile) option.selected = true;
+        el("profile").appendChild(option);
+      }
+    }
+    async function loadJobs() {
+      const data = await api("/api/jobs");
+      el("jobs").replaceChildren();
+      for (const job of data.jobs) {
+        const item = document.createElement("div");
+        item.className = "job-item";
+        const title = document.createElement("strong");
+        const meta = document.createElement("small");
+        title.textContent = job.brief || job.mode;
+        meta.textContent = job.status + " / " + job.id;
+        item.append(title, meta);
+        item.onclick = () => watchJob(job.id, true);
+        el("jobs").appendChild(item);
+      }
+    }
+    function renderJob(job) {
+      const text = [
+        "status: " + job.status,
+        "returncode: " + (job.returncode === null ? "-" : job.returncode),
+        "cwd: " + job.cwd,
+        "log_dir: " + job.log_dir,
+        "",
+        "$ " + job.command,
+        "",
+        job.output || ""
+      ].join("\n");
+      if (!state.currentBubble) {
+        state.currentBubble = appendBubble("assistant", "Agent", text);
+      } else {
+        state.currentBubble.textContent = text;
+      }
+      el("status").textContent = job.status;
+      el("messages").scrollTop = el("messages").scrollHeight;
+    }
+    async function pollJob() {
+      if (!state.currentJob) return;
+      const job = await api("/api/jobs/" + state.currentJob);
+      renderJob(job);
+      await loadJobs();
+      if (["completed", "failed", "stopped"].includes(job.status)) {
+        clearInterval(state.timer);
+        state.timer = null;
+      }
+    }
+    async function watchJob(id, createBubble) {
+      state.currentJob = id;
+      if (createBubble) state.currentBubble = null;
+      await pollJob();
+      if (state.timer) clearInterval(state.timer);
+      state.timer = setInterval(pollJob, 1200);
+    }
+    async function startJob() {
+      const body = payload();
+      if (!body.brief && !["health", "doctor"].includes(body.mode)) {
+        el("status").textContent = "brief is required";
+        return;
+      }
+      appendBubble("user", "You", body.brief || body.mode);
+      state.currentBubble = appendBubble("assistant", "Agent", "starting...");
+      const data = await api("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      el("brief").value = "";
+      await watchJob(data.job.id, false);
+    }
+    async function stopJob() {
+      if (!state.currentJob) return;
+      await api("/api/jobs/" + state.currentJob + "/stop", { method: "POST" });
+      await pollJob();
+    }
+    el("run").onclick = () => startJob().catch((error) => {
+      el("status").textContent = error.message;
+      appendBubble("assistant", "Error", error.message);
+    });
+    el("stop").onclick = () => stopJob().catch((error) => {
+      el("status").textContent = error.message;
+    });
+    el("brief").addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        startJob().catch((error) => {
+          el("status").textContent = error.message;
+          appendBubble("assistant", "Error", error.message);
+        });
+      }
+    });
+    loadConfig().then(loadJobs).catch((error) => {
+      el("status").textContent = error.message;
+    });
+  </script>
+</body>
+</html>

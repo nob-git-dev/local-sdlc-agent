@@ -45,6 +45,7 @@ from . import agent_runner as _agent_runner
 from . import phase_runner as _phase_runner
 from . import stage_runner as _stage_runner
 from . import supervisor_runner as _supervisor_runner
+from . import web_server as _web_server
 
 
 def command_doctor(args: argparse.Namespace) -> int:
@@ -142,6 +143,10 @@ def command_health(args: argparse.Namespace) -> int:
     status = client.health_probe()
     print(f"llm_health: {status}")
     return 0 if status.startswith("alive") else 1
+
+
+def command_web(args: argparse.Namespace) -> int:
+    return _web_server.command_web(args)
 
 
 def command_list_skills(args: argparse.Namespace) -> int:
@@ -378,6 +383,14 @@ def build_parser() -> argparse.ArgumentParser:
     health = sub.add_parser("health", help="quickly check whether the LLM API is reachable")
     add_common_arguments(health)
     health.set_defaults(func=command_health)
+
+    web = sub.add_parser("web", help="serve a tiny local browser UI for chat-style agent jobs")
+    add_common_arguments(web)
+    web.add_argument("--host", default="127.0.0.1", help="bind host; default keeps the UI local-only")
+    web.add_argument("--port", type=int, default=8765, help="bind port; use 0 for an ephemeral port")
+    web.add_argument("--entrypoint", type=Path, default=_web_server._repo_entrypoint(), help="local_sdlc.py entrypoint")
+    web.add_argument("--open-browser", action="store_true", help="open the UI in the default browser")
+    web.set_defaults(func=command_web)
 
     list_skills = sub.add_parser("list-skills", help="list available skills")
     add_common_arguments(list_skills)

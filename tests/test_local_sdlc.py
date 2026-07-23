@@ -191,6 +191,52 @@ class LocalSDLCTest(unittest.TestCase):
         self.assertEqual(args.adaptive_rounds, 5)
         self.assertEqual(args.domain_modeling, "never")
 
+    def test_web_parser_accepts_local_ui_command(self):
+        args = self.local_sdlc.build_parser().parse_args(
+            ["web", "--host", "127.0.0.1", "--port", "0", "--model-profile", "qwen-agent"]
+        )
+
+        self.assertEqual(args.host, "127.0.0.1")
+        self.assertEqual(args.port, 0)
+        self.assertEqual(args.model_profile, "qwen-agent")
+
+    def test_web_build_cli_command_uses_argv_not_shell(self):
+        from local_sdlc import web_server
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            config = web_server.WebConfig(
+                host="127.0.0.1",
+                port=0,
+                project=project,
+                entrypoint=ENTRYPOINT_PATH,
+                base_url="http://localhost:30000/v1",
+                model="",
+                model_profile="qwen-agent",
+            )
+            built = web_server.build_cli_command(
+                {
+                    "mode": "agent",
+                    "brief": "fix app",
+                    "include": ["app.py"],
+                    "new_file": ["tests/test_app.py"],
+                    "test_command": ["python3 -m unittest"],
+                    "apply": True,
+                },
+                config,
+            )
+
+        self.assertEqual(built.argv[0], sys.executable)
+        self.assertIn("agent", built.argv)
+        self.assertIn("--include", built.argv)
+        self.assertIn("app.py", built.argv)
+        self.assertIn("--new-file", built.argv)
+        self.assertIn("tests/test_app.py", built.argv)
+        self.assertIn("--test-command", built.argv)
+        self.assertIn("python3 -m unittest", built.argv)
+        self.assertIn("--apply", built.argv)
+        self.assertNotIn("&&", built.display)
+
     def test_run_skill_call_forwards_stream_parameters(self):
         class FakeClient:
             def __init__(self):

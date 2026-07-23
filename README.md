@@ -38,6 +38,24 @@ python3 local_sdlc.py run-stages --help
 python3 local_sdlc.py agent --help
 ```
 
+ブラウザからチャット形式で使う場合:
+
+```bash
+python3 local_sdlc.py web --host 127.0.0.1 --port 8765
+```
+
+その後、ブラウザで `http://127.0.0.1:8765/` を開きます。
+Web UI は完全ローカルで動作し、Flask / FastAPI / npm / CDN は使いません。Python標準ライブラリの
+軽量HTTPサーバーが、既存の `agent` / `run-stages` / `spec` / `doctor` / `health` コマンドを
+ローカル子プロセスとして起動します。各ジョブのログは
+`.sdlc-runner/web/jobs/` に保存されます。
+
+パッケージ形式の起動にも対応しています。
+
+```bash
+python3 -m local_sdlc web --host 127.0.0.1 --port 8765
+```
+
 Qwen / Ornith などのモデル差し替えは、散在する個別 flag ではなく `--model-profile` と
 `--api-profile FUNCTION:key=value` で管理します。
 

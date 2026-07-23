@@ -34,6 +34,7 @@
 | Browser Behavior Smoke | HTML/ブラウザ成果物を headless Chromium で実際に操作し、DOM/API 存在だけでなく可視状態変化を観測する | 静的な見た目や関数名だけで「動作する」と判定しない |
 | Function API Profile | API 設定を実際の認知処理単位で最適化する | ロール責務を曖昧にせず、関数別 profile を role の下位実行設定として扱う |
 | Model/API Preset Profile | Qwen/Ornith/Nemotron などモデル特性ごとの既定 model・temperature・max_tokens・thinking を名前付き preset として管理する | モデル差し替えを散在 CLI flag ではなく `--model-profile` と function-level override で行い、API call ごとの model 選択余地を残す |
+| Local Web Chat UI | ブラウザから chat 形式で `agent` / `run-stages` / `spec` / `doctor` / `health` を投入・監視・停止する | Web UI は薄い presentation adapter に留め、既存 CLI harness の実行規律を迂回しない |
 
 ## 振る舞い
 
@@ -61,6 +62,10 @@
 - `--model` は model profile の既定 model を上書きするが、`--api-profile FUNCTION:model=...` は特定 function/API call だけの model を上書きできる。
 - `local_sdlc.py doctor` と `run.json` は、有効な `model_profile`、role/function 別の model、temperature、max_tokens、thinking を表示・保存する。
 - 書き込みやパッチ適用は `--apply` が指定されたときだけ行う。デフォルトは標準出力またはパッチファイルへの保存に留める。
+- `local_sdlc.py web --host 127.0.0.1 --port 8765` は、Python 標準ライブラリのみで軽量HTTPサーバーを起動し、ブラウザ用の単一HTMLチャットUIを返す。
+- Web UI からの実行は既存 CLI コマンドをローカル子プロセスとして起動し、stdout/stderr と job metadata を `.sdlc-runner/web/jobs/` に保存する。
+- Web UI はジョブの開始、状態取得、ログ表示、停止だけを担当し、パッチ適用・テスト・Judge 判定などの制御は既存 runner に委譲する。
+- `python3 -m local_sdlc ...` は `local_sdlc.py ...` と同じ CLI を起動し、将来の package install / console script 起動に備える。
 
 ## 受け入れ条件
 
@@ -91,18 +96,24 @@
 - [x] 受け入れ条件ごとに実行証拠を照合し、未証明または失敗している条件がある場合は `acceptance-evidence-gate` で承認を止める
 - [x] Tetris の browser smoke は DOM/API 存在だけでなく、Start 後の可視 active piece と ArrowLeft 後の可視位置変化を検証する
 - [x] Acceptance Evidence Gate の blocker は repair advice に変換され、次ラウンドの Coder へ具体的な未証明命題として渡る
+- [x] `python3 local_sdlc.py web --host 127.0.0.1 --port 8765` で、完全ローカルのHTMLチャットUIを起動できる
+- [x] Web UI は外部 Python パッケージ、npm、CDNを使わず、既存CLIを安全な argv 子プロセスとして起動する
+- [x] Web UI から開始したジョブの状態、コマンド、ログ保存先、標準出力をブラウザで確認できる
+- [x] `python3 -m local_sdlc web --help` で package entrypoint 経由の起動ヘルプを表示できる
 
 ## スコープ（やらないこと）
 
 - 特定の外部エージェント環境の Skill、context fork、hook 機構を完全再現しない
 - LLM 出力を無条件に信用して自動コミットしない
 - Docker サービスや LLM サーバーをこのプログラム内に同梱しない
-- 対話型 TUI や Web UI は作らない
+- 外部クラウドサービス、npm build、CDN、重いWeb framework に依存したUIは作らない
 - 複数エージェントで暗黙の会話履歴やメモリを共有しない
 
 ## 固定要件
 
 - 利用者向けの CLI entrypoint は `local_sdlc.py` として維持する
+- package entrypoint として `python3 -m local_sdlc` を維持する
+- 利用者向けのローカルWeb entrypoint は `local_sdlc.py web` として維持する
 - 内部実装は責務ごとに `local_sdlc/` パッケージへ分割する
 - Python 標準ライブラリのみを使う
 - デフォルト LLM API は `http://localhost:30000/v1` とし、環境変数で上書き可能にする
@@ -140,7 +151,7 @@
 
 ### コンポーネント構成
 
-- Presentation 層: `argparse` による CLI、標準出力、将来の GUI adapter
+- Presentation 層: `argparse` による CLI、標準出力、標準ライブラリHTTPサーバーによるローカルWeb UI
 - Application 層: Supervisor、agent loop、stage runner、repair budget、workflow orchestration
 - Domain 層: Skill model、生成物プロトコル、failure classification、semantic contract、stage work item
 - Infrastructure 層: OpenAI 互換 HTTP クライアント、streaming、git/subprocess、ファイルシステム読み書き
@@ -201,6 +212,12 @@
 **判断:** `--model-profile` を first-class preset とし、preset は既定 model と function profile を持つ。`--model` は preset の既定 model を上書きし、`--api-profile FUNCTION:model=...` は特定 function/API call だけの model を上書きする。
 **理由:** ロールは責務、function は認知処理、model profile はモデル特性、api profile は実行設定を表す。これらを分離すると、Qwen/Ornith の比較や、生成物作成だけ Qwen・失敗分析だけ Ornith のような mixed-model 実験を安全に行える。
 **影響:** `doctor` と `run.json` は `model_profile` と role/function 別の有効 model/API 設定を必ず表示・保存する。将来モデルや function が増えても、preset table と function profile table に追加し、散在する条件分岐やハードコードで管理しない。
+
+#### ADR-10: Web UI は CLI harness の薄いローカル adapter として実装する
+**状況:** Claude Code や Codex のようにブラウザ上で依頼を入力し、進捗を追える体験が必要になった。一方で、この agent の安全性は既存 CLI runner の artifact 検査、テスト、Judge、run document 保存に依存している。
+**判断:** `local_sdlc.py web` は Python 標準ライブラリの `ThreadingHTTPServer` で単一HTMLを配信し、UI からの依頼を既存 CLI コマンドの argv に変換してローカル子プロセスとして起動する。
+**理由:** Web UI が agent harness を再実装すると、CLI とブラウザで挙動が分岐し、安全制御が抜ける。UI は開始・監視・停止だけに限定し、実装判断は既存 Application/Domain/Infrastructure 層へ委譲する。
+**影響:** Web UI は完全ローカルで動く。外部Web framework、npm、CDNは不要。ジョブログは `.sdlc-runner/web/jobs/` に残り、CLI実行時の `.sdlc-runner/runs/` と合わせて監査できる。
 
 ## テスト計画
 
