@@ -2,6 +2,19 @@
 
 This directory contains public-facing documentation for Local SDLC Agent.
 
+## Visual Guide
+
+The comprehensive Japanese implementation guide is published as a single-page
+website:
+
+- **Published site:** [Local SDLC Agent — Visual Code Guide](https://nob-git-dev.github.io/local-sdlc-agent/)
+- **HTML source:** [`architecture/local_sdlc_agent_visual_guide_20260724.html`](architecture/local_sdlc_agent_visual_guide_20260724.html)
+
+It explains the architecture, supervisor routing, coding-agent repair loop,
+staged execution, prompt contracts, artifact controls, verification evidence,
+major routines, and current implementation limitations with interactive
+diagrams and charts.
+
 ## Structure
 
 | Directory | Purpose |

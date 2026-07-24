@@ -11,6 +11,20 @@ Project Policy Triage などを別々の system prompt と API call で実行し
 > under the public license terms. Commercial use requires a separate license. No
 > production warranty is provided.
 
+## 日本語ビジュアル解説
+
+**[GitHub Pages でビジュアルガイドを開く](https://nob-git-dev.github.io/local-sdlc-agent/)**
+
+実装全体を短時間で把握したい場合は、まずこのガイドを参照してください。
+15,828 行のコア Python、Supervisor ルーティング、Agent 修復ループ、Stage 実行、
+Artifact Stream Guard、検証モデル、Run 文書、実際に組み立てられる PM / Coder / Judge /
+Failure Analysis プロンプトを、フローチャートと図表で日本語解説しています。
+
+- 単一 HTML: Mermaid 9 図、Chart.js、検索、ダークモード、印刷対応
+- 基準コミット: `66850426a1bed049d78027512a0ae17a1d96bcf8`
+- ソース: [`docs/architecture/local_sdlc_agent_visual_guide_20260724.html`](docs/architecture/local_sdlc_agent_visual_guide_20260724.html)
+- `main` のガイド更新時に GitHub Actions から Pages へ自動再配信
+
 ## 現在の位置づけ
 
 | 項目 | 内容 |

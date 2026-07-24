@@ -1,0 +1,2706 @@
+<!doctype html>
+<html lang="ja" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="local-sdlc-agent の実装、制御フロー、プロンプト、証拠モデル、既知の制約をコードに基づいて解説する日本語ビジュアルガイド">
+  <title>local-sdlc-agent — 実装を読み解くビジュアルガイド</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f5f2eb;
+      --paper-2: #ebe7dc;
+      --panel: rgba(255, 255, 255, .78);
+      --panel-solid: #fffefa;
+      --ink: #162027;
+      --muted: #617079;
+      --line: #d4d1c8;
+      --navy: #123d52;
+      --navy-2: #092938;
+      --cyan: #0b8793;
+      --cyan-soft: #d9f0ef;
+      --orange: #dd6b2c;
+      --orange-soft: #f9e6d9;
+      --yellow: #c79222;
+      --yellow-soft: #fff0c7;
+      --red: #b9383a;
+      --red-soft: #f9dfe0;
+      --green: #287a56;
+      --green-soft: #dcefe5;
+      --violet: #6d52a1;
+      --violet-soft: #e9e2f5;
+      --shadow: 0 14px 40px rgba(16, 36, 44, .08);
+      --radius: 18px;
+      --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Noto Sans JP", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --sidebar: 286px;
+      --content: 1180px;
+    }
+
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --paper: #0c161c;
+      --paper-2: #101e26;
+      --panel: rgba(19, 33, 41, .86);
+      --panel-solid: #132129;
+      --ink: #e6edef;
+      --muted: #9cb0b9;
+      --line: #30434d;
+      --navy: #86c7d5;
+      --navy-2: #d5f3f7;
+      --cyan: #5ec6ca;
+      --cyan-soft: #14383d;
+      --orange: #ff9b65;
+      --orange-soft: #43291f;
+      --yellow: #f3c35d;
+      --yellow-soft: #3e351c;
+      --red: #ff8386;
+      --red-soft: #452527;
+      --green: #70d29f;
+      --green-soft: #17392a;
+      --violet: #b9a1e6;
+      --violet-soft: #302744;
+      --shadow: 0 18px 48px rgba(0, 0, 0, .25);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 88% 3%, color-mix(in srgb, var(--cyan) 13%, transparent), transparent 31rem),
+        linear-gradient(90deg, transparent 49px, color-mix(in srgb, var(--line) 35%, transparent) 50px, transparent 51px),
+        linear-gradient(var(--paper), var(--paper));
+      background-size: auto, 50px 50px, auto;
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.78;
+      letter-spacing: .01em;
+    }
+
+    a { color: var(--cyan); text-underline-offset: .2em; }
+    a:hover { color: var(--orange); }
+    code, pre, kbd { font-family: var(--mono); }
+    code {
+      padding: .08em .38em;
+      border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--paper-2) 70%, transparent);
+      font-size: .88em;
+      overflow-wrap: anywhere;
+    }
+    pre {
+      margin: 0;
+      overflow: auto;
+      line-height: 1.62;
+      tab-size: 2;
+    }
+    pre code {
+      display: block;
+      min-width: max-content;
+      padding: 1.15rem 1.25rem;
+      border: 0;
+      background: transparent;
+      font-size: .79rem;
+      overflow-wrap: normal;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    ::selection { background: color-mix(in srgb, var(--orange) 28%, transparent); }
+
+    .skip-link {
+      position: fixed;
+      z-index: 100;
+      top: .75rem;
+      left: .75rem;
+      padding: .65rem .9rem;
+      transform: translateY(-150%);
+      border-radius: 8px;
+      background: var(--ink);
+      color: var(--paper);
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: var(--sidebar) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      height: 100vh;
+      padding: 1.25rem 1rem 1rem;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      background: color-mix(in srgb, var(--paper) 89%, transparent);
+      backdrop-filter: blur(18px);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      padding: .45rem .55rem 1rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand-mark {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      flex: 0 0 auto;
+      place-items: center;
+      border-radius: 12px;
+      background: var(--navy);
+      color: var(--paper);
+      font: 700 1rem/1 var(--mono);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.17);
+    }
+    .brand strong { display: block; font-size: .88rem; letter-spacing: -.015em; }
+    .brand small { display: block; color: var(--muted); font: .68rem/1.4 var(--mono); }
+
+    .sidebar-tools {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: .4rem;
+      margin: .9rem .1rem .65rem;
+    }
+    .search {
+      min-width: 0;
+      padding: .55rem .65rem;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      outline: none;
+      background: var(--panel-solid);
+      color: var(--ink);
+      font-size: .76rem;
+    }
+    .search:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 18%, transparent); }
+    .icon-btn {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-solid);
+      cursor: pointer;
+    }
+    .icon-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+
+    .toc {
+      display: grid;
+      gap: .12rem;
+      margin-top: .6rem;
+    }
+    .toc a {
+      display: grid;
+      grid-template-columns: 1.8rem 1fr;
+      gap: .35rem;
+      align-items: center;
+      padding: .42rem .55rem;
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: .75rem;
+      text-decoration: none;
+    }
+    .toc a span:first-child {
+      color: color-mix(in srgb, var(--muted) 70%, transparent);
+      font: .64rem/1 var(--mono);
+    }
+    .toc a:hover, .toc a.active {
+      background: var(--cyan-soft);
+      color: var(--navy);
+    }
+    .toc a.active { font-weight: 700; }
+    .sidebar-note {
+      margin: 1rem .2rem 0;
+      padding: .75rem;
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: .67rem;
+      line-height: 1.55;
+    }
+
+    main {
+      width: min(100%, calc(var(--content) + 5rem));
+      padding: 2rem 2.5rem 5rem;
+      margin: 0 auto;
+    }
+
+    .hero {
+      position: relative;
+      isolation: isolate;
+      min-height: 540px;
+      padding: clamp(2rem, 5vw, 4.6rem);
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 30px;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--panel-solid) 97%, transparent), color-mix(in srgb, var(--cyan-soft) 75%, transparent));
+      box-shadow: var(--shadow);
+    }
+    .hero::before {
+      position: absolute;
+      z-index: -1;
+      top: -11rem;
+      right: -8rem;
+      width: 34rem;
+      height: 34rem;
+      border: 1px solid color-mix(in srgb, var(--cyan) 33%, transparent);
+      border-radius: 50%;
+      box-shadow:
+        0 0 0 3.5rem color-mix(in srgb, var(--cyan) 4%, transparent),
+        0 0 0 7rem color-mix(in srgb, var(--cyan) 3%, transparent);
+      content: "";
+    }
+    .eyebrow {
+      display: inline-flex;
+      gap: .55rem;
+      align-items: center;
+      margin-bottom: 1.3rem;
+      padding: .37rem .68rem;
+      border: 1px solid color-mix(in srgb, var(--cyan) 32%, var(--line));
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--cyan-soft) 80%, transparent);
+      color: var(--navy);
+      font: 600 .72rem/1 var(--mono);
+      letter-spacing: .05em;
+    }
+    .eyebrow::before {
+      width: .55rem;
+      height: .55rem;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent);
+      content: "";
+    }
+    h1, h2, h3, h4 { line-height: 1.35; letter-spacing: -.035em; }
+    h1 {
+      max-width: 850px;
+      margin: 0;
+      color: var(--navy-2);
+      font-size: clamp(2.45rem, 6vw, 5.7rem);
+      font-weight: 800;
+      line-height: .98;
+    }
+    h1 .mono { display: block; margin-top: .32em; color: var(--cyan); font: 500 .37em/1.25 var(--mono); letter-spacing: -.035em; }
+    .hero-lead {
+      max-width: 780px;
+      margin: 1.8rem 0 0;
+      color: var(--muted);
+      font-size: clamp(1rem, 1.8vw, 1.23rem);
+      font-weight: 500;
+    }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1.6rem; }
+    .button {
+      display: inline-flex;
+      gap: .45rem;
+      align-items: center;
+      padding: .67rem 1rem;
+      border: 1px solid var(--navy);
+      border-radius: 10px;
+      background: var(--navy);
+      color: var(--paper);
+      font-size: .82rem;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .button.secondary { background: transparent; color: var(--navy); }
+    .button:hover { transform: translateY(-1px); color: var(--paper); }
+    .button.secondary:hover { color: var(--orange); border-color: var(--orange); }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: .7rem;
+      margin-top: 3.2rem;
+    }
+    .metric {
+      padding: 1rem;
+      border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--panel-solid) 80%, transparent);
+    }
+    .metric b { display: block; color: var(--navy-2); font: 600 clamp(1.45rem, 3vw, 2rem)/1 var(--mono); }
+    .metric span { color: var(--muted); font-size: .69rem; }
+
+    section {
+      position: relative;
+      margin-top: 5.6rem;
+      scroll-margin-top: 1.2rem;
+    }
+    .section-head {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1.1rem;
+      align-items: start;
+      margin-bottom: 1.6rem;
+    }
+    .section-no {
+      margin-top: .35rem;
+      color: var(--orange);
+      font: 600 .78rem/1 var(--mono);
+    }
+    h2 {
+      margin: 0;
+      color: var(--navy-2);
+      font-size: clamp(1.75rem, 3.5vw, 3rem);
+      font-weight: 800;
+    }
+    .section-kicker {
+      max-width: 800px;
+      margin: .45rem 0 0;
+      color: var(--muted);
+      font-size: .96rem;
+    }
+    h3 { margin: 2rem 0 .7rem; color: var(--navy-2); font-size: 1.24rem; }
+    h4 { margin: 1.2rem 0 .45rem; color: var(--navy); font-size: .97rem; }
+    p { margin: .65rem 0; }
+
+    .grid { display: grid; gap: 1rem; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card {
+      padding: 1.2rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 8px 24px rgba(17, 41, 51, .035);
+    }
+    .card > :first-child { margin-top: 0; }
+    .card > :last-child { margin-bottom: 0; }
+    .card h3 { margin-top: 0; }
+    .card p, .card li { font-size: .86rem; }
+    .card-accent { border-top: 4px solid var(--cyan); }
+    .card-orange { border-top-color: var(--orange); }
+    .card-violet { border-top-color: var(--violet); }
+    .card-green { border-top-color: var(--green); }
+    .card-red { border-top-color: var(--red); }
+    .mini-label {
+      display: inline-block;
+      margin-bottom: .55rem;
+      color: var(--muted);
+      font: 600 .66rem/1 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .big-concept {
+      margin: 1.2rem 0;
+      padding: clamp(1.2rem, 3vw, 2rem);
+      border-left: 5px solid var(--orange);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      background: var(--orange-soft);
+      color: var(--navy-2);
+      font-size: clamp(1rem, 2vw, 1.25rem);
+      font-weight: 650;
+    }
+    .callout {
+      position: relative;
+      margin: 1rem 0;
+      padding: 1rem 1.15rem 1rem 3.15rem;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--panel);
+      font-size: .86rem;
+    }
+    .callout::before {
+      position: absolute;
+      top: .9rem;
+      left: 1rem;
+      display: grid;
+      width: 1.45rem;
+      height: 1.45rem;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      content: "i";
+      font: 700 .78rem/1 var(--mono);
+    }
+    .callout.warn { border-color: color-mix(in srgb, var(--yellow) 45%, var(--line)); background: var(--yellow-soft); }
+    .callout.warn::before { background: var(--yellow); color: #201801; content: "!"; }
+    .callout.danger { border-color: color-mix(in srgb, var(--red) 45%, var(--line)); background: var(--red-soft); }
+    .callout.danger::before { background: var(--red); color: white; content: "!"; }
+    .callout.good { border-color: color-mix(in srgb, var(--green) 45%, var(--line)); background: var(--green-soft); }
+    .callout.good::before { background: var(--green); color: white; content: "✓"; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: .22rem .48rem;
+      border-radius: 999px;
+      background: var(--cyan-soft);
+      color: var(--navy);
+      font: 600 .64rem/1.2 var(--mono);
+      white-space: nowrap;
+    }
+    .badge.impl { background: var(--green-soft); color: var(--green); }
+    .badge.prompt { background: var(--violet-soft); color: var(--violet); }
+    .badge.rule { background: var(--yellow-soft); color: var(--yellow); }
+    .badge.limit { background: var(--red-soft); color: var(--red); }
+    .badge.infra { background: var(--orange-soft); color: var(--orange); }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .55rem;
+      align-items: center;
+      margin: .8rem 0 1.15rem;
+      color: var(--muted);
+      font-size: .72rem;
+    }
+
+    .diagram {
+      margin: 1rem 0 1.4rem;
+      padding: 1rem;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel-solid);
+      box-shadow: var(--shadow);
+    }
+    .diagram .diagram-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: center;
+      margin: 0 0 .8rem;
+      padding: 0 .15rem .7rem;
+      border-bottom: 1px solid var(--line);
+      color: var(--navy);
+      font-size: .78rem;
+      font-weight: 700;
+    }
+    .diagram .diagram-title span { color: var(--muted); font: .64rem/1 var(--mono); }
+    .mermaid {
+      min-width: 680px;
+      padding: .4rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      text-align: center;
+      white-space: pre-wrap;
+    }
+    .mermaid svg { max-width: 100% !important; height: auto !important; }
+
+    .table-wrap {
+      margin: 1rem 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .78rem;
+    }
+    th, td {
+      padding: .72rem .8rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      position: sticky;
+      z-index: 1;
+      top: 0;
+      background: color-mix(in srgb, var(--paper-2) 88%, var(--panel-solid));
+      color: var(--navy);
+      font-size: .7rem;
+      letter-spacing: .03em;
+    }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: color-mix(in srgb, var(--cyan-soft) 42%, transparent); }
+
+    .codebox {
+      position: relative;
+      margin: .8rem 0 1.1rem;
+      overflow: hidden;
+      border: 1px solid #314650;
+      border-radius: 13px;
+      background: #0e1a21;
+      color: #d6e3e7;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+    }
+    .code-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: .47rem .7rem;
+      border-bottom: 1px solid #314650;
+      background: #152630;
+      color: #91a9b2;
+      font: .65rem/1.2 var(--mono);
+    }
+    .copy-btn {
+      padding: .25rem .48rem;
+      border: 1px solid #455e68;
+      border-radius: 6px;
+      background: transparent;
+      color: #b8c9ce;
+      font: .63rem/1 var(--mono);
+      cursor: pointer;
+    }
+    .copy-btn:hover { border-color: #78c6cb; color: #78c6cb; }
+    .tok-key { color: #7fd0d4; }
+    .tok-value { color: #f3b07e; }
+    .tok-comment { color: #7d929a; }
+
+    details {
+      margin: .75rem 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+    summary {
+      position: relative;
+      padding: .82rem 2.4rem .82rem 1rem;
+      color: var(--navy);
+      font-size: .86rem;
+      font-weight: 700;
+      cursor: pointer;
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::after {
+      position: absolute;
+      top: .77rem;
+      right: 1rem;
+      color: var(--muted);
+      content: "+";
+      font: 500 1.15rem/1 var(--mono);
+    }
+    details[open] summary::after { content: "−"; }
+    .details-body { padding: 0 1rem 1rem; border-top: 1px solid var(--line); }
+
+    .tabs {
+      margin: 1rem 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--panel);
+    }
+    .tab-list {
+      display: flex;
+      gap: .35rem;
+      padding: .65rem;
+      overflow: auto;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--paper-2) 65%, transparent);
+    }
+    .tab-button {
+      flex: 0 0 auto;
+      padding: .48rem .72rem;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      font-size: .72rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .tab-button[aria-selected="true"] {
+      border-color: var(--line);
+      background: var(--panel-solid);
+      color: var(--navy);
+      box-shadow: 0 3px 10px rgba(0,0,0,.04);
+    }
+    .tab-panel { padding: 1rem; }
+    .tab-panel[hidden] { display: none; }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: .55rem;
+      margin: 1.2rem 0;
+    }
+    .pipe-step {
+      position: relative;
+      min-height: 115px;
+      padding: .8rem .65rem;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-solid);
+      text-align: center;
+    }
+    .pipe-step:not(:last-child)::after {
+      position: absolute;
+      z-index: 2;
+      top: calc(50% - .75rem);
+      right: -.72rem;
+      color: var(--orange);
+      content: "→";
+      font: 700 1rem/1 var(--mono);
+    }
+    .pipe-step b { display: block; color: var(--navy); font-size: .76rem; }
+    .pipe-step small { display: block; margin-top: .38rem; color: var(--muted); font-size: .64rem; line-height: 1.5; }
+    .pipe-step .step-no { display: block; margin-bottom: .45rem; color: var(--orange); font: 600 .62rem/1 var(--mono); }
+
+    .chart-card { min-height: 460px; }
+    .chart-shell { position: relative; height: 390px; }
+    .chart-fallback { margin-top: .7rem; }
+    .js .chart-fallback { display: none; }
+
+    .tree {
+      padding: 1.1rem 1.25rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-solid);
+      color: var(--ink);
+      font: .76rem/1.75 var(--mono);
+      white-space: pre;
+    }
+    .tree .dir { color: var(--cyan); font-weight: 700; }
+    .tree .doc { color: var(--violet); }
+    .tree .truth { color: var(--green); font-weight: 700; }
+    .tree .partial { color: var(--yellow); }
+
+    .status-strip {
+      display: grid;
+      grid-template-columns: 1.3fr repeat(4, minmax(95px, .55fr));
+      gap: .5rem;
+      padding: .65rem;
+      border: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
+      border-radius: 14px;
+      background: var(--red-soft);
+    }
+    .status-cell {
+      padding: .72rem;
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--panel-solid) 72%, transparent);
+    }
+    .status-cell b { display: block; color: var(--navy-2); font: 600 1.2rem/1 var(--mono); }
+    .status-cell span { display: block; margin-top: .35rem; color: var(--muted); font-size: .64rem; }
+
+    .source-link {
+      display: inline-flex;
+      gap: .25rem;
+      align-items: center;
+      font: .68rem/1.4 var(--mono);
+      text-decoration: none;
+    }
+    .source-link::before { content: "↗"; }
+    .muted { color: var(--muted); }
+    .small { font-size: .76rem; }
+    .nowrap { white-space: nowrap; }
+    .hidden-by-search { display: none !important; }
+
+    .foot {
+      margin-top: 5rem;
+      padding: 2rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .74rem;
+    }
+    .foot-grid {
+      display: grid;
+      grid-template-columns: 1.3fr .7fr;
+      gap: 2rem;
+    }
+
+    @media (max-width: 1080px) {
+      :root { --sidebar: 240px; }
+      main { padding-inline: 1.5rem; }
+      .grid.four { grid-template-columns: repeat(2, 1fr); }
+      .pipeline { grid-template-columns: repeat(4, 1fr); }
+      .pipe-step:nth-child(4)::after { display: none; }
+    }
+    @media (max-width: 820px) {
+      .layout { display: block; }
+      .sidebar {
+        position: sticky;
+        height: auto;
+        max-height: 46vh;
+        padding: .65rem .8rem;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .brand { padding-bottom: .6rem; }
+      .brand-mark { width: 34px; height: 34px; }
+      .toc { display: flex; overflow: auto; }
+      .toc a { flex: 0 0 auto; display: block; }
+      .toc a span:first-child { margin-right: .25rem; }
+      .sidebar-note { display: none; }
+      main { padding: 1.1rem 1rem 4rem; }
+      .hero { min-height: auto; padding: 2rem 1.35rem; border-radius: 20px; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      .section-head { grid-template-columns: 1fr; gap: .2rem; }
+      .section-no { margin: 0; }
+      .status-strip { grid-template-columns: repeat(2, 1fr); }
+      .status-cell:first-child { grid-column: 1 / -1; }
+      .foot-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      .grid.four, .metrics { grid-template-columns: 1fr; }
+      .pipeline { grid-template-columns: repeat(2, 1fr); }
+      .pipe-step:nth-child(even)::after { display: none; }
+      .status-strip { grid-template-columns: 1fr; }
+      .status-cell:first-child { grid-column: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+    }
+    @media print {
+      :root { --paper: #fff; --panel: #fff; --panel-solid: #fff; --ink: #111; --muted: #444; --line: #bbb; }
+      .sidebar, .hero-actions, .copy-btn, .tab-list { display: none !important; }
+      .layout { display: block; }
+      main { width: 100%; padding: 0; }
+      .hero { min-height: 0; box-shadow: none; }
+      section { break-before: page; margin-top: 2rem; }
+      .card, .diagram, details, .table-wrap { box-shadow: none; break-inside: avoid; }
+      details > * { display: block !important; }
+      .tab-panel { display: block !important; border-top: 1px solid var(--line); }
+      .tab-panel::before { display: block; margin-bottom: .5rem; color: #444; content: attr(data-print-title); font-weight: 700; }
+      a { color: #111; text-decoration: none; }
+      a[href^="http"]::after { content: " (" attr(href) ")"; font-size: .58rem; overflow-wrap: anywhere; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">本文へ移動</a>
+  <div class="layout">
+    <aside class="sidebar" aria-label="ページ内ナビゲーション">
+      <div class="brand">
+        <div class="brand-mark">LS</div>
+        <div>
+          <strong>local-sdlc-agent</strong>
+          <small>VISUAL CODE GUIDE / 2026-07-24</small>
+        </div>
+      </div>
+      <div class="sidebar-tools">
+        <input id="pageSearch" class="search" type="search" placeholder="章・関数を検索" aria-label="ページ内検索">
+        <button id="themeToggle" class="icon-btn" type="button" title="配色を切り替える" aria-label="配色を切り替える">◐</button>
+        <button id="printButton" class="icon-btn" type="button" title="印刷する" aria-label="印刷する">⌘</button>
+      </div>
+      <nav class="toc" aria-label="目次">
+        <a href="#overview"><span>01</span><span>結論とスナップショット</span></a>
+        <a href="#architecture"><span>02</span><span>全体アーキテクチャ</span></a>
+        <a href="#modes"><span>03</span><span>実行モード</span></a>
+        <a href="#routing"><span>04</span><span>Supervisorルーティング</span></a>
+        <a href="#agent-loop"><span>05</span><span>Agent修復ループ</span></a>
+        <a href="#stages"><span>06</span><span>Stage実行</span></a>
+        <a href="#web"><span>07</span><span>Web UI</span></a>
+        <a href="#prompts"><span>08</span><span>実プロンプト</span></a>
+        <a href="#skills"><span>09</span><span>Skill資産</span></a>
+        <a href="#llm"><span>10</span><span>LLM API</span></a>
+        <a href="#artifacts"><span>11</span><span>Artifact制御</span></a>
+        <a href="#verification"><span>12</span><span>検証と証拠</span></a>
+        <a href="#run-docs"><span>13</span><span>Run文書</span></a>
+        <a href="#modules"><span>14</span><span>モジュールとルーチン</span></a>
+        <a href="#cli"><span>15</span><span>CLIリファレンス</span></a>
+        <a href="#reality"><span>16</span><span>現行テストと制約</span></a>
+        <a href="#assessment"><span>17</span><span>評価と読解ガイド</span></a>
+      </nav>
+      <div class="sidebar-note">
+        基準コミット <code>6685042</code><br>
+        実装・プロンプト・テストを静的読解し、Python 3.13 / 3.11 で現状を検証。図は Mermaid、統計は Chart.js で描画します。
+      </div>
+    </aside>
+
+    <main id="main">
+      <header class="hero">
+        <div class="eyebrow">CODE-BASED TECHNICAL REPORT</div>
+        <h1>ローカルLLMを<br>“証拠で動かす”<span class="mono">local-sdlc-agent / implementation atlas</span></h1>
+        <p class="hero-lead">
+          これは単なる「LLMにコードを書かせるCLI」ではありません。仕様を一次情報にし、
+          PM・Coder・Judgeを文書で分離し、生成物を構文・パス・テスト・受入条件で絞り込む
+          <strong>ローカル実行型のSDLC制御ランナー</strong>です。
+        </p>
+        <div class="hero-actions">
+          <a class="button" href="#architecture">全体像を見る ↓</a>
+          <a class="button secondary" href="#prompts">実プロンプトを見る</a>
+          <a class="button secondary" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/66850426a1bed049d78027512a0ae17a1d96bcf8" target="_blank" rel="noreferrer">基準ソース ↗</a>
+        </div>
+        <div class="metrics" aria-label="コードベースの主要指標">
+          <div class="metric"><b>15,828</b><span>コアPython行数</span></div>
+          <div class="metric"><b>354</b><span>関数・メソッド</span></div>
+          <div class="metric"><b>12 + 4</b><span>Skill + Agent prompt資産</span></div>
+          <div class="metric"><b>0</b><span>Python外部ランタイム依存</span></div>
+        </div>
+      </header>
+
+      <section id="overview" data-search-section>
+        <div class="section-head">
+          <div class="section-no">01 / OVERVIEW</div>
+          <div>
+            <h2>最初に結論</h2>
+            <p class="section-kicker">設計の核心、調査範囲、いまのコードが実際にどこまで動くかを最初に固定します。</p>
+          </div>
+        </div>
+
+        <div class="big-concept">
+          中心思想は <code>生成 → 適用 → テスト</code> ではなく、
+          <code>可視前提 → 最小Artifact → 機械検証 → 証拠付き判定 → 失敗を型付けして再試行</code> です。
+        </div>
+
+        <div class="grid four">
+          <article class="card card-accent searchable-card">
+            <span class="mini-label">SOURCE OF TRUTH</span>
+            <h3>SPEC.md が一次情報</h3>
+            <p>固定要件を暗黙に変えず、足りない事実は推測せず <code>UNKNOWN</code> / <code>MISSING_CONTEXT</code> とする規律を全ロールに注入します。</p>
+          </article>
+          <article class="card card-accent card-violet searchable-card">
+            <span class="mini-label">ISOLATION</span>
+            <h3>ロール間は文書交換</h3>
+            <p>API呼び出し同士に共有記憶があると仮定せず、SPEC、PM文書、ファイル本文、コマンド結果を毎回明示します。</p>
+          </article>
+          <article class="card card-accent card-orange searchable-card">
+            <span class="mini-label">CONTROL KERNEL</span>
+            <h3>Artifactを信用しない</h3>
+            <p>LLM出力をそのまま書かず、プロトコル、対象パス、重複、ストリーム暴走、スコープ、意味契約を検査してから原子的に適用します。</p>
+          </article>
+          <article class="card card-accent card-green searchable-card">
+            <span class="mini-label">VERDICT</span>
+            <h3>成功は証拠の積</h3>
+            <p><code>command_ok AND judge_approval</code> が基本条件。初期状態ですでに受入条件を満たす場合は、無用な編集をせず終了します。</p>
+          </article>
+        </div>
+
+        <h3>このレポートの読み方</h3>
+        <div class="legend" aria-label="情報種別の凡例">
+          <span class="badge impl">実装済み</span> Pythonコードで確認できる動作
+          <span class="badge prompt">Prompt規律</span> LLMに要求している振る舞い
+          <span class="badge rule">ルールベース</span> キーワードや固定テンプレートによる判定
+          <span class="badge limit">現行制約</span> テスト・汎用性・安全性上の注意
+        </div>
+
+        <div class="grid two">
+          <div class="card">
+            <h3>調査スナップショット</h3>
+            <div class="table-wrap">
+              <table>
+                <tbody>
+                  <tr><th>Repository</th><td><a href="https://github.com/nob-git-dev/local-sdlc-agent">nob-git-dev/local-sdlc-agent</a></td></tr>
+                  <tr><th>Commit</th><td><code>66850426a1bed049d78027512a0ae17a1d96bcf8</code></td></tr>
+                  <tr><th>Commit date</th><td>2026-07-23 15:38:05 +09:00</td></tr>
+                  <tr><th>Report date</th><td>2026-07-24 / Asia/Tokyo</td></tr>
+                  <tr><th>Package</th><td><code>local-sdlc-agent 0.1.0</code> / Python <code>&gt;=3.10</code> を宣言</td></tr>
+                  <tr><th>License</th><td>コードは PolyForm Noncommercial、文書・Promptは CC BY-NC-SA 4.0</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h3>重要な現状注記</h3>
+            <p><span class="badge limit">検証結果</span></p>
+            <p>Python 3.13 では324テスト中 <strong>321 pass / 1 fail / 1 error / 1 skip</strong>。2件はmacOSの <code>/var</code> と <code>/private/var</code> の正規化差に起因します。</p>
+            <p>Python 3.11 では <code>agent_runner.py:1701</code> のf-string構文がimport時に失敗します。宣言上の <code>&gt;=3.10</code> と現行実装に互換性のずれがあります。</p>
+            <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/pyproject.toml" target="_blank" rel="noreferrer">pyproject.toml</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="architecture" data-search-section>
+        <div class="section-head">
+          <div class="section-no">02 / ARCHITECTURE</div>
+          <div>
+            <h2>全体アーキテクチャ</h2>
+            <p class="section-kicker">制御面、生成面、検証面、証跡面を分けると、15,000行超のコードが一つのパイプラインとして見えてきます。</p>
+          </div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">システムコンテキスト <span>FIG 2.1 / control &amp; evidence flow</span></div>
+          <pre class="mermaid">
+flowchart LR
+  U["利用者"]:::human
+  W["Web UI<br/>127.0.0.1:8765"]:::edge
+  CLI["CLI<br/>14 commands"]:::edge
+  SPEC[("SPEC.md")]:::doc
+  ROUTE["Routing / Stage Queue<br/>決定論的ルール"]:::control
+  PROMPT["Prompt Builder<br/>System + Role + Skill + Docs"]:::prompt
+  LLM["OpenAI互換<br/>Local LLM API"]:::model
+  GUARD["Stream Guard<br/>Artifact Parser / Lint"]:::guard
+  APPLY["Transactional Apply<br/>snapshot → edit → rollback"]:::control
+  VERIFY["Verification<br/>commands / smoke / probes"]:::verify
+  JUDGE["Judge<br/>evidence-only verdict"]:::prompt
+  RUN[(".sdlc-runner/runs/<br/>documents + run.json")]:::doc
+
+  U --> W --> CLI
+  U --> CLI
+  SPEC --> ROUTE
+  CLI --> ROUTE --> PROMPT
+  SPEC --> PROMPT
+  RUN -. prior documents .-> PROMPT
+  PROMPT -->|POST /chat/completions| LLM
+  LLM -->|stream / content| GUARD
+  GUARD -->|valid artifact| APPLY
+  GUARD -->|typed failure| PROMPT
+  APPLY --> VERIFY
+  VERIFY --> JUDGE
+  JUDGE -->|PASS| RUN
+  JUDGE -->|FAIL + evidence| PROMPT
+  VERIFY --> RUN
+  APPLY --> RUN
+
+  classDef human fill:#f9e6d9,stroke:#dd6b2c,color:#162027;
+  classDef edge fill:#d9f0ef,stroke:#0b8793,color:#162027;
+  classDef control fill:#e7edf0,stroke:#123d52,color:#162027;
+  classDef prompt fill:#e9e2f5,stroke:#6d52a1,color:#162027;
+  classDef model fill:#fff0c7,stroke:#c79222,color:#162027;
+  classDef guard fill:#f9dfe0,stroke:#b9383a,color:#162027;
+  classDef verify fill:#dcefe5,stroke:#287a56,color:#162027;
+  classDef doc fill:#fffefa,stroke:#617079,color:#162027;
+          </pre>
+        </div>
+
+        <div class="grid three">
+          <article class="card searchable-card">
+            <span class="badge impl">制御面</span>
+            <h3>Pythonが決める</h3>
+            <p>CLI引数、対象パス、予算、危険コマンド、Stage順序、失敗分類、再試行先、最終条件はランナー側が保持します。LLMに制御権を丸投げしません。</p>
+          </article>
+          <article class="card searchable-card">
+            <span class="badge prompt">生成面</span>
+            <h3>LLMは役割ごとに呼ぶ</h3>
+            <p>PM、Coder、Judge、Failure Analysis、Patch Plannerなどを独立API呼び出しに分けます。各呼び出しには見えている文書だけを再注入します。</p>
+          </article>
+          <article class="card searchable-card">
+            <span class="badge impl">証拠面</span>
+            <h3>ファイルに残す</h3>
+            <p>ルート、PM文書、Coder出力、適用結果、テスト、意味プローブ、Judge判定、partial/final manifestをRunディレクトリに連番で記録します。</p>
+          </article>
+        </div>
+
+        <h3>パッケージ境界</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>層</th><th>主要モジュール</th><th>責務</th><th>依存の向き</th></tr></thead>
+            <tbody>
+              <tr><td><span class="badge infra">入口</span></td><td><code>cli.py</code>, <code>web_server.py</code>, <code>web_jobs.py</code></td><td>引数/APIを正規化し、用途別runnerへ委譲</td><td>Applicationへ</td></tr>
+              <tr><td><span class="badge impl">Application</span></td><td><code>agent_runner.py</code>, <code>stage_runner.py</code>, <code>supervisor_runner.py</code>, <code>phase_runner.py</code></td><td>ユースケースと状態遷移を編成</td><td>Domain + Infrastructureへ</td></tr>
+              <tr><td><span class="badge rule">Domain / Control</span></td><td><code>routing.py</code>, <code>stages.py</code>, <code>artifacts.py</code>, <code>models.py</code></td><td>ルート、Stage、Artifact、失敗型、データ契約</td><td>標準ライブラリ中心</td></tr>
+              <tr><td><span class="badge infra">Infrastructure</span></td><td><code>llm_client.py</code>, <code>verification.py</code>, <code>workspace.py</code>, <code>run_state.py</code></td><td>HTTP、プロセス、ファイル文脈、Run永続化</td><td>OS / Local LLMへ</td></tr>
+              <tr><td><span class="badge prompt">Prompt assets</span></td><td><code>sdlc-skills/skills/</code>, <code>sdlc-skills/agents/</code></td><td>12専門Skillと4 Agent定義</td><td>Prompt Builderが本文を埋め込む</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout">
+          依存方向は厳密なClean Architectureではありません。特に巨大な <code>artifacts.py</code> と
+          <code>agent_runner.py</code> が多くの規則を集約しています。ただし「LLM出力よりPython制御を上位に置く」
+          という境界は一貫しています。
+        </div>
+      </section>
+
+      <section id="modes" data-search-section>
+        <div class="section-head">
+          <div class="section-no">03 / EXECUTION MODES</div>
+          <div>
+            <h2>似ている4系統を区別する</h2>
+            <p class="section-kicker">このリポジトリを誤読しやすい最大の地点です。「文書を作る実行」と「コードを適用・検証する実行」は別物です。</p>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>入口</th><th>主目的</th><th>LLM呼び出し</th><th>コード適用</th><th>テスト</th><th>向いている用途</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>supervisor</code></td>
+                <td>タスク分類とSkill順序の決定</td>
+                <td>Supervisor + <code>--execute</code>時の各Skill</td>
+                <td><strong>しない</strong></td>
+                <td>Skill文書上の提案まで</td>
+                <td>計画・設計・レビュー文書を作る</td>
+              </tr>
+              <tr>
+                <td><code>supervise</code></td>
+                <td>旧式のPM → Coder → Judge文書交換</td>
+                <td>選択したStepごと</td>
+                <td><strong>しない</strong></td>
+                <td>自動適用ループなし</td>
+                <td>役割分離Promptの確認・文書生成</td>
+              </tr>
+              <tr>
+                <td><code>agent</code></td>
+                <td>単一作業単位の実装・修復・判定</td>
+                <td>PM / DDD / Coder / Repair / Judge</td>
+                <td><strong>する</strong></td>
+                <td>コマンド・Smoke・意味Probe</td>
+                <td>実際にコードを変更したい</td>
+              </tr>
+              <tr>
+                <td><code>run-stages</code></td>
+                <td>仕様を複数Stageに分け、統合まで実行</td>
+                <td>Stageごとに独立Agent run</td>
+                <td><strong>する</strong></td>
+                <td>Stage gate + final gate</td>
+                <td>SQLite/Redis/HTML系の段階構築</td>
+              </tr>
+              <tr>
+                <td><code>web</code></td>
+                <td>上記のローカルGUIラッパー</td>
+                <td>選択コマンドに従う</td>
+                <td>選択コマンドに従う</td>
+                <td>選択コマンドに従う</td>
+                <td>CLI引数を安全なargvとして組み立てる</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout warn">
+          <strong>最重要:</strong> <code>supervisor --execute</code> は各Skillを実行しますが、その出力を
+          <code>agent</code> のapply/testループへ自動配線しません。実ファイル変更が目的なら
+          <code>agent</code> または <code>run-stages</code> が入口です。
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <span class="mini-label">ENTRYPOINT</span>
+            <h3>起動経路</h3>
+            <div class="codebox">
+              <div class="code-head"><span>shell</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code># console script
+local-sdlc-agent agent --project . --brief "..."
+
+# module
+python -m local_sdlc agent --project . --brief "..."
+
+# repository wrapper
+python local_sdlc.py agent --project . --brief "..."</code></pre>
+            </div>
+            <p class="small muted"><code>local_sdlc.py</code> と <code>__main__.py</code> はどちらも <code>local_sdlc.cli.main</code> に収束します。</p>
+          </article>
+          <article class="card">
+            <span class="mini-label">DESIGN CHOICE</span>
+            <h3>モノリスではなく“独立Runの束”</h3>
+            <p>Stage実行は1つの巨大な会話を続けるのではなく、Stageごとに新しい <code>agent</code> 引数を作ります。前Stageの結果は要約文書として渡され、隠れた会話履歴には依存しません。</p>
+            <p><span class="badge impl">監査性</span> <span class="badge impl">再開性</span> <span class="badge rule">決定論的順序</span></p>
+          </article>
+        </div>
+      </section>
+
+      <section id="routing" data-search-section>
+        <div class="section-head">
+          <div class="section-no">04 / ROUTING</div>
+          <div>
+            <h2>Supervisorのルーティング</h2>
+            <p class="section-kicker">最初の分類はLLM任せではなく、文字列ルールで再現可能に作られています。その後にSupervisor LLMが文書化します。</p>
+          </div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">タスク分類と強制フェーズ <span>FIG 4.1 / routing.py</span></div>
+          <pre class="mermaid">
+flowchart TD
+  A["brief + SPEC.md"] --> D{"危険信号?"}
+  D -->|不可逆| H1["人間確認<br/>securityを追加"]
+  D -->|production| H2["security + deploy"]
+  D -->|database| H3["architect + security"]
+  D -->|security| H4["security"]
+  D -->|ambiguous| H5["specを先頭へ<br/>executeは既定で拒否"]
+  D -->|なし| C{"タスク種別"}
+
+  H1 --> C
+  H2 --> C
+  H3 --> C
+  H4 --> C
+  H5 --> C
+
+  C -->|question| Q["phaseなし"]
+  C -->|UI| UI["ui → review<br/>game等は tdd を前置"]
+  C -->|bugfix| B["tdd → review"]
+  C -->|refactor| R["tdd → refactor → review"]
+  C -->|infrastructure| I["architect → security<br/>→ deploy → observe"]
+  C -->|incident| S["sre → observe → review"]
+  C -->|new/development| N["architect → tdd → review"]
+
+  Q --> M{"SPEC不足?"}
+  UI --> M
+  B --> M
+  R --> M
+  I --> M
+  S --> M
+  N --> M
+  M -->|yes| SP["specを前置"]
+  M -->|no| DM{"domain-rich?"}
+  SP --> DM
+  DM -->|yes| DDD["spec直後に ddd"]
+  DM -->|no| OUT["SupervisorRoute"]
+  DDD --> OUT
+          </pre>
+        </div>
+
+        <div class="grid two">
+          <div class="card">
+            <h3>分類の優先順</h3>
+            <ol>
+              <li><strong>UI</strong> — 画面、デザイン、HTML、Canvas等を先に検査</li>
+              <li><strong>bugfix</strong> — 直す、エラー、壊れた</li>
+              <li><strong>refactor</strong> — 整理、構造改善</li>
+              <li><strong>infrastructure</strong> — deploy、環境、設定</li>
+              <li><strong>incident</strong> — 障害、停止、alert</li>
+              <li><strong>new_feature</strong> — 追加、作る、実装</li>
+              <li><strong>question</strong> / fallback <strong>development</strong></li>
+            </ol>
+            <p class="small muted">UIを最初に見るため、「HTMLゲームを作る」は単なるnew featureではなくUIルートになります。</p>
+          </div>
+          <div class="card">
+            <h3>ルートはデータ構造になる</h3>
+            <p><code>SupervisorRoute</code> は、タスク種別、危険信号、推奨フェーズ、理由を保持します。<code>route_document()</code> が人間と後続Agentに読めるMarkdownへ変換します。</p>
+            <div class="codebox">
+              <div class="code-head"><span>conceptual route document</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>【タスク分類】bugfix
+【危険信号】security
+【推奨フロー】spec → ddd → tdd → review → security
+【理由】仕様不足、ドメイン境界あり、認証語を検出</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout">
+          ルーティングは高速で監査しやすい一方、自然言語理解としては限定的です。
+          <code>classify_task_type()</code> と <code>detect_danger_signals()</code> は語彙ベースであり、
+          文脈に応じた高度な危険度評価ではありません。
+          <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/routing.py#L29" target="_blank" rel="noreferrer">routing.py</a>
+        </div>
+      </section>
+
+      <section id="agent-loop" data-search-section>
+        <div class="section-head">
+          <div class="section-no">05 / AGENT LOOP</div>
+          <div>
+            <h2>本体：実装・修復ループ</h2>
+            <p class="section-kicker"><code>command_agent()</code> は3,000行超のオーケストレーターです。正常系より、壊れたLLM出力をどう狭めて回復するかに多くの実装があります。</p>
+          </div>
+        </div>
+
+        <div class="pipeline" aria-label="Agent処理の7段階">
+          <div class="pipe-step"><span class="step-no">01</span><b>契約確定</b><small>SPEC / writable / readonly / budget</small></div>
+          <div class="pipe-step"><span class="step-no">02</span><b>事前検証</b><small>既に合格なら編集せず終了</small></div>
+          <div class="pipe-step"><span class="step-no">03</span><b>PM / DDD</b><small>許可範囲と意味契約を文書化</small></div>
+          <div class="pipe-step"><span class="step-no">04</span><b>Coder</b><small>正確な本文から最小Artifact生成</small></div>
+          <div class="pipe-step"><span class="step-no">05</span><b>Guard / Apply</b><small>検査・snapshot・原子的適用</small></div>
+          <div class="pipe-step"><span class="step-no">06</span><b>Verify</b><small>command / smoke / semantic probes</small></div>
+          <div class="pipe-step"><span class="step-no">07</span><b>Judge / Repair</b><small>承認または型付き再試行</small></div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">1 Roundのシーケンス <span>FIG 5.1 / agent_runner.py</span></div>
+          <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor User as 利用者
+  participant Runner as Agent Runner
+  participant PM as PM / DDD LLM
+  participant Coder as Coder LLM
+  participant Guard as Stream + Artifact Guard
+  participant FS as Project Files
+  participant Check as Verification
+  participant Judge as Judge LLM
+
+  User->>Runner: brief, SPEC, include/new/context, tests
+  Runner->>Check: 初期precheck
+  alt すでに全条件PASS
+    Check-->>Runner: sufficient evidence
+    Runner-->>User: approved_without_edit
+  else 変更が必要
+    Runner->>PM: 可視文書 + 制約
+    PM-->>Runner: PM control / Domain contract
+    Runner->>Coder: exact file context + failure history + output contract
+    Coder-->>Guard: streamed artifact
+    alt protocol/path/scope violation
+      Guard-->>Runner: typed failure + safe partial salvage
+      Runner->>Coder: narrowed repair instruction
+    else valid artifact
+      Guard-->>Runner: parsed operations
+      Runner->>FS: snapshot → transaction apply
+      Runner->>Check: tests + smoke + mechanical probes
+      Check-->>Runner: observable evidence
+      Runner->>Judge: SPEC + docs + artifact + evidence
+      alt command_ok AND Judge approval
+        Judge-->>Runner: 判定: 承認
+        Runner-->>User: run.json / changed paths
+      else failure
+        Judge-->>Runner: 判定: 修正依頼
+        Runner->>Runner: signature / score / transition / budget
+      end
+    end
+  end
+          </pre>
+        </div>
+
+        <h3>失敗は“同じ再プロンプト”にしない</h3>
+        <div class="diagram">
+          <div class="diagram-title">修復状態機械 <span>FIG 5.2 / failure transition</span></div>
+          <pre class="mermaid">
+stateDiagram-v2
+  [*] --> Generate
+  Generate --> FormatRepair: JSON/marker/説明文/混在
+  Generate --> FunctionalRepair: test・smoke・acceptance失敗
+  Generate --> RootCauseAnalysis: 同じfailure signatureが反復
+  FormatRepair --> Generate: protocol budget
+  FunctionalRepair --> Generate: functional budget
+  FunctionalRepair --> PatchPlanner: 意味契約・対象が不明確
+  PatchPlanner --> RootCausePatch: PATCH_PLAN確定
+  RootCauseAnalysis --> PolicyTriage: project/test/harness所有が曖昧
+  PolicyTriage --> RootCausePatch: 編集可能範囲を確定
+  RootCausePatch --> Generate: root-cause budget
+  Generate --> Approved: command_ok ∧ judge_approved
+  Generate --> Failed: 予算枯渇 / blocking constraint
+  Approved --> [*]
+  Failed --> [*]
+          </pre>
+        </div>
+
+        <div class="grid three">
+          <article class="card">
+            <span class="badge rule">Functional budget</span>
+            <h3>既定 3 rounds</h3>
+            <p>テストや意味要件の失敗に使う本体予算。単なるJSON崩れで消費しないよう分離されています。</p>
+          </article>
+          <article class="card">
+            <span class="badge rule">Protocol + adaptive</span>
+            <h3>1 + 2 rounds</h3>
+            <p>既定Agentではprotocol修復1、failure scoreが縮む・新種の失敗へ進む場合のadaptive修復2。</p>
+          </article>
+          <article class="card">
+            <span class="badge rule">Root-cause</span>
+            <h3>既定 1 round</h3>
+            <p>同じfailure signatureの反復後だけ解放。Stage実行ではprotocol/root-causeの既定値が2に増えます。</p>
+          </article>
+        </div>
+
+        <h3>Round内の重要ルーチン</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>局面</th><th>主な処理</th><th>設計上の意味</th></tr></thead>
+            <tbody>
+              <tr><td>開始</td><td><code>artifact_path_policy()</code>, <code>collect_file_context()</code>, <code>python_public_symbol_ledger()</code></td><td>書ける場所と、LLMが実際に見たコードを固定</td></tr>
+              <tr><td>生成前</td><td>前Round文書、semantic contracts、repair advice、failure signatureを圧縮</td><td>“忘れた会話”ではなく可視履歴を次入力にする</td></tr>
+              <tr><td>生成中</td><td><code>artifact_stream_guard()</code></td><td>応答完了まで待たず、壊れ方が証明できた時点で中止</td></tr>
+              <tr><td>適用</td><td><code>snapshot_artifact_targets()</code> → parse → apply → rollback</td><td>複数Artifactの途中失敗で半端な編集を残さない</td></tr>
+              <tr><td>検証</td><td>command、required paths、HTML/Redis smoke、mechanical probes</td><td>LLMの自己申告ではなく観測可能な結果へ変換</td></tr>
+              <tr><td>修復</td><td>exact/family signature、failure analysis、patch plan、policy triage</td><td>同じ局所修正の無限反復を避け、対象・原因・所有を再定義</td></tr>
+              <tr><td>終了</td><td><code>run.partial.json</code> → <code>run.json</code></td><td>中断可能なcheckpointと最終truthを分離</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout good">
+          <strong>よい設計点:</strong> 初期precheckが通る場合にCoderを呼ばないこと。Agentの目的を「必ず差分を作る」ではなく
+          「要件を満たした状態と十分な証拠を得る」と定義しています。
+        </div>
+      </section>
+
+      <section id="stages" data-search-section>
+        <div class="section-head">
+          <div class="section-no">06 / STAGED EXECUTION</div>
+          <div>
+            <h2>Stage分割とS99統合修復</h2>
+            <p class="section-kicker">大きな仕様を小さな書き込み範囲へ分け、各Stageを独立Agent runとして完結させます。ただしStage生成は汎用Plannerではなく固定テンプレートです。</p>
+          </div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">run-stages の制御 <span>FIG 6.1 / stage_runner.py + stages.py</span></div>
+          <pre class="mermaid">
+flowchart LR
+  SPEC[("SPEC.md")] --> SYN{"synthesize_stage_queue"}
+  SYN -->|SQLite語彙| SQ["9-stage template"]
+  SYN -->|Redis語彙| RQ["5-stage template"]
+  SYN -->|HTML/browser語彙| HQ["3-stage template"]
+  SYN -->|fallback| FQ["3-stage generic"]
+  SQ --> Q["Stage queue"]
+  RQ --> Q
+  HQ --> Q
+  FQ --> Q
+  Q --> S1["S01 Agent run"]
+  S1 --> G1{"Stage gate"}
+  G1 -->|PASS| S2["S02 ..."]
+  G1 -->|FAIL| STOP["停止 + failure manifest"]
+  S2 --> SN["Snn Agent run"]
+  SN --> FG{"Final acceptance<br/>required paths + tests"}
+  FG -->|PASS| DONE["final_verdict = approved"]
+  FG -->|FAIL + repair可| S99["S99 integration repair"]
+  S99 --> FG2{"Final gate再実行"}
+  FG2 -->|PASS| DONE
+  FG2 -->|FAIL| STOP
+          </pre>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <h3>Stageごとに隔離されるもの</h3>
+            <ul>
+              <li>書込み対象とreadonly context</li>
+              <li>必要ファイルと自動テストコマンド</li>
+              <li>AgentのRunディレクトリ</li>
+              <li>Round予算と失敗証跡</li>
+              <li>完了済みStageの短いsummary</li>
+            </ul>
+            <p>これにより、後半Stageが前半のテストや契約を無制限に書き換えるのを抑制します。</p>
+          </article>
+          <article class="card">
+            <h3>テンプレートという制約</h3>
+            <p><code>synthesize_stage_queue()</code> はSPECを任意の依存グラフへ変換するLLM Plannerではありません。現状はSQLite 9段、Redis 5段、HTML/browser 3段、fallback 3段の語彙分岐です。</p>
+            <p><span class="badge rule">予測可能</span> <span class="badge limit">対象領域依存</span></p>
+            <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/stages.py#L43" target="_blank" rel="noreferrer">synthesize_stage_queue()</a>
+          </article>
+        </div>
+
+        <h3>受入Matrix</h3>
+        <p><code>build_acceptance_matrix()</code> はSPECの箇条書きをRequirement IDへ変換し、各証拠項目がどの要件を覆うかを関連付けます。最終判定は「Stageが通った」だけでなく、未被覆の必須要件がないかを確認します。</p>
+        <div class="codebox">
+          <div class="code-head"><span>conceptual acceptance matrix</span><button class="copy-btn" type="button">COPY</button></div>
+          <pre><code>[
+  {
+    "requirement_id": "R03",
+    "text": "再起動後もデータが復元される",
+    "truth_condition": "保存→終了→再起動→同一値",
+    "evidence": ["python_cli_state_probe", "integration test"],
+    "status": "covered"
+  }
+]</code></pre>
+        </div>
+      </section>
+
+      <section id="web" data-search-section>
+        <div class="section-head">
+          <div class="section-no">07 / LOCAL WEB UI</div>
+          <div>
+            <h2>Web UIは薄い安全ラッパー</h2>
+            <p class="section-kicker">フロントでAgentを再実装せず、標準ライブラリのHTTPサーバーから既存CLIを子プロセスとして起動します。</p>
+          </div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">Web jobライフサイクル <span>FIG 7.1 / web_server.py + web_jobs.py</span></div>
+          <pre class="mermaid">
+sequenceDiagram
+  actor B as Browser
+  participant H as ThreadingHTTPServer
+  participant R as JobRegistry
+  participant P as CLI child process
+  participant D as .sdlc-runner/web/jobs
+
+  B->>H: POST /api/jobs {command, options}
+  H->>R: build_cli_command(payload)
+  R->>R: argv listを構築（shellなし）
+  R->>D: job.json + output.log
+  R->>P: Popen(process group)
+  H-->>B: 202 + job id
+  loop polling
+    B->>H: GET /api/jobs/:id
+    H->>R: snapshot()
+    R-->>B: status + last output lines
+  end
+  opt user stop
+    B->>H: POST /api/jobs/:id/stop
+    H->>R: terminate process group
+  end
+  P-->>R: exit code
+  R->>D: final job.json
+          </pre>
+        </div>
+
+        <div class="grid three">
+          <article class="card searchable-card">
+            <span class="mini-label">SERVER</span>
+            <h3>stdlib only</h3>
+            <p><code>ThreadingHTTPServer</code> + <code>BaseHTTPRequestHandler</code>。既定は <code>127.0.0.1:8765</code>、request body上限は1 MiBです。</p>
+          </article>
+          <article class="card searchable-card">
+            <span class="mini-label">COMMAND</span>
+            <h3>shellを使わない</h3>
+            <p>payloadから許可済みコマンドのargv listを構築。UIから実行できるのは <code>agent</code>, <code>run-stages</code>, <code>spec</code>, <code>doctor</code>, <code>health</code>。</p>
+          </article>
+          <article class="card searchable-card">
+            <span class="mini-label">JOB STATE</span>
+            <h3>ログはディスクへ</h3>
+            <p>各Jobに <code>job.json</code> と <code>output.log</code>。メモリ表示は最大4,000行ですが、サーバー再起動後に既存Jobをregistryへ再ロードはしません。</p>
+          </article>
+        </div>
+
+        <div class="callout danger">
+          認証機構はありません。loopback利用を想定したローカル管理UIです。<code>0.0.0.0</code> などへ公開する設計ではなく、
+          公開するなら認証・CSRF・project root制限・Job再読込・秘密情報マスキングが別途必要です。
+        </div>
+      </section>
+
+      <section id="prompts" data-search-section>
+        <div class="section-head">
+          <div class="section-no">08 / ACTUAL PROMPTS</div>
+          <div>
+            <h2>実際に組み立てるプロンプト</h2>
+            <p class="section-kicker">以下はコード内の英語Promptを、構造と制約を保ったまま日本語で具体化したものです。単なる要約ではなく、各API呼び出しに何が入るかを示します。</p>
+          </div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">Prompt stack <span>FIG 8.1 / skills.py</span></div>
+          <pre class="mermaid">
+flowchart TB
+  subgraph SYSTEM["system message"]
+    S0["共通SDLC規律"]
+    S1["形式推論契約<br/>P/C/G/E/A/V/D/R/O"]
+    S2["API呼び出し隔離契約"]
+    S3["Agent level契約<br/>supervisor / pm / coder / judge"]
+    S4["Skill metadata + SKILL.md全文"]
+    S0 --> S1 --> S2 --> S3 --> S4
+  end
+  subgraph USER["user message"]
+    U0["文書交換契約"]
+    U1["現在日時・日付・timezone"]
+    U2["SPEC.md全文"]
+    U3["先行Agent文書"]
+    U4["Project manifest"]
+    U5["含めたファイルの正確な本文"]
+    U6["今回のinstruction"]
+    U7["命題・Graph・出力契約"]
+    U0 --> U1 --> U2 --> U3 --> U4 --> U5 --> U6 --> U7
+  end
+  SYSTEM --> M["messages = [{role:system}, {role:user}]"]
+  USER --> M
+  M --> API["LocalLLMClient.complete()"]
+          </pre>
+        </div>
+
+        <div class="callout">
+          <strong>翻訳方針:</strong> 原文の識別子、JSON field、Artifact marker、判定開始語は実装契約なので変更せず、
+          説明文だけ日本語化しています。実際のランナーは <code>skills.py</code> 内の英語共通Promptと、
+          日本語中心の <code>SKILL.md</code> を連結します。
+        </div>
+
+        <div class="tabs" data-tabs>
+          <div class="tab-list" role="tablist" aria-label="Prompt種別">
+            <button class="tab-button" type="button" role="tab" aria-selected="true" data-tab="common">共通System</button>
+            <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab="documents">User文書</button>
+            <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab="pm">PM</button>
+            <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab="coder">Coder</button>
+            <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab="judge">Judge</button>
+            <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab="repair">修復系</button>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" data-panel="common" data-print-title="共通System Prompt">
+            <h3>共通System Prompt — 日本語再現</h3>
+            <div class="codebox">
+              <div class="code-head"><span>system / every skill call</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>あなたは Claude Code の外で動く、ローカルSDLC開発Agentである。
+元のSDLC規律を守ること。
+
+- SPEC.md を一次情報として扱う。
+- 固定要件を黙って変更しない。
+- 日付、コマンド結果、テスト結果、ファイル内容、環境の事実を捏造しない。
+  与えられたruntime factsと文書だけを使う。
+- 具体的なコマンドと検証可能な受入条件を優先する。
+- 破壊的または本番影響のある操作は進めず、人間の承認を求める。
+- patchを求められた場合はunified diffだけを返す。
+
+## 形式推論契約
+Pn = 与えられた前提
+Cn = 破ってはいけない制約
+Gn = 望ましい状態・目標
+En = コマンド、ファイル事実、smoke checkによる証拠
+An = P/C/G/Eから導出したActionまたはArtifact
+Vn = 証拠に裏付けられた PASS / FAIL / UNKNOWN
+Dn = 用語、Invariant、状態規則、集約・Context境界
+Rn = 要件を真にするtruth condition
+On = Rnを観測する具体的check
+
+O = F(role, system_prompt, D, I)
+Dは画面上で与えられた文書集合、Iは今回のinstruction。
+隠れたmemoryはDに含まれず、証拠ではない。
+
+重要edge:
+supports(X,Y), constrains(C,A), satisfies(A,G), verifies(E,V),
+blocks(C,A), defines(D,R),
+observes(O,R,relation=equivalent|sufficient|necessary|proxy)
+
+可視の導出
+  P* and C* and G* and E* |- A or V
+が存在するときだけActionまたはVerdictを出す。
+存在しなければ UNKNOWN または MISSING_CONTEXT。
+
+proxy/static/heuristicが失敗しても、より強いruntime/equivalent観測が
+成功していれば直ちにproduct failureとはしない。
+spec / harness / supervisor mismatchを疑い、強い証拠を保持する。</code></pre>
+            </div>
+            <p class="small muted">原文: <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/skills.py#L66" target="_blank" rel="noreferrer">system_message() / formal_reasoning_contract()</a></p>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" data-panel="documents" data-print-title="User Document Exchange Prompt" hidden>
+            <h3>User message — 文書交換テンプレート</h3>
+            <div class="codebox">
+              <div class="code-head"><span>user / document_exchange_prompt()</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>## 文書交換契約
+過去のAgent出力は共有memoryではなく、文書として扱う。
+SPEC.mdまたは下記文書に必要な事実がなければ、その旨を述べる。
+別API呼び出しの隠れたcontextに依存しない。
+
+## Runtime facts
+- Current local datetime: {ISO 8601}
+- Current local date: {YYYY-MM-DD}
+- Local timezone: {timezone}
+
+## SPEC.md
+{spec全文 / 未存在ならその明示}
+
+## Prior agent documents
+### {document title}
+{PM文書、Domain contract、前Roundの失敗・証拠・判定...}
+
+## Project manifest
+{ファイル名一覧。コード本文ではない}
+
+## Included file contents
+{許可されたファイルの正確な本文とline slice}
+
+## Current instruction
+{今回の役割専用instruction}
+
+## Proposition discipline
+短い P/C/G/E/A/V/D/R/O を定義。隠れたmemoryから作らない。
+
+## Graph discipline
+重要な supports / constrains / satisfies / verifies / blocks /
+defines / observes edgeを記載。
+Artifact-only契約ではGraphを内部利用し、説明文は出力しない。
+
+## Output contract
+{Markdown / JSON schema / BEGIN_SEARCH_REPLACE / unified diff 等}</code></pre>
+            </div>
+            <p>ここで重要なのは、<strong>Project manifestはコード文脈ではない</strong>とCoder契約が明言している点です。ファイルを読んだと主張できるのは、本文がこのセクションに含まれた場合だけです。</p>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" data-panel="pm" data-print-title="PM Prompt" hidden>
+            <h3>PM-level controller instruction</h3>
+            <div class="codebox">
+              <div class="code-head"><span>pm / call_function=plan_work</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>このcoding-agent runのPM-level controllerとして行動せよ。
+
+Request:
+{args.brief}
+
+CoderとJudgeのためのコンパクトなcontrol documentを作成せよ。
+必ず含めるもの:
+- 短い P/C/G/E/A/V を持つ Proposition Ledger
+- supports / constrains / satisfies / verifies / blocks の Graph Edges
+- intended outcome
+- fixed requirements
+- 変更してよいファイル
+- acceptance checks
+- hallucination traps
+
+実装コードを書いてはならない。</code></pre>
+            </div>
+            <h4>PM role invariant</h4>
+            <div class="codebox">
+              <div class="code-head"><span>system role contract</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>plan_work(P, C, G) → acceptance criteria + authorized next actions
+
+テスト可能なgoalがない、またはfixed constraintを破るplanは無効。
+purpose、scope、architecture direction、risk、acceptance、次の検証可能なplanを明確化する。
+実装が必要なら、written documentを介してCoderへ渡す。</code></pre>
+            </div>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" data-panel="coder" data-print-title="Coder Prompt" hidden>
+            <h3>Coder Round instruction — 実際の構成</h3>
+            <div class="codebox">
+              <div class="code-head"><span>coder / generate_artifact or repair_artifact</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>あなたはこのrunのCoderである。
+
+Request: {brief}
+Round: {round_index}
+Failure type: {latest_failure_type or "initial"}
+Required next role: {transition.next_role}
+
+Writable existing files:
+{allowed_artifact_paths}
+
+Allowed new files:
+{new_files / safe extra files}
+
+Read-only context:
+{context_files + tests frozen as readonly}
+
+Tests / checks:
+{test_commands, required paths, smoke checks}
+
+Binding semantic contracts:
+{R_id, truth_condition, focus_paths, observation relation}
+
+Evidence reduction:
+- P: SPEC、PM、正確なファイル本文、コマンド結果だけを前提にする。
+- C: readonly、fixed requirements、test weakening禁止、stage scopeを守る。
+- G: 現在の失敗を満たす最小のproduct change。
+- E: 前Roundの具体的failure signatureとmechanical observations。
+- A: P/C/G/Eから導出できる最小Artifactだけ。
+
+出力規則:
+- 説明文、Markdown fence、将来計画、自己判定を出さない。
+- 指定されたArtifact protocolを1つだけ使う。
+- exact file contentsが不足するなら MISSING_CONTEXT を返す。
+- testsを書き換えてproduct failureを隠さない。
+- 関係ないファイルを変更しない。
+- 自分の作業をcompleteと判定しない。</code></pre>
+            </div>
+            <h4>通常Roundで許される代表形式</h4>
+            <div class="grid two">
+              <div class="codebox">
+                <div class="code-head"><span>JSON artifacts</span><button class="copy-btn" type="button">COPY</button></div>
+                <pre><code>{
+  "artifacts": [
+    {
+      "type": "search_replace",
+      "path": "src/app.py",
+      "search": "old exact text",
+      "replace": "new exact text"
+    }
+  ]
+}</code></pre>
+              </div>
+              <div class="codebox">
+                <div class="code-head"><span>atomic search/replace</span><button class="copy-btn" type="button">COPY</button></div>
+                <pre><code>BEGIN_SEARCH_REPLACE: src/app.py
+&lt;&lt;&lt;&lt;&lt;&lt;&lt; SEARCH
+old exact text
+=======
+new exact text
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; REPLACE
+END_SEARCH_REPLACE</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" data-panel="judge" data-print-title="Judge Prompt" hidden>
+            <h3>Judge review instruction</h3>
+            <div class="codebox">
+              <div class="code-head"><span>judge / call_function=judge_review</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>Coder出力は事実ではなく、claimとして扱え。
+SPEC.md、PM文書、含まれた正確なファイル本文、コマンド結果、
+smoke check、mechanical probeだけを証拠として評価せよ。
+
+出力は次のどちらかで開始:
+  判定: 承認
+  判定: 修正依頼
+
+続けて以下をMarkdownで返す:
+- Verdict
+- Proposition Ledger
+- Graph Edges
+- Findings
+- Required fixes
+- Evidence gaps
+
+PASSの条件:
+- 必須acceptance criterionごとに検証証拠がある。
+- blocking constraint violationがない。
+- Coderの自己申告だけを根拠にしない。
+- 参照するコードはincluded file contentsまたはcommand outputで確認可能。
+
+Judge自身はcodeを修正しない。</code></pre>
+            </div>
+            <div class="callout">
+              ランナー側の最終条件はJudge文字列だけではありません。
+              <code>judge_approved(text)</code> に加え、テスト・smoke等の <code>command_ok</code> が必要です。
+            </div>
+          </div>
+
+          <div class="tab-panel" role="tabpanel" data-panel="repair" data-print-title="Repair Prompts" hidden>
+            <h3>Failure Analysis — JSONだけを返す</h3>
+            <div class="codebox">
+              <div class="code-head"><span>judge skill / agent_level=judge / call_function=failure_analysis</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>{
+  "failure_id": "Sxx-Ryy-Fzz or short stable id",
+  "round": 2,
+  "failure_type": "現在のfailure type",
+  "failure_signature": "正規化されたsignature",
+  "observed_facts": [
+    "commandまたはMechanical Probeに基づく1〜6個の事実"
+  ],
+  "attempted_actions": [
+    {
+      "round": 1,
+      "action": "変更または失敗したもの",
+      "result": "same|improved|worse|unknown"
+    }
+  ],
+  "rejected_hypotheses": [
+    {
+      "hypothesis": "証拠で否定された正確な仮説",
+      "reason": "否定理由"
+    }
+  ],
+  "active_constraints": [
+    "次のroleが守る1〜5個の制約"
+  ],
+  "next_required_action": {
+    "role": "root_cause_analysis|format_repair|repair_artifact",
+    "goal": "一文",
+    "required_paths": ["次のpatchに必要なwritable product path"],
+    "readonly_paths": ["編集禁止のevidence/context path"],
+    "forbidden_paths": ["編集してはならないpath"],
+    "next_patch_type": "search_replace|unified_diff|missing_context",
+    "minimal_patch_goal": "次のpatchが行う最小のbehavior change",
+    "forbidden_focus": ["繰り返してはいけない仮説・編集"],
+    "required_focus": ["次に調べるfile/function/invariant"]
+  },
+  "formal_constraints": [
+    "same(F_i,F_t) &amp;&amp; applied(A_i) =&gt; reject(H_i)"
+  ]
+}</code></pre>
+            </div>
+
+            <h3>PATCH_PLAN — 実行Artifactの前段</h3>
+            <div class="codebox">
+              <div class="code-head"><span>judge skill / agent_level=judge / call_function=patch_planner</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>PATCH_PLAN
+- proposition: "If P, change A so C" 形式の一文
+- required_path: project-relativeなwritable product fileを1つ
+- readonly_paths: evidence pathをcomma区切り、または "(none)"
+- forbidden_paths: 編集禁止pathをcomma区切り
+- patch_type: search_replace|unified_diff|missing_context
+- minimal_patch_goal: 最小のbehavior changeを1つ
+- stop_rule: Artifact Writerが推測せず停止すべき条件</code></pre>
+            </div>
+
+            <h3>ROOT_CAUSE_REPORT と Project Policy Triage</h3>
+            <div class="grid two">
+              <div class="codebox">
+                <div class="code-head"><span>judge skill / root_cause_analysis</span><button class="copy-btn" type="button">COPY</button></div>
+                <pre><code>ROOT_CAUSE_REPORT
+- repeated_failure_signature: 1行
+- failing_observation: command evidenceに基づく1行
+- rejected_hypotheses:
+  - 既に失敗した、または不十分な編集を1〜3個
+- chosen_root_cause: failureを説明する具体的invariantまたはbranch
+- patch_target: writable product file 1つ + function/region 1つ
+- patch_rule: Coderが実装する命令文を1つ
+- stop_rule: 推測せず停止する条件を1文</code></pre>
+              </div>
+              <div class="codebox">
+                <div class="code-head"><span>judge skill / project_policy_triage / JSON</span><button class="copy-btn" type="button">COPY</button></div>
+                <pre><code>{
+  "trigger": "現在のtrigger",
+  "case_type": "artifact_format|test_harness|product_bug|
+    spec_conflict|insufficient_context|reject",
+  "confidence": "high|medium|low",
+  "project_policy_basis": [
+    "SPEC.mdまたは文書証拠のline"
+  ],
+  "safe_next_action": "format_repair|root_cause_analysis|
+    repair_artifact|edit_test_harness|reject|ask_user",
+  "editable_paths": ["project-relative path"],
+  "readonly_paths": ["evidence-only path"],
+  "forbidden_actions": ["次roleがしてはならないaction"],
+  "rationale": "簡潔な一文"
+}</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <h3>DDD Domain Contract Prompt</h3>
+        <details>
+          <summary>実際に要求する出力項目を開く</summary>
+          <div class="details-body">
+            <p>ドメインモデリングが必要と判定されたとき、Coderの前にDDD SkillをPMレベルで呼び、次の文書を要求します。</p>
+            <div class="codebox">
+              <div class="code-head"><span>ddd / domain contract output</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code># Domain Contract
+
+## Ubiquitous Language
+- Term / Japanese name / precise definition / forbidden synonyms / code mapping
+
+## Bounded Contexts
+- Context name / responsibility / owned concepts / inbound-outbound relation
+
+## Domain Model
+- Aggregate roots / entities / value objects / lifecycle / state transitions
+
+## Domain Invariants
+- D1, D2...: 常に維持される規則
+
+## Verification Proposition Contract
+- R_id
+- requirement truth condition
+- Check_id
+- relation: equivalent | sufficient | necessary | proxy
+- concrete observation
+- fail_owner: product | harness | spec | supervisor
+
+## Precedence Rules
+- runtime/equivalent evidenceはproxy/static evidenceより強い
+- 強いPASSと弱いFAILが衝突したらproductを直す前にcontract mismatchを分類
+
+## Handoff
+- Coderが変更してよいモデル境界
+- Judgeが確認すべき観測
+- unresolved unknowns / MISSING_CONTEXT</code></pre>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section id="skills" data-search-section>
+        <div class="section-head">
+          <div class="section-no">09 / SKILL ASSETS</div>
+          <div>
+            <h2>12のSDLC Skillと4 Agent資産</h2>
+            <p class="section-kicker">Skill本文はSystem Promptへそのまま埋め込まれます。つまり単なる参考文書ではなく、各API呼び出しの行動規範です。</p>
+          </div>
+        </div>
+
+        <div class="grid three">
+          <article class="card searchable-card"><span class="badge prompt">spec</span><h3>仕様を固定する</h3><p>目的、振る舞い、受入条件、out-of-scope、固定要件、システム制約を明文化。不明を勝手に埋めません。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">architect</span><h3>構造と品質属性</h3><p>コンポーネント境界、依存、データフロー、トレードオフ、変更容易性を設計します。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">ddd</span><h3>言葉とInvariant</h3><p>ユビキタス言語、Bounded Context、Aggregate、状態遷移、検証命題を固定します。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">tdd</span><h3>Red → Green → Refactor</h3><p>失敗を再現し、最小実装を作り、テストを弱めず、反復時はroot causeへ移ります。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">ui</span><h3>UI/UX品質</h3><p>ユーザーフロー、状態、アクセシビリティ、responsive、視覚階層、interactionを扱います。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">review</span><h3>6観点レビュー</h3><p>正確性、Security、Performance、可読性、一貫性、TestをMust/Should/Nitで評価します。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">security</span><h3>脅威と境界</h3><p>資産、攻撃面、認証・認可、入力、秘密、依存、ログ、最小権限を点検します。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">deploy</span><h3>安全なRelease</h3><p>precheck、段階配布、health、停止基準、rollback triggerと具体手順を要求します。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">sre</span><h3>障害対応</h3><p>影響、timeline、仮説、mitigation、復旧、再発防止を分け、破壊操作を抑止します。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">observe</span><h3>観測可能性</h3><p>SLI/SLO、metrics、logs、traces、alert、dashboardと検証方法を設計します。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">refactor</span><h3>振る舞い保存</h3><p>テストで外部振る舞いを固定し、小さな変換と各stepの検証を重視します。</p></article>
+          <article class="card searchable-card"><span class="badge prompt">sdlc</span><h3>全体の品質Gate</h3><p>SPECを唯一の真実として専門Skillを順番に編成。自身は実装せず、各Gateを管理します。</p></article>
+        </div>
+
+        <h3>Agent prompt資産</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Asset</th><th>宣言された特徴</th><th>Local runnerでの実効性</th></tr></thead>
+            <tbody>
+              <tr><td><code>agents/supervisor.md</code></td><td><code>memory: project</code>, <code>Skill</code> tool、session常駐</td><td>本文はPromptとして読めるが、Claude固有の常駐memory/toolはランナー自身では実装していない</td></tr>
+              <tr><td><code>agents/ddd.md</code></td><td>用語集・Context mapをMEMORY.mdで継続学習</td><td>assetの行動規範。ローカルAPI呼び出し間の自動永続memoryではない</td></tr>
+              <tr><td><code>agents/deploy.md</code></td><td>release履歴、rollback事例、将来hooks</td><td><code>hooks</code>は文書中でも将来実装。Python runnerのhook engineではない</td></tr>
+              <tr><td><code>agents/review.md</code></td><td>過去の指摘パターンをproject memoryへ蓄積</td><td>Run文書の明示注入は可能だが、Claude Agent memory semanticsは移植されていない</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout warn">
+          <strong>実装とPromptの境界:</strong> Skill本文に「Skillツールを呼ぶ」「MEMORY.mdを更新」「hooks」などが書かれていても、
+          Local runnerが対応するToolや永続機構を提供しなければ、その部分は願望的な指示です。実際に強制されるのはPython側のpath policy、
+          process execution、Run文書、Artifact/verificationロジックです。
+        </div>
+      </section>
+
+      <section id="llm" data-search-section>
+        <div class="section-head">
+          <div class="section-no">10 / LLM API</div>
+          <div>
+            <h2>OpenAI互換APIの使い方</h2>
+            <p class="section-kicker">SDK依存はなく、<code>urllib.request</code> で <code>/models</code> と <code>/chat/completions</code> を呼びます。</p>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <span class="mini-label">DEFAULT ENDPOINT</span>
+            <h3><code>http://localhost:30000/v1</code></h3>
+            <p><code>GET /models</code> でhealthとmodel候補を取得し、<code>POST /chat/completions</code> で非streamまたはSSE streamを実行します。</p>
+            <div class="codebox">
+              <div class="code-head"><span>request payload</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>{
+  "model": "...",
+  "messages": [
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "..."}
+  ],
+  "temperature": 0.0,
+  "max_tokens": 8192,
+  "stream": true,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  }
+}</code></pre>
+            </div>
+          </article>
+          <article class="card">
+            <span class="mini-label">STREAMING</span>
+            <h3>生成中にも検証する</h3>
+            <p>SSEの <code>content</code> / <code>reasoning_content</code>、chunk数、bytes、時間を追跡し、partial fileへcheckpointします。Guardが違反を証明すると <code>LLMStreamAbortError</code> を投げます。</p>
+            <p>完了後に壊れた長文を捨てるだけでなく、readonly path、混在protocol、反復JSON、説明文暴走を早期停止できます。</p>
+          </article>
+        </div>
+
+        <h3>Function別API profile — 既定15種</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Function</th><th>Agent level</th><th>temperature</th><th>max_tokens</th><th>thinking</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>route_task</code></td><td>supervisor</td><td>0.2</td><td>8,192</td><td>off</td><td>分類・順序</td></tr>
+              <tr><td><code>plan_work</code></td><td>pm</td><td>0.2</td><td>8,192</td><td>off</td><td>PM control</td></tr>
+              <tr><td><code>explore_code</code></td><td>pm/coder</td><td>0.0</td><td>8,192</td><td>off</td><td>証拠収集</td></tr>
+              <tr><td><code>failure_analysis</code></td><td>judge</td><td>0.0</td><td>8,192</td><td>off</td><td>失敗履歴の構造化</td></tr>
+              <tr><td><code>patch_planner</code></td><td>judge</td><td>0.0</td><td>8,192</td><td>off</td><td>1変更へ収束</td></tr>
+              <tr><td><code>project_policy_triage</code></td><td>judge</td><td>0.0</td><td>8,192</td><td>off</td><td>product/harness/spec所有判定</td></tr>
+              <tr><td><code>generate_artifact</code></td><td>coder</td><td>0.1</td><td>65,536</td><td>off</td><td>初回Artifact</td></tr>
+              <tr><td><code>repair_artifact</code></td><td>coder</td><td>0.05</td><td>65,536</td><td>off</td><td>通常修復</td></tr>
+              <tr><td><code>root_cause_analysis</code></td><td>judge</td><td>0.0</td><td>8,192</td><td>off</td><td>反復失敗の原因</td></tr>
+              <tr><td><code>root_cause_patch</code></td><td>coder</td><td>0.0</td><td>65,536</td><td>off</td><td>binding planから修復</td></tr>
+              <tr><td><code>artifact_writer</code></td><td>coder</td><td>0.0</td><td>65,536</td><td>off</td><td>形式限定出力</td></tr>
+              <tr><td><code>semantic_repair</code></td><td>coder</td><td>0.0</td><td>8,192</td><td>off</td><td>意味失敗の局所修復</td></tr>
+              <tr><td><code>format_repair</code></td><td>coder</td><td>0.0</td><td>8,192</td><td>off</td><td>protocolだけ修復</td></tr>
+              <tr><td><code>judge_review</code></td><td>judge</td><td>0.0</td><td>8,192</td><td>off</td><td>証拠判定</td></tr>
+              <tr><td><code>verify_acceptance</code></td><td>judge</td><td>0.0</td><td>8,192</td><td>off</td><td>受入条件判定</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          この15種は <code>models.py</code> に用意された既定profileの一覧です。現行の主Agent経路では、
+          root-causeのArtifact生成に <code>artifact_writer</code> を使い、<code>root_cause_patch</code> はstrategy名・予算名としては現れるものの
+          同名のAPI call functionへ直接配線されていません。<code>explore_code</code> と <code>verify_acceptance</code> もprofile/aliasとして利用可能ですが、
+          通常の <code>command_agent()</code> の固定呼び出し列には現れません。
+        </div>
+
+        <h3>Profileの優先順位</h3>
+        <div class="big-concept">
+          base config → role override → function override
+        </div>
+        <p>Function overrideが最後に適用されます。さらに <code>nemotron3-super-agent</code>、<code>nemotron-labs-puzzle-75b-agent</code>、<code>qwen-agent</code> / <code>qwen-agent-deep</code>、<code>ornith-agent</code> / <code>ornith-agent-deep</code> のモデル別profileが、関数ごとのtoken・温度・thinkingを調整します。</p>
+
+        <details>
+          <summary><code>doctor</code> が行う3つの能力Probe</summary>
+          <div class="details-body">
+            <ol>
+              <li><strong>No-thinking content:</strong> thinkingを無効にして、正確に <code>OK</code> と返せるか。</li>
+              <li><strong>Default thinking behavior:</strong> 既定テンプレートでcontentとreasoningがどう返るか。</li>
+              <li><strong>Strict JSON:</strong> 正確に <code>{"ok":true,"files":["a.py"]}</code> を返し、JSONとしてparseできるか。</li>
+            </ol>
+            <p>モデル名だけで互換性を決めず、実際のendpoint応答でArtifact用途への適性を診断します。</p>
+          </div>
+        </details>
+      </section>
+
+      <section id="artifacts" data-search-section>
+        <div class="section-head">
+          <div class="section-no">11 / ARTIFACT CONTROL</div>
+          <div>
+            <h2>最大モジュールは“出力防波堤”</h2>
+            <p class="section-kicker"><code>artifacts.py</code> は6,868行・140関数。生成そのものより、壊れた出力を分類・制限・回復するコード量が大きいことを示します。</p>
+          </div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">Artifact受理パイプライン <span>FIG 11.1 / parse → lint → transaction</span></div>
+          <pre class="mermaid">
+flowchart LR
+  RAW["LLM raw / stream"] --> SG{"Stream guard"}
+  SG -->|abort| TF["typed protocol failure"]
+  SG -->|safe complete prefix| SV["salvage + revalidate"]
+  SG -->|complete| CAND["candidate extraction"]
+  SV --> CAND
+  CAND --> J["JSON artifacts"]
+  CAND --> SR["BEGIN_SEARCH_REPLACE"]
+  CAND --> UF["unified diff"]
+  CAND --> BF["BEGIN_FILE / APPEND"]
+  J --> PP{"Path policy"}
+  SR --> PP
+  UF --> PP
+  BF --> PP
+  PP -->|readonly / .. / absolute / internal| REJ["reject"]
+  PP --> L{"Lint + scope + semantic"}
+  L -->|fail| TF
+  L -->|pass| SNAP["snapshot targets"]
+  SNAP --> APPLY["apply all artifacts"]
+  APPLY -->|any failure| RB["rollback all"]
+  APPLY -->|success| CHECK["verification"]
+          </pre>
+        </div>
+
+        <h3>Path policy</h3>
+        <div class="grid four">
+          <article class="card"><span class="badge impl">拒否</span><h3>絶対パス</h3><p>project root外への書込みを防ぎます。</p></article>
+          <article class="card"><span class="badge impl">拒否</span><h3><code>..</code></h3><p>path traversalを正規化前に遮断します。</p></article>
+          <article class="card"><span class="badge impl">拒否</span><h3>内部領域</h3><p><code>.git</code>, <code>.sdlc-runner</code>, <code>__pycache__</code>, <code>.pyc</code>。</p></article>
+          <article class="card"><span class="badge impl">限定許可</span><h3>新規ファイル</h3><p>安全なproject-relative pathで、開始時に存在しないものだけ。</p></article>
+        </div>
+
+        <h3>受理するArtifact形式</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>形式</th><th>用途</th><th>主要な拒否条件</th><th>修復先</th></tr></thead>
+            <tbody>
+              <tr><td>JSON <code>search_replace</code></td><td>複数の小さなexact edit</td><td>duplicate key、同一search/replace、非一意search、過剰反復</td><td>format / semantic repair</td></tr>
+              <tr><td>JSON <code>replace_file</code></td><td>明示許可された全置換</td><td>既存fileで禁止、他形式との同一path混在</td><td>artifact writer</td></tr>
+              <tr><td><code>BEGIN_SEARCH_REPLACE</code></td><td>1 file・1 contiguous edit</td><td>path欠落、marker順序、search不一致、複数block in strict mode</td><td>semantic repair</td></tr>
+              <tr><td>unified diff</td><td>構造化された局所patch</td><td>変更pathがpolicy外、patch失敗、複数file in strict mode</td><td>root-cause patch</td></tr>
+              <tr><td><code>BEGIN_FILE</code> / <code>BEGIN_APPEND_FILE</code></td><td>新規fileまたは明示的full file</td><td>既存fileへの無許可replace、marker未閉鎖、scope違反</td><td>format repair</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Stream Guardの主要しきい値</h3>
+        <div class="grid three">
+          <article class="card">
+            <span class="mini-label">BUDGET</span>
+            <h3>6,000 bytes</h3>
+            <p>Artifact markerが始まる前の出力予算。Root cause出力は8,192 bytesです。</p>
+          </article>
+          <article class="card">
+            <span class="mini-label">REPETITION</span>
+            <h3>8 / 40 / 80</h3>
+            <p>duplicate object、総Artifact、同文反復など複数scoreを組み合わせ、暴走を早期検知します。</p>
+          </article>
+          <article class="card">
+            <span class="mini-label">SIZE</span>
+            <h3>12k / 18k</h3>
+            <p>search-replace bodyとPython whole-fileの概算上限。巨大出力を局所Artifactへ狭めます。</p>
+          </article>
+        </div>
+
+        <details>
+          <summary>Guardが即座に止める代表例</summary>
+          <div class="details-body">
+            <ul>
+              <li>最初のArtifactより前に長い説明・思考・進捗実況が続く</li>
+              <li>readonly pathやtestsへの書込みmarkerが出た</li>
+              <li>JSON、diff、BEGIN_FILE、SEARCH_REPLACEを混在した</li>
+              <li>同じJSON artifactや同文が反復した</li>
+              <li>orphan marker、nested conflict marker、未閉鎖blockが確定した</li>
+              <li>searchとreplaceが同一、または全Python moduleを局所repairとして出した</li>
+              <li>strict semantic repairで2 file目・2 block目へ進んだ</li>
+            </ul>
+            <p>readonly markerの手前に完全なwritable Artifactがある場合だけprefix salvageを試し、全parserとpolicyを再通過させます。</p>
+          </div>
+        </details>
+
+        <div class="callout good">
+          JSONの軽微な壊れ方は、trailing commaや重複した <code>type</code> など安全に限定した修復だけ試みます。
+          “なんとなくJSONに見える文字列”を積極的に改変して適用しない姿勢です。
+        </div>
+      </section>
+
+      <section id="verification" data-search-section>
+        <div class="section-head">
+          <div class="section-no">12 / VERIFICATION</div>
+          <div>
+            <h2>検証：コマンドから意味へ</h2>
+            <p class="section-kicker">exit codeだけでなく、失敗型、安定signature、Smoke check、構造・API・状態・保存のmechanical probeへ証拠を分解します。</p>
+          </div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">要件—観測—判定グラフ <span>FIG 12.1 / formal evidence model</span></div>
+          <pre class="mermaid">
+flowchart LR
+  D["D1 Domain invariant<br/>再起動後も保存値を保持"] -->|defines| R["R1 truth condition<br/>save→restart→same value"]
+  O1["O1 static scan<br/>save関数が存在"] -->|observes: proxy| R
+  O2["O2 unit test<br/>serializer round-trip"] -->|observes: necessary| R
+  O3["O3 runtime probe<br/>process restart"] -->|observes: equivalent| R
+  O1 --> E1["E1 result"]
+  O2 --> E2["E2 result"]
+  O3 --> E3["E3 result"]
+  E1 -->|supports weakly| V{"Verdict"}
+  E2 -->|supports| V
+  E3 -->|verifies strongly| V
+  V -->|all required covered| PASS["PASS"]
+  V -->|strong evidence fails| FAIL["FAIL"]
+  V -->|missing relation/context| UNK["UNKNOWN"]
+          </pre>
+        </div>
+
+        <div class="grid two">
+          <article class="card">
+            <h3><code>run_checked_command()</code></h3>
+            <ul>
+              <li><code>shlex.split()</code> でargvへ分割</li>
+              <li><code>subprocess.run(..., shell=False)</code></li>
+              <li><code>&amp;&amp;</code>, <code>||</code>, <code>;</code>, <code>|</code> を拒否</li>
+              <li>timeout、stdout、stderr、return codeを文書化</li>
+              <li>失敗をsyntax/assertion/timeout/service等へ分類</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>危険コマンドdenylist</h3>
+            <ul>
+              <li><code>DROP</code>, <code>TRUNCATE</code></li>
+              <li><code>git reset --hard</code>, <code>git clean</code></li>
+              <li><code>sudo</code>, root/homeへの <code>rm -rf</code></li>
+              <li><code>WHERE</code>なしの <code>DELETE</code> / <code>UPDATE</code></li>
+            </ul>
+            <p class="small muted">これは完全なsandboxではなくdenylistです。許可されたテストコマンドはローカルprocessとして実行されます。</p>
+          </article>
+        </div>
+
+        <h3>Mechanical probes</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Probe</th><th>観測するもの</th><th>LLMに任せない理由</th></tr></thead>
+            <tbody>
+              <tr><td><code>python_struct_probe_document()</code></td><td><code>struct.calcsize</code>、binary format、offset</td><td>正確な数値をruntimeで確定</td></tr>
+              <tr><td><code>python_api_probe_document()</code></td><td>class/function signature、public symbol</td><td>存在・arity・API互換をAST/inspectで確認</td></tr>
+              <tr><td><code>expected_exception_precondition_probe_document()</code></td><td>例外の前提条件と発火</td><td>“例外があるはず”という推測を除く</td></tr>
+              <tr><td><code>python_cli_probe_document()</code></td><td>CLI入力・出力・exit code</td><td>実際のユーザー経路を観測</td></tr>
+              <tr><td><code>python_cli_state_probe_document()</code></td><td>連続操作とstate遷移</td><td>単一function testでは見えない状態を確認</td></tr>
+              <tr><td><code>python_storage_state_probe_document()</code></td><td>永続化・再ロード・page/state</td><td>保存要件をproxyでなくruntimeへ寄せる</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>専用Smoke checks</h3>
+        <div class="grid two">
+          <article class="card card-accent card-orange">
+            <span class="badge rule">HTML / Tetris</span>
+            <p>closing tags、inline JavaScriptをNodeでsyntax check。Tetris語彙では関数名、200 cells、初期render sequence、Chromium interactionまで追加します。</p>
+          </article>
+          <article class="card card-accent card-violet">
+            <span class="badge rule">Redis</span>
+            <p>空portでserverを起動し、PING、ECHO、SET/GET、TTL、invalid input、複数clientをRESP wire protocolで検査します。</p>
+          </article>
+        </div>
+
+        <div class="callout warn">
+          専用SmokeとAcceptance mappingは強力ですが、HTML/Tetris・Redis・SQLite寄りの知識がコードに埋め込まれています。
+          一般アプリの意味要件を自動で証明するframeworkではありません。未知領域では明示テストとrequired pathを利用者が与える必要があります。
+        </div>
+      </section>
+
+      <section id="run-docs" data-search-section>
+        <div class="section-head">
+          <div class="section-no">13 / RUN DOCUMENTS</div>
+          <div>
+            <h2>Runディレクトリが監査ログ</h2>
+            <p class="section-kicker">共有chat memoryの代わりに、番号付き文書を状態遷移の境界に置きます。再開時は直近文書を読み戻します。</p>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <div>
+            <pre class="tree"><span class="dir">.sdlc-runner/runs/&lt;timestamp&gt;/</span>
+├── <span class="doc">00-route.md</span>
+├── <span class="doc">00-precheck-*.md</span>
+├── <span class="doc">01-pm-control.md</span>
+├── <span class="doc">01-domain-contract.md</span>       <span class="muted"># optional</span>
+├── <span class="doc">02-r01-coder-output.md</span>
+├── <span class="doc">03-r01-artifact-lint.md</span>
+├── <span class="doc">03-r01-failure-transition.md</span>
+├── <span class="doc">04-r01-apply.md</span>
+├── <span class="doc">05-r01-command-*.md</span>
+├── <span class="doc">05-r01-observation-summary.md</span>
+├── <span class="doc">05-r01-semantic-contracts.md</span>
+├── <span class="doc">05-r01-failure-analysis.md</span>
+├── <span class="doc">06-r01-judge-review.md</span>
+├── <span class="partial">run.partial.json</span>             <span class="muted"># checkpoint</span>
+└── <span class="truth">run.json</span>                     <span class="muted"># final truth</span></pre>
+          </div>
+          <div class="card">
+            <h3>文書番号の意味</h3>
+            <ol>
+              <li><strong>00:</strong> 入力、route、初期観測</li>
+              <li><strong>01:</strong> 実装を許可するcontrol / domain契約</li>
+              <li><strong>02:</strong> LLMが返したclaim</li>
+              <li><strong>03:</strong> parse/lint/transitionという制御判断</li>
+              <li><strong>04:</strong> filesystemへの適用事実</li>
+              <li><strong>05:</strong> command・probe・failure analysisという証拠</li>
+              <li><strong>06:</strong> Judgeのverdict</li>
+              <li><strong>run.json:</strong> 終了状態、paths、evidence、profile</li>
+            </ol>
+            <p><code>--resume</code> はmanifestと直近最大8文書を読み、別API呼び出しへ明示挿入します。</p>
+          </div>
+        </div>
+
+        <h3>Copy worktree</h3>
+        <p><code>--copy-worktree</code> は一時コピー上でAgentを動かし、承認後に許可pathだけ原projectへ戻します。<code>.git</code>、<code>.sdlc-runner</code>、bytecodeは除外されます。</p>
+        <div class="callout warn">
+          これはGit worktreeではなく <code>shutil.copytree</code> ベースです。また現行コードでは作成した一時directoryの自動削除が見当たらず、長期運用ではcleanup方針が必要です。
+        </div>
+      </section>
+
+      <section id="modules" data-search-section>
+        <div class="section-head">
+          <div class="section-no">14 / MODULES &amp; ROUTINES</div>
+          <div>
+            <h2>コード量と主要ルーチン</h2>
+            <p class="section-kicker">LOCは品質指標ではありませんが、どこに複雑性と保守コストが集中しているかを示します。</p>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <div class="card chart-card">
+            <h3>モジュール別Python行数</h3>
+            <div class="chart-shell"><canvas id="locChart" aria-label="モジュール別行数の棒グラフ" role="img"></canvas></div>
+            <div class="chart-fallback table-wrap">
+              <table><tbody><tr><td>artifacts.py</td><td>6,868</td></tr><tr><td>agent_runner.py</td><td>3,381</td></tr><tr><td>verification.py</td><td>914</td></tr><tr><td>llm_client.py</td><td>675</td></tr><tr><td>stages.py</td><td>673</td></tr><tr><td>cli.py</td><td>625</td></tr></tbody></table>
+            </div>
+          </div>
+          <div class="card">
+            <h3>分布の読み方</h3>
+            <p><code>artifacts.py</code> と <code>agent_runner.py</code> だけでコアPythonの約65%を占めます。</p>
+            <ul>
+              <li><strong>6,868行:</strong> Artifact grammar、lint、semantic contract、probes、repair advice</li>
+              <li><strong>3,381行:</strong> Round状態、Prompt、予算、apply、Judge、manifest</li>
+              <li><strong>914行:</strong> command、smoke、failure signature</li>
+            </ul>
+            <p>複雑性の中心は「生成」ではなく、<strong>不確実な生成を安全な状態遷移へ変換する部分</strong>です。</p>
+            <div class="callout">
+              一方で、最大2モジュールへの集中は変更影響を広げます。将来はArtifact parser、stream guard、semantic probes、repair policyを明確なsubmoduleへ分割する余地があります。
+            </div>
+          </div>
+        </div>
+
+        <h3>全モジュール一覧</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Module</th><th>LOC</th><th>Functions</th><th>Classes</th><th>責務</th></tr></thead>
+            <tbody>
+              <tr><td><code>artifacts.py</code></td><td>6,868</td><td>140</td><td>0</td><td>Artifact parse/lint/apply、stream guard、意味契約、probe、repair</td></tr>
+              <tr><td><code>agent_runner.py</code></td><td>3,381</td><td>22</td><td>0</td><td>単一Agent run全体。大半はnested routine</td></tr>
+              <tr><td><code>verification.py</code></td><td>914</td><td>29</td><td>0</td><td>安全なcommand、failure分類、HTML/Redis smoke</td></tr>
+              <tr><td><code>llm_client.py</code></td><td>675</td><td>27</td><td>1</td><td>OpenAI互換HTTP、SSE、profile、doctor</td></tr>
+              <tr><td><code>stages.py</code></td><td>673</td><td>23</td><td>0</td><td>Stage template、agent args、acceptance matrix</td></tr>
+              <tr><td><code>cli.py</code></td><td>625</td><td>23</td><td>0</td><td>argparse、14 command dispatch</td></tr>
+              <tr><td><code>models.py</code></td><td>480</td><td>5</td><td>23</td><td>dataclass、constant、LLM profile</td></tr>
+              <tr><td><code>skills.py</code></td><td>383</td><td>12</td><td>0</td><td>Skill loader、System/User Prompt builder</td></tr>
+              <tr><td><code>supervisor_runner.py</code></td><td>372</td><td>2</td><td>0</td><td>route文書、Skill実行、legacy supervise</td></tr>
+              <tr><td><code>routing.py</code></td><td>296</td><td>11</td><td>0</td><td>task/risk分類、phase推薦、Judge文字列判定</td></tr>
+              <tr><td><code>web_jobs.py</code></td><td>275</td><td>18</td><td>4</td><td>安全argv、job/process/log state</td></tr>
+              <tr><td><code>stage_runner.py</code></td><td>185</td><td>2</td><td>0</td><td>Stage queueとS99統合の実行</td></tr>
+              <tr><td><code>web_server.py</code></td><td>178</td><td>10</td><td>2</td><td>HTTP endpoints、static UI配信</td></tr>
+              <tr><td><code>workspace.py</code></td><td>171</td><td>11</td><td>0</td><td>manifest、file context、path normalize</td></tr>
+              <tr><td><code>phase_runner.py</code></td><td>161</td><td>4</td><td>0</td><td>spec / phase / implement文書生成</td></tr>
+              <tr><td><code>run_state.py</code></td><td>120</td><td>8</td><td>0</td><td>run dir、resume、copy worktree</td></tr>
+              <tr><td><code>utils.py</code></td><td>49</td><td>7</td><td>0</td><td>共通文字列・ファイルutility</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>主要ルーチン・カタログ</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Routine</th><th>入力</th><th>出力 / 副作用</th><th>失敗時の挙動</th></tr></thead>
+            <tbody>
+              <tr class="searchable-card"><td><code>cli.main()</code></td><td>argv</td><td>command handlerのexit code</td><td><code>RunnerError</code> を人間向け表示</td></tr>
+              <tr class="searchable-card"><td><code>command_agent()</code></td><td>SPEC、brief、paths、budgets</td><td>編集、Run文書、final manifest</td><td>型付きfailureと予算により修復または停止</td></tr>
+              <tr class="searchable-card"><td><code>recommended_sdlc_phases()</code></td><td>brief + spec</td><td><code>SupervisorRoute</code></td><td>未知語はdevelopment fallback</td></tr>
+              <tr class="searchable-card"><td><code>synthesize_stage_queue()</code></td><td>SPEC + project files</td><td><code>StageWorkItem[]</code></td><td>対象template不一致はgeneric 3-stage</td></tr>
+              <tr class="searchable-card"><td><code>skill_system_prompt()</code></td><td>Skill + agent level</td><td>共通規律 + role + skill本文</td><td>unknown agent levelを拒否</td></tr>
+              <tr class="searchable-card"><td><code>document_exchange_prompt()</code></td><td>SPEC、docs、manifest、file context</td><td>User message</td><td>未提供箇所を明示文字列にする</td></tr>
+              <tr class="searchable-card"><td><code>LocalLLMClient.complete()</code></td><td>messages + role/function</td><td>content / stream stats</td><td>health、timeout、HTTP、stream abortを型化</td></tr>
+              <tr class="searchable-card"><td><code>artifact_stream_guard()</code></td><td>生成途中text + path policy</td><td>continue / abort理由・score</td><td>証明可能な違反で早期中断</td></tr>
+              <tr class="searchable-card"><td><code>extract_json_artifacts()</code></td><td>LLM text + policy</td><td>typed Artifact list</td><td>duplicate key、未知type、path違反を拒否</td></tr>
+              <tr class="searchable-card"><td><code>apply_search_replace_artifact()</code></td><td>project + exact search/replace</td><td>file write + apply document</td><td>0件/複数一致/no-opで失敗</td></tr>
+              <tr class="searchable-card"><td><code>lint_artifact_output()</code></td><td>raw text + mode + policy</td><td><code>ArtifactLintFinding[]</code></td><td>failure typeと次Promptを決定</td></tr>
+              <tr class="searchable-card"><td><code>transition_for_failure()</code></td><td>failure type</td><td>次role / budget class</td><td>unknownはdefault repairへ</td></tr>
+              <tr class="searchable-card"><td><code>run_checked_command()</code></td><td>project + command + timeout</td><td>evidence document + bool</td><td>danger/shell operator/timeoutを明示</td></tr>
+              <tr class="searchable-card"><td><code>command_failure_signature()</code></td><td>command docs</td><td>正規化hash相当のsignature</td><td>住所・temp・line番号を安定化</td></tr>
+              <tr class="searchable-card"><td><code>build_acceptance_matrix()</code></td><td>requirements + evidence</td><td>coverage status</td><td>未被覆をblockerとして残す</td></tr>
+              <tr class="searchable-card"><td><code>build_cli_command()</code></td><td>Web JSON payload</td><td>argv + project path</td><td>未対応command / 無効fieldを拒否</td></tr>
+              <tr class="searchable-card"><td><code>load_resume_context()</code></td><td>resume dir</td><td>manifest + recent docs</td><td>pathとmanifest整合性を検証</td></tr>
+              <tr class="searchable-card"><td><code>copy_allowed_paths_back()</code></td><td>copy project + target + allowlist</td><td>承認pathのみ反映</td><td>allowlist外はコピーしない</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="cli" data-search-section>
+        <div class="section-head">
+          <div class="section-no">15 / CLI REFERENCE</div>
+          <div>
+            <h2>14コマンドの役割</h2>
+            <p class="section-kicker">CLIは診断、文書生成、実装、比較、Webのすべてを一つのentrypointにまとめます。</p>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Command</th><th>用途</th></tr></thead>
+              <tbody>
+                <tr class="searchable-card"><td><code>doctor</code></td><td>endpoint・model・thinking・strict JSON能力を診断</td></tr>
+                <tr class="searchable-card"><td><code>health</code></td><td><code>/models</code> の到達性と一覧</td></tr>
+                <tr class="searchable-card"><td><code>web</code></td><td>ローカルWeb UIを起動</td></tr>
+                <tr class="searchable-card"><td><code>list-skills</code></td><td>Skill名、説明、pathを表示</td></tr>
+                <tr class="searchable-card"><td><code>stage-plan</code></td><td>SPECからStage queueだけを表示・保存</td></tr>
+                <tr class="searchable-card"><td><code>run-stages</code></td><td>StageごとのAgentとfinal gateを実行</td></tr>
+                <tr class="searchable-card"><td><code>spec</code></td><td>spec SkillでSPEC案を生成</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Command</th><th>用途</th></tr></thead>
+              <tbody>
+                <tr class="searchable-card"><td><code>phase</code></td><td>指定Skillを独立呼び出し</td></tr>
+                <tr class="searchable-card"><td><code>implement</code></td><td>TDD Skill文書を生成</td></tr>
+                <tr class="searchable-card"><td><code>supervisor</code></td><td>routeと必要なら各Skill文書</td></tr>
+                <tr class="searchable-card"><td><code>supervise</code></td><td>legacy PM/Coder/Judge文書交換</td></tr>
+                <tr class="searchable-card"><td><code>agent</code></td><td>apply/test/judge修復ループ</td></tr>
+                <tr class="searchable-card"><td><code>check-command</code></td><td>コマンド安全性と実行を単独確認</td></tr>
+                <tr class="searchable-card"><td><code>compare-runs</code></td><td>複数run.jsonのprofile・結果・予算を比較</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <h3>実装を行う最小例</h3>
+        <div class="codebox">
+          <div class="code-head"><span>shell / illustrative</span><button class="copy-btn" type="button">COPY</button></div>
+          <pre><code>local-sdlc-agent agent \
+  --project /path/to/project \
+  --brief "SPEC.mdに従い、既存APIを保ったまま機能を実装する" \
+  --include src/app.py \
+  --context tests/test_app.py \
+  --test-command "python -m unittest tests.test_app" \
+  --required-path src/app.py \
+  --copy-worktree \
+  --stream</code></pre>
+        </div>
+        <p class="small muted">実際のoption名・組合せは <code>local-sdlc-agent agent --help</code> を基準にしてください。対象fileを明示し、testsはreadonly contextとして与えるのが基本形です。</p>
+
+        <h3>Webを起動する例</h3>
+        <div class="codebox">
+          <div class="code-head"><span>shell</span><button class="copy-btn" type="button">COPY</button></div>
+          <pre><code>local-sdlc-agent web --host 127.0.0.1 --port 8765
+# browser: http://127.0.0.1:8765</code></pre>
+        </div>
+      </section>
+
+      <section id="reality" data-search-section>
+        <div class="section-head">
+          <div class="section-no">16 / CURRENT REALITY</div>
+          <div>
+            <h2>現行コミットのテスト実態</h2>
+            <p class="section-kicker">READMEの設計説明だけでなく、基準コミットを実行した結果です。品質を評価する際はここを分離して見てください。</p>
+          </div>
+        </div>
+
+        <div class="status-strip" aria-label="Python 3.13 test status">
+          <div class="status-cell"><b>Python 3.13</b><span><code>python3.13 -m unittest discover -s tests</code></span></div>
+          <div class="status-cell"><b>321</b><span>pass</span></div>
+          <div class="status-cell"><b>1</b><span>failure</span></div>
+          <div class="status-cell"><b>1</b><span>error</span></div>
+          <div class="status-cell"><b>1</b><span>skipped</span></div>
+        </div>
+
+        <div class="grid two" style="margin-top:1rem">
+          <article class="card card-accent card-red">
+            <span class="badge limit">Failure / Error</span>
+            <h3>macOS temp pathの正規化</h3>
+            <p>テストが作るpathは <code>/var/folders/...</code>、<code>Path.resolve()</code> 後は <code>/private/var/folders/...</code>。<code>relative_to(project)</code> が異なるroot表現を受けて失敗します。</p>
+            <ul>
+              <li><code>test_make_run_dir_avoids_double_project_prefix_for_cwd_relative_project_path</code></li>
+              <li><code>test_unittest_timeout_diagnostic_identifies_hanging_method</code></li>
+            </ul>
+          </article>
+          <article class="card card-accent card-red">
+            <span class="badge limit">Import blocker</span>
+            <h3>Python 3.11ではSyntaxError</h3>
+            <p><code>agent_runner.py</code> のf-string expression内にbackslashを含む式があり、3.11のparserではimportできません。PEP 701後のparserでは通ります。</p>
+            <div class="codebox">
+              <div class="code-head"><span>observed</span><button class="copy-btn" type="button">COPY</button></div>
+              <pre><code>SyntaxError: f-string expression part cannot include a backslash
+  local_sdlc/agent_runner.py:1701</code></pre>
+            </div>
+            <p>したがって現行の <code>requires-python = "&gt;=3.10"</code> は実装と整合しません。</p>
+          </article>
+        </div>
+
+        <h3>制約とリスクの一覧</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>領域</th><th>現状</th><th>影響</th><th>改善方向</th></tr></thead>
+            <tbody>
+              <tr><td>Python互換</td><td>3.11 import不可、3.13で2件失敗</td><td>宣言通りの環境で導入できない</td><td>f-string式を事前変数化、path canonicalizationを統一、CI matrix</td></tr>
+              <tr><td>Stage汎用性</td><td>SQLite/Redis/HTML/fallback固定template</td><td>未知ドメインの分割精度が限定</td><td>明示Stage YAML/JSONまたは検証付きPlanner</td></tr>
+              <tr><td>Acceptance</td><td>一部hard-coded mapping、Tetris知識が濃い</td><td>一般要件のcoverageが過不足</td><td>SPECにR/O relationを構造化記述</td></tr>
+              <tr><td>Supervisor</td><td>Skill文書とapply loopが別</td><td><code>--execute</code> の意味を誤解しやすい</td><td>明示handoff commandまたは名称整理</td></tr>
+              <tr><td>Command safety</td><td>denylist + shell operator拒否</td><td>完全なsandboxではない</td><td>container/OS sandbox、allowlist、resource limit</td></tr>
+              <tr><td>Secrets</td><td>明示的redaction layerが見当たらない</td><td>contextやlogsへ秘密が入る可能性</td><td>secret scanner・masking・include deny patterns</td></tr>
+              <tr><td>Web auth</td><td>なし、loopback前提</td><td>外部bind時に危険</td><td>loopback強制または認証・CSRF</td></tr>
+              <tr><td>Web persistence</td><td>Jobファイルは残るがregistry再読込なし</td><td>再起動後UIに履歴が戻らない</td><td>startup recoveryとstale process処理</td></tr>
+              <tr><td>LLM latency</td><td><code>complete()</code>ごとにhealth preflight</td><td>多Agent runで往復増加</td><td>短期cache / failure時refresh</td></tr>
+              <tr><td>Temp lifecycle</td><td>copy worktree cleanup不明確</td><td>一時容量が蓄積</td><td>成功/失敗両方のretention policy</td></tr>
+              <tr><td>Prompt portability</td><td>Claude固有memory/tool記述を含む</td><td>Local APIでは一部が非実効</td><td>portable coreとruntime adapterを分離</td></tr>
+              <tr><td>保証水準</td><td>Research preview / noncommercial</td><td>本番保証ではない</td><td>threat model、CI、versioning、migration policy</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="assessment" data-search-section>
+        <div class="section-head">
+          <div class="section-no">17 / ASSESSMENT</div>
+          <div>
+            <h2>技術評価と次に読む場所</h2>
+            <p class="section-kicker">このプログラムの価値は“賢いモデル”より“間違えるモデルを扱う制御設計”にあります。</p>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <article class="card card-accent card-green">
+            <h3>強いところ</h3>
+            <ul>
+              <li>SPECと可視文書だけを根拠にする明確なepistemic boundary</li>
+              <li>PM/Coder/Judgeの責務とAPI呼び出しを分離</li>
+              <li>Artifact-only contractをPython parser/guardで実際に強制</li>
+              <li>protocol failureとfunctional failureの予算分離</li>
+              <li>transactional applyとrollback</li>
+              <li>failure signatureからroot cause pathへ昇格</li>
+              <li>強いruntime evidenceが弱いproxyを上書きするモデル</li>
+              <li>Run文書による監査・再開・比較</li>
+              <li>外部Python packageなしで起動できる小さな配布面</li>
+            </ul>
+          </article>
+          <article class="card card-accent card-orange">
+            <h3>設計負債になりやすいところ</h3>
+            <ul>
+              <li>2巨大moduleに規則・例外・domain-specific heuristicが集中</li>
+              <li>Stage/acceptanceが特定デモ領域に寄る</li>
+              <li>Prompt内のaspirational capabilityとruntime capabilityが混在</li>
+              <li>安全性がprocess isolationではなく主に文字列policy</li>
+              <li>現行テストが宣言Python範囲でgreenではない</li>
+              <li>一部のrepair grammarが増殖し、相互作用の理解コストが高い</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>初見の読解順</h3>
+        <div class="pipeline" aria-label="推奨コード読解順">
+          <div class="pipe-step"><span class="step-no">01</span><b>README</b><small>目的と利用者向け概念</small></div>
+          <div class="pipe-step"><span class="step-no">02</span><b>models.py</b><small>語彙と予算・profile</small></div>
+          <div class="pipe-step"><span class="step-no">03</span><b>skills.py</b><small>Promptの不変部分</small></div>
+          <div class="pipe-step"><span class="step-no">04</span><b>routing.py</b><small>Supervisor判断</small></div>
+          <div class="pipe-step"><span class="step-no">05</span><b>agent_runner.py</b><small>ユースケース順序</small></div>
+          <div class="pipe-step"><span class="step-no">06</span><b>artifacts.py</b><small>失敗型ごとに必要箇所だけ</small></div>
+          <div class="pipe-step"><span class="step-no">07</span><b>verification.py</b><small>“証拠”の実体</small></div>
+        </div>
+
+        <h3>ソース・マップ</h3>
+        <div class="grid three">
+          <article class="card">
+            <h3>制御を読む</h3>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/agent_runner.py#L94" target="_blank" rel="noreferrer">agent_runner.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/stage_runner.py#L46" target="_blank" rel="noreferrer">stage_runner.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/routing.py#L127" target="_blank" rel="noreferrer">routing.py</a></p>
+          </article>
+          <article class="card">
+            <h3>Promptを読む</h3>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/skills.py#L66" target="_blank" rel="noreferrer">skills.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/66850426a1bed049d78027512a0ae17a1d96bcf8/sdlc-skills/skills" target="_blank" rel="noreferrer">12 Skill assets</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/66850426a1bed049d78027512a0ae17a1d96bcf8/sdlc-skills/agents" target="_blank" rel="noreferrer">4 Agent assets</a></p>
+          </article>
+          <article class="card">
+            <h3>境界を読む</h3>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/artifacts.py#L2887" target="_blank" rel="noreferrer">artifact_stream_guard()</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/verification.py#L266" target="_blank" rel="noreferrer">verification.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/web_jobs.py#L88" target="_blank" rel="noreferrer">web_jobs.py</a></p>
+          </article>
+        </div>
+
+        <h3>用語集</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>用語</th><th>このリポジトリでの意味</th></tr></thead>
+            <tbody>
+              <tr><td>Artifact</td><td>LLMが返す、機械適用可能なJSON edit、search/replace、diff、file block。</td></tr>
+              <tr><td>Evidence</td><td>コマンド結果、ファイル事実、smoke、mechanical probeなど観測可能なもの。</td></tr>
+              <tr><td>Failure signature</td><td>temp path・line番号等を正規化し、同じ失敗の反復を検知する表現。</td></tr>
+              <tr><td>Semantic contract</td><td>要件のtruth condition、対象path、観測とのrelationを構造化した契約。</td></tr>
+              <tr><td>Protocol repair</td><td>コードの意味ではなくJSON・marker・混在形式など出力形式だけを直す再試行。</td></tr>
+              <tr><td>Root-cause repair</td><td>同じ失敗を反復した後、原因・所有・対象を再分類して行う制限付き修復。</td></tr>
+              <tr><td>Stage</td><td>独立した書込み範囲・テスト・Runを持つ小さな作業単位。</td></tr>
+              <tr><td>S99</td><td>全Stage後の最終Gate失敗を扱うintegration repair Stage。</td></tr>
+              <tr><td>Document exchange</td><td>Agent間で隠れたmemoryを仮定せず、明示文書だけを渡す方式。</td></tr>
+              <tr><td>Proxy observation</td><td>要件を直接証明せず、間接的に示すstatic scan等の弱い観測。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="big-concept">
+          最も再利用価値が高いのはPrompt文言そのものではなく、<br>
+          「不確実な生成を、型付き失敗・局所権限・機械証拠・有限予算へ変換する」制御パターンです。
+        </div>
+      </section>
+
+      <footer class="foot">
+        <div class="foot-grid">
+          <div>
+            <strong>local-sdlc-agent — 実装を読み解くビジュアルガイド</strong>
+            <p>基準commit <code>66850426a1bed049d78027512a0ae17a1d96bcf8</code>。本文はコードの静的読解とローカル実行結果に基づきます。推測は制約として明示しました。</p>
+          </div>
+          <div>
+            <strong>CDN / offline</strong>
+            <p>図は Mermaid、統計chartは Chart.js、fontは Google Fonts。CDNへ接続できない場合も本文・表・diagram source・fallback tableは残ります。</p>
+          </div>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script>
+    document.documentElement.classList.add("js");
+
+    const root = document.documentElement;
+    const storedTheme = localStorage.getItem("local-sdlc-guide-theme");
+    if (storedTheme === "dark" || storedTheme === "light") {
+      root.dataset.theme = storedTheme;
+    } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      root.dataset.theme = "dark";
+    }
+
+    const themeButton = document.getElementById("themeToggle");
+    themeButton.addEventListener("click", () => {
+      root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      localStorage.setItem("local-sdlc-guide-theme", root.dataset.theme);
+      updateChartTheme();
+    });
+
+    document.getElementById("printButton").addEventListener("click", () => window.print());
+
+    document.querySelectorAll("[data-tabs]").forEach((tabs) => {
+      const buttons = [...tabs.querySelectorAll("[data-tab]")];
+      const panels = [...tabs.querySelectorAll("[data-panel]")];
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => {
+          const target = button.dataset.tab;
+          buttons.forEach((item) => item.setAttribute("aria-selected", String(item === button)));
+          panels.forEach((panel) => { panel.hidden = panel.dataset.panel !== target; });
+        });
+      });
+    });
+
+    document.querySelectorAll(".copy-btn").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const code = button.closest(".codebox")?.querySelector("code")?.innerText || "";
+        try {
+          await navigator.clipboard.writeText(code);
+          const original = button.textContent;
+          button.textContent = "COPIED";
+          setTimeout(() => { button.textContent = original; }, 1200);
+        } catch {
+          button.textContent = "SELECT";
+        }
+      });
+    });
+
+    const search = document.getElementById("pageSearch");
+    const searchable = [...document.querySelectorAll(".searchable-card")];
+    search.addEventListener("input", () => {
+      const query = search.value.trim().toLocaleLowerCase("ja");
+      searchable.forEach((item) => {
+        const matches = !query || item.textContent.toLocaleLowerCase("ja").includes(query);
+        item.classList.toggle("hidden-by-search", !matches);
+      });
+    });
+
+    const tocLinks = [...document.querySelectorAll(".toc a")];
+    const observedSections = [...document.querySelectorAll("main section[id]")];
+    const sectionObserver = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (!visible) return;
+      tocLinks.forEach((link) => {
+        const active = link.getAttribute("href") === `#${visible.target.id}`;
+        link.classList.toggle("active", active);
+        if (active) link.setAttribute("aria-current", "location");
+        else link.removeAttribute("aria-current");
+      });
+    }, { rootMargin: "-15% 0px -70% 0px", threshold: [0, .2, .5] });
+    observedSections.forEach((section) => sectionObserver.observe(section));
+
+    if (window.mermaid) {
+      mermaid.initialize({
+        startOnLoad: true,
+        securityLevel: "strict",
+        theme: "base",
+        fontFamily: '"Noto Sans JP", sans-serif',
+        flowchart: { curve: "basis", htmlLabels: true },
+        themeVariables: {
+          primaryColor: "#d9f0ef",
+          primaryTextColor: "#162027",
+          primaryBorderColor: "#0b8793",
+          lineColor: "#617079",
+          secondaryColor: "#f9e6d9",
+          tertiaryColor: "#e9e2f5",
+          fontSize: "14px"
+        }
+      });
+    }
+
+    let locChart;
+    const chartCanvas = document.getElementById("locChart");
+    const chartData = {
+      labels: [
+        "artifacts", "agent_runner", "verification", "llm_client", "stages",
+        "cli", "models", "skills", "supervisor_runner", "routing",
+        "web_jobs", "stage_runner", "web_server", "workspace", "phase_runner", "run_state"
+      ],
+      values: [6868, 3381, 914, 675, 673, 625, 480, 383, 372, 296, 275, 185, 178, 171, 161, 120]
+    };
+
+    function chartColors() {
+      const styles = getComputedStyle(root);
+      return {
+        ink: styles.getPropertyValue("--ink").trim(),
+        muted: styles.getPropertyValue("--muted").trim(),
+        line: styles.getPropertyValue("--line").trim(),
+        cyan: styles.getPropertyValue("--cyan").trim(),
+        orange: styles.getPropertyValue("--orange").trim()
+      };
+    }
+
+    function createChart() {
+      if (!window.Chart || !chartCanvas) return;
+      const colors = chartColors();
+      locChart = new Chart(chartCanvas, {
+        type: "bar",
+        data: {
+          labels: chartData.labels,
+          datasets: [{
+            label: "lines",
+            data: chartData.values,
+            backgroundColor: chartData.values.map((_, index) => index < 2 ? colors.orange : colors.cyan),
+            borderRadius: 5,
+            borderSkipped: false
+          }]
+        },
+        options: {
+          indexAxis: "y",
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? false : { duration: 550 },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: { label: (context) => `${context.raw.toLocaleString()} lines` }
+            }
+          },
+          scales: {
+            x: {
+              beginAtZero: true,
+              grid: { color: colors.line },
+              ticks: { color: colors.muted, callback: (value) => Number(value).toLocaleString() }
+            },
+            y: {
+              grid: { display: false },
+              ticks: { color: colors.ink, font: { family: "IBM Plex Mono", size: 10 } }
+            }
+          }
+        }
+      });
+    }
+
+    function updateChartTheme() {
+      if (!locChart) return;
+      const colors = chartColors();
+      locChart.data.datasets[0].backgroundColor = chartData.values.map((_, index) => index < 2 ? colors.orange : colors.cyan);
+      locChart.options.scales.x.grid.color = colors.line;
+      locChart.options.scales.x.ticks.color = colors.muted;
+      locChart.options.scales.y.ticks.color = colors.ink;
+      locChart.update();
+    }
+
+    createChart();
+  </script>
+</body>
+</html>
