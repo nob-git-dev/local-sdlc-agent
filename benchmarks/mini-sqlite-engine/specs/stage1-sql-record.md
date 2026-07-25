@@ -1,6 +1,6 @@
 # Mini SQLite Engine Stage 1 SPEC: SQL and Record Codec
 
-Source: `/tmp/codex-remote-attachments/019f2a8e-24d1-7cf0-ab72-3b788f127336/36B6DF35-16EF-4ED0-9FE6-7A80667AFBF0/1-mini_sqlite_engine_implementation_spec.md`
+Source: user-provided implementation specification captured for this benchmark.
 
 ## Purpose
 
@@ -158,4 +158,3 @@ Record tests:
 
 - `python3 -m compileall -q minisqlite tests`
 - `python3 -m unittest tests.test_lexer tests.test_parser tests.test_record`
-

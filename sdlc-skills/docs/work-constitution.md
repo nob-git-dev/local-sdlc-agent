@@ -9,9 +9,9 @@ Supervisor エージェントの**行動正典**のテンプレートです。
 事故そのものではなく、**そこから抽出された普遍的な判断軸**を残しています。
 
 > **使い方**: このファイルは Supervisor 専用の詳細正典です。全エージェント（fork スキル・subagent）に
-> 効かせたい普遍要旨は、別途 [`judgment-principles.md`](judgment-principles.md) を `~/.claude/CLAUDE.md` に
-> 追記してください。本ファイルは Supervisor のメモリ（`~/.claude/agent-memory/supervisor/` 等）に
-> 置く運用を想定しています。`install.sh` はこのファイルを配置しません（後述）。
+> 効かせたい普遍要旨は、別途 [`judgment-principles.md`](judgment-principles.md) を利用する実行環境の
+> エージェント向け指示ファイルへ追記してください。本ファイルは Supervisor が参照できる
+> プロジェクトメモリまたは設定領域に置く運用を想定しています。`install.sh` は配置しません（後述）。
 
 ---
 
@@ -107,13 +107,14 @@ Supervisor エージェントの**行動正典**のテンプレートです。
 
 | 文書 | スコープ | 内容 |
 |---|---|---|
-| `~/.claude/CLAUDE.md`（[judgment-principles.md](judgment-principles.md) を追記）| 全プロジェクト・全エージェント | 薄い普遍要旨（fork スキル・subagent に自動継承）|
+| 実行環境のエージェント向け指示ファイル（[judgment-principles.md](judgment-principles.md) を追記）| 全プロジェクト・全エージェント | 薄い普遍要旨（対応環境では fork スキル・subagent に継承）|
 | `work-constitution.md`（本ファイル）| Supervisor 専用の詳細正典 | 全12条 + 〈本質〉 |
 | Supervisor `supervisor.md` §7/§8 | Supervisor の運用形 | 危険信号の即検知・最小ゲート |
 | 各スキル（architect/security/sdlc）| 各フェーズの具体化 | 第10〜12条の「現場での看板」|
 
-→ 全エージェントに効かせる薄い要旨は CLAUDE.md、詳細と本質は本ファイル、という階層で運用する。
+→ 全エージェントに効かせる薄い要旨はエージェント向け指示ファイル、詳細と本質は本ファイル、
+という階層で運用する。
 
-> **注**: `install.sh` は `skills/`・`agents/`・`hooks/` のみを `~/.claude/` に展開し、
-> **このファイルや `CLAUDE.md` は一切上書きしません**。憲法・原則の導入は、内容を確認のうえ
-> **手動で**行ってください。
+> **注**: `install.sh` は `skills/`・`agents/`・`hooks/` のみをエージェント設定ディレクトリへ展開し、
+> **このファイルや既存のエージェント向け指示ファイルは一切上書きしません**。憲法・原則の導入は、
+> 内容を確認のうえ**手動で**行ってください。

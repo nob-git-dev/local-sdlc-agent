@@ -1,7 +1,6 @@
 ---
 name: review
 description: コードレビュー専門エージェント（Subagent 版）。永続メモリでプロジェクトパターンを学習し、レビュー精度を時間をかけて高める。徹底的なレビューが必要な時に使う
-model: sonnet
 memory: project
 tools: Read, Grep, Glob, Bash
 ---

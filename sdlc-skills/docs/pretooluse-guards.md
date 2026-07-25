@@ -6,22 +6,22 @@ Supervisor や `/sdlc` が判断ミスをしても、ここで止まる。
 ## 配置
 
 ```
-~/.claude/hooks/
+~/.local-sdlc-agent/hooks/
 ├── guard-bash.sh     — Bash ツールのコマンドをチェック
 └── guard-write.sh    — Write/Edit ツールの書き込み先をチェック
 ```
 
-`~/.claude/settings.json` の `hooks.PreToolUse` に登録することで有効化される。
+実行環境の設定ファイルで `hooks.PreToolUse` に登録することで有効化される。
 
 ## 動作原理
 
-1. Claude がツール呼び出しを試みる
-2. Claude Code が PreToolUse hook を起動し、ツール入力を JSON で stdin に渡す
+1. エージェントがツール呼び出しを試みる
+2. 対応する実行環境が PreToolUse hook を起動し、ツール入力を JSON で stdin に渡す
 3. フックがコマンドや書き込み先を検査
-4. **Exit code 2 でブロック**（stderr メッセージが Claude に伝わる）
+4. **Exit code 2 でブロック**（stderr メッセージが実行エージェントに伝わる）
 5. **Exit code 0 で許可**
 
-ブロック時、Claude はエラー理由を受け取り、ユーザーに報告する。
+ブロック時、実行エージェントはエラー理由を受け取り、ユーザーに報告する。
 
 ## guard-bash.sh のブロック対象
 
@@ -44,7 +44,7 @@ Supervisor や `/sdlc` が判断ミスをしても、ここで止まる。
 |---|---|
 | シークレットファイル | `.env`, `.pem`, `.key`, `credentials.json` |
 | 書き込み内容に API キー | `api_key = "abc..."`, `AKIA...` |
-| `~/.claude/` 直下の設定 | `settings.json` 等（skills/agents/hooks/projects 配下は除外） |
+| エージェント設定ディレクトリ直下の設定 | `settings.json` 等（skills/agents/hooks/projects 配下は除外） |
 
 ## 設計原則
 
@@ -57,11 +57,11 @@ Supervisor や `/sdlc` が判断ミスをしても、ここで止まる。
 
 ```bash
 # 安全なコマンド（許可される）
-echo '{"tool_input":{"command":"ls -la"}}' | ~/.claude/hooks/guard-bash.sh
+echo '{"tool_input":{"command":"ls -la"}}' | ~/.local-sdlc-agent/hooks/guard-bash.sh
 # → exit 0
 
 # WHERE なし DELETE（ブロックされる）
-echo '{"tool_input":{"command":"DELETE FROM articles;"}}' | ~/.claude/hooks/guard-bash.sh
+echo '{"tool_input":{"command":"DELETE FROM articles;"}}' | ~/.local-sdlc-agent/hooks/guard-bash.sh
 # → exit 2, stderr にブロック理由
 ```
 
@@ -70,7 +70,8 @@ echo '{"tool_input":{"command":"DELETE FROM articles;"}}' | ~/.claude/hooks/guar
 - **正規表現ベース**のため、複雑なコマンドで誤検知・見逃しの可能性がある
 - ヒアドキュメントや `eval` 等を使った難読化は検知しきれない
 - プロジェクト固有のパターン（本番 DB 名等）はハードコードされている
-  - 将来的には `~/.claude/hooks/patterns/project-patterns.json` のような外部ファイルに分離したい
+  - 将来的にはエージェント設定ディレクトリの `hooks/patterns/project-patterns.json` のような
+    外部ファイルに分離したい
 - フックは同期実行のため、タイムアウト（3秒）に注意
 
 ## 実装中に遭遇した誤検知と対応
@@ -101,6 +102,6 @@ rm -rf / と誤判定された。
 
 正当な理由でガードをバイパスする必要がある場合:
 
-1. **推奨**: ユーザーが直接ターミナルでコマンドを実行（Claude 経由しない）
-2. **非推奨（緊急時のみ）**: `~/.claude/settings.json` の hooks.PreToolUse を一時的にコメントアウト
+1. **推奨**: ユーザーが直接ターミナルでコマンドを実行（エージェント経由にしない）
+2. **非推奨（緊急時のみ）**: 実行環境の設定ファイルで hooks.PreToolUse を一時的にコメントアウト
    - 作業後は必ず有効化に戻すこと

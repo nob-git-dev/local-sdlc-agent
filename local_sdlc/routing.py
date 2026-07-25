@@ -221,7 +221,7 @@ def phase_instruction(phase: str, brief: str, route: SupervisorRoute) -> str:
 
     return textwrap.dedent(
         f"""
-        Run the /{phase} phase for this request, following the original claude-skills SDLC contract.
+        Run the /{phase} phase for this request, following the bundled SDLC contract.
 
         Request:
         {brief}

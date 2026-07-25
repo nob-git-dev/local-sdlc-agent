@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRYPOINT_PATH = ROOT / "local_sdlc.py"
+PRODUCT_NAME_PARTS = (
+    ("clau", "de"),
+    ("anth", "ropic"),
+    ("co", "dex"),
+)
+
+
+def product_name_pattern() -> str:
+    names = ("".join(parts) for parts in PRODUCT_NAME_PARTS)
+    return r"(?i)(?:" + "|".join(names) + r")"
 
 
 def load_module():
@@ -348,11 +359,81 @@ class LocalSDLCTest(unittest.TestCase):
         self.assertIn("Graph model", messages[0]["content"])
         self.assertIn("P* and C* and G* and E* |- A or V", messages[0]["content"])
         self.assertIn("Role invariant", messages[0]["content"])
+        self.assertIn("standalone local SDLC development agent", messages[0]["content"])
+        self.assertNotRegex(messages[0]["content"], product_name_pattern())
         self.assertEqual(messages[1]["role"], "user")
         self.assertIn("# SPEC", messages[1]["content"])
         self.assertIn("Proposition discipline", messages[1]["content"])
         self.assertIn("Graph discipline", messages[1]["content"])
         self.assertNotIn("# Skill Body", messages[1]["content"])
+
+    def test_skill_system_prompt_uses_neutral_source_asset_verbatim(self):
+        skill = self.local_sdlc.Skill(
+            name="portable",
+            description="A portable SDLC skill.",
+            path=Path("/tmp/local-agent/skills/portable/SKILL.md"),
+            body="Read the project instructions and follow the SDLC contract.",
+            metadata={},
+        )
+
+        prompt = self.local_sdlc.skill_system_prompt(skill, "pm")
+
+        self.assertNotRegex(prompt, product_name_pattern())
+        self.assertIn(skill.description, prompt)
+        self.assertIn(skill.body, prompt)
+        self.assertIn("Source: bundled/portable/SKILL.md", prompt)
+        self.assertNotIn(str(skill.path), prompt)
+        self.assertFalse(hasattr(self.local_sdlc, "portable_prompt_asset_text"))
+
+    def test_bundled_runtime_system_prompts_are_product_neutral(self):
+        skills = self.local_sdlc.load_skills(ROOT / "sdlc-skills" / "skills")
+        supervisor = self.local_sdlc.load_prompt_asset(
+            ROOT / "sdlc-skills" / "agents" / "supervisor.md",
+            "supervisor",
+        )
+
+        for skill in [*skills.values(), supervisor]:
+            with self.subTest(skill=skill.name):
+                prompt = self.local_sdlc.skill_system_prompt(
+                    skill,
+                    self.local_sdlc.default_agent_level(skill.name),
+                )
+                self.assertNotRegex(prompt, product_name_pattern())
+
+    def test_repository_text_assets_are_product_neutral(self):
+        text_suffixes = {
+            ".cfg",
+            ".css",
+            ".html",
+            ".ini",
+            ".js",
+            ".json",
+            ".md",
+            ".py",
+            ".rst",
+            ".sh",
+            ".txt",
+            ".toml",
+            ".xml",
+            ".yaml",
+            ".yml",
+        }
+        ignored_parts = {".git", ".sdlc-runner", "__pycache__"}
+        violations: list[str] = []
+
+        for path in ROOT.rglob("*"):
+            if not path.is_file() or ignored_parts.intersection(path.parts):
+                continue
+            if path.suffix.lower() not in text_suffixes and path.name != ".gitignore":
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if re.search(product_name_pattern(), text):
+                violations.append(str(path.relative_to(ROOT)))
+
+        self.assertEqual(violations, [], "product-specific names found in: " + ", ".join(violations))
 
     def test_document_exchange_prompt_defines_short_propositions(self):
         prompt = self.local_sdlc.document_exchange_prompt(
@@ -431,6 +512,7 @@ class LocalSDLCTest(unittest.TestCase):
         self.assertIn("relation", instruction)
         self.assertIn("fail_owner", instruction)
         self.assertIn("Do not implement product code", instruction)
+        self.assertNotRegex(instruction, product_name_pattern())
 
     def test_redis_smoke_mode_overrides_auto_detection(self):
         self.assertTrue(self.local_sdlc.is_redis_request("partial protocol work", ["resp.py"]))
@@ -9075,7 +9157,8 @@ END_FILE"""
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Run Claude SDLC skills", result.stdout)
+        self.assertIn("Run local SDLC skills", result.stdout)
+        self.assertNotRegex(result.stdout, product_name_pattern())
         self.assertIn("agent", result.stdout)
 
 

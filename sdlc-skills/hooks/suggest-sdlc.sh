@@ -6,7 +6,7 @@
 #
 # 入出力:
 #   stdin: { "prompt": "...", ... } の JSON
-#   stdout: system-reminder を追加（Claude のコンテキストに注入）
+#   stdout: system-reminder を追加（実行エージェントのコンテキストに注入）
 #   exit 0: 正常
 
 set -eu
@@ -47,7 +47,7 @@ if [ "$HAS_DEV" = "false" ] && [ "$HAS_DANGER" = "false" ]; then
 fi
 
 # system-reminder を stdout に出力
-# Claude Code は stdout をプロンプトに追加する仕様
+# 対応する実行環境は stdout をプロンプトに追加する
 echo ""
 echo "<system-reminder>"
 
@@ -62,12 +62,12 @@ elif [ "$HAS_DEV" = "true" ]; then
   echo "開発タスクの可能性を検出しました。"
   echo ""
   echo "推奨される進め方:"
-  echo "- Supervisor エージェント（claude --agent supervisor）経由で自動判断"
+  echo "- Supervisor エージェント経由で自動判断"
   echo "- または /sdlc [タスク内容] で直接オーケストレーター起動"
 fi
 
 echo ""
-echo "このリマインダーは ~/.claude/hooks/suggest-sdlc.sh によるものです。"
+echo "このリマインダーはエージェント設定ディレクトリの hooks/suggest-sdlc.sh によるものです。"
 echo "</system-reminder>"
 
 exit 0

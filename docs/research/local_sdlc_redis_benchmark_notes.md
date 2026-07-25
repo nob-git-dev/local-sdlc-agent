@@ -72,7 +72,7 @@ PROCESS.md 作成時、run logs を多く渡すと API 死活は OK でも単一
 ## Operational Rules
 
 - Code artifact generation and modification should be done through `local_sdlc.py agent`, not by manual editing of the target app.
-- Runner, tests for runner, and docs may be edited directly by Codex when improving the agent foundation.
+- Runner、runner tests、docs は、エージェント基盤を改善する作業の対象として直接編集できる。
 - Always keep writable targets narrow.
 - Use read-only context for architecture files and prior run logs.
 - Prefer multiple `--test-command` entries over shell composition.

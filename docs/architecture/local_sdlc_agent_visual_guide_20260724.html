@@ -772,7 +772,7 @@
         <div class="brand-mark">LS</div>
         <div>
           <strong>local-sdlc-agent</strong>
-          <small>VISUAL CODE GUIDE / 2026-07-24</small>
+          <small>VISUAL CODE GUIDE / 2026-07-25</small>
         </div>
       </div>
       <div class="sidebar-tools">
@@ -800,7 +800,7 @@
         <a href="#assessment"><span>17</span><span>評価と読解ガイド</span></a>
       </nav>
       <div class="sidebar-note">
-        基準コミット <code>6685042</code><br>
+        <code>main</code> 向け作業ツリー / 製品非依存化版<br>
         実装・プロンプト・テストを静的読解し、Python 3.13 / 3.11 で現状を検証。図は Mermaid、統計は Chart.js で描画します。
       </div>
     </aside>
@@ -817,10 +817,10 @@
         <div class="hero-actions">
           <a class="button" href="#architecture">全体像を見る ↓</a>
           <a class="button secondary" href="#prompts">実プロンプトを見る</a>
-          <a class="button secondary" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/66850426a1bed049d78027512a0ae17a1d96bcf8" target="_blank" rel="noreferrer">基準ソース ↗</a>
+          <a class="button secondary" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/main" target="_blank" rel="noreferrer">公開後の対象ソース ↗</a>
         </div>
         <div class="metrics" aria-label="コードベースの主要指標">
-          <div class="metric"><b>15,828</b><span>コアPython行数</span></div>
+          <div class="metric"><b>15,830</b><span>コアPython行数</span></div>
           <div class="metric"><b>354</b><span>関数・メソッド</span></div>
           <div class="metric"><b>12 + 4</b><span>Skill + Agent prompt資産</span></div>
           <div class="metric"><b>0</b><span>Python外部ランタイム依存</span></div>
@@ -879,9 +879,9 @@
               <table>
                 <tbody>
                   <tr><th>Repository</th><td><a href="https://github.com/nob-git-dev/local-sdlc-agent">nob-git-dev/local-sdlc-agent</a></td></tr>
-                  <tr><th>Commit</th><td><code>66850426a1bed049d78027512a0ae17a1d96bcf8</code></td></tr>
-                  <tr><th>Commit date</th><td>2026-07-23 15:38:05 +09:00</td></tr>
-                  <tr><th>Report date</th><td>2026-07-24 / Asia/Tokyo</td></tr>
+                  <tr><th>Source</th><td><code>main</code> 向け作業ツリー / 源流資産を含む製品非依存化版</td></tr>
+                  <tr><th>Source state</th><td>2026-07-25 更新時点</td></tr>
+                  <tr><th>Report date</th><td>2026-07-25 / Asia/Tokyo</td></tr>
                   <tr><th>Package</th><td><code>local-sdlc-agent 0.1.0</code> / Python <code>&gt;=3.10</code> を宣言</td></tr>
                   <tr><th>License</th><td>コードは PolyForm Noncommercial、文書・Promptは CC BY-NC-SA 4.0</td></tr>
                 </tbody>
@@ -891,9 +891,13 @@
           <div class="card">
             <h3>重要な現状注記</h3>
             <p><span class="badge limit">検証結果</span></p>
-            <p>Python 3.13 では324テスト中 <strong>321 pass / 1 fail / 1 error / 1 skip</strong>。2件はmacOSの <code>/var</code> と <code>/private/var</code> の正規化差に起因します。</p>
+            <p>Python 3.13 と実体パスの一時ディレクトリ <code>TMPDIR=/private/tmp</code> では
+              327テスト中 <strong>326 pass / 1 skip</strong>。製品名の再混入を検知する
+              リポジトリ横断テストも含みます。</p>
+            <p>macOSの既定一時パスでは、既存2テストが <code>/var</code> と
+              <code>/private/var</code> の正規化差の影響を受けます。</p>
             <p>Python 3.11 では <code>agent_runner.py:1701</code> のf-string構文がimport時に失敗します。宣言上の <code>&gt;=3.10</code> と現行実装に互換性のずれがあります。</p>
-            <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/pyproject.toml" target="_blank" rel="noreferrer">pyproject.toml</a>
+            <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/pyproject.toml" target="_blank" rel="noreferrer">pyproject.toml</a>
           </div>
         </div>
       </section>
@@ -1164,7 +1168,7 @@ flowchart TD
           ルーティングは高速で監査しやすい一方、自然言語理解としては限定的です。
           <code>classify_task_type()</code> と <code>detect_danger_signals()</code> は語彙ベースであり、
           文脈に応じた高度な危険度評価ではありません。
-          <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/routing.py#L29" target="_blank" rel="noreferrer">routing.py</a>
+          <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/routing.py#L29" target="_blank" rel="noreferrer">routing.py</a>
         </div>
       </section>
 
@@ -1347,7 +1351,7 @@ flowchart LR
             <h3>テンプレートという制約</h3>
             <p><code>synthesize_stage_queue()</code> はSPECを任意の依存グラフへ変換するLLM Plannerではありません。現状はSQLite 9段、Redis 5段、HTML/browser 3段、fallback 3段の語彙分岐です。</p>
             <p><span class="badge rule">予測可能</span> <span class="badge limit">対象領域依存</span></p>
-            <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/stages.py#L43" target="_blank" rel="noreferrer">synthesize_stage_queue()</a>
+            <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/stages.py#L43" target="_blank" rel="noreferrer">synthesize_stage_queue()</a>
           </article>
         </div>
 
@@ -1488,7 +1492,9 @@ flowchart TB
             <h3>共通System Prompt — 日本語再現</h3>
             <div class="codebox">
               <div class="code-head"><span>system / every skill call</span><button class="copy-btn" type="button">COPY</button></div>
-              <pre><code>あなたは Claude Code の外で動く、ローカルSDLC開発Agentである。
+              <pre><code>あなたは単独で動作する、ローカルSDLC開発Agentである。
+特定のホスト型製品、ベンダーサービス、隠れたメモリ、
+または製品固有のランタイム挙動を前提にしないこと。
 元のSDLC規律を守ること。
 
 - SPEC.md を一次情報として扱う。
@@ -1528,7 +1534,13 @@ proxy/static/heuristicが失敗しても、より強いruntime/equivalent観測�
 成功していれば直ちにproduct failureとはしない。
 spec / harness / supervisor mismatchを疑い、強い証拠を保持する。</code></pre>
             </div>
-            <p class="small muted">原文: <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/skills.py#L66" target="_blank" rel="noreferrer">system_message() / formal_reasoning_contract()</a></p>
+            <p class="small muted">原文: <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/skills.py#L66" target="_blank" rel="noreferrer">system_message() / formal_reasoning_contract()</a></p>
+            <div class="callout">
+              <strong>源流から中立:</strong> 製品名を実行時の正規表現で置換する処理はありません。
+              憲法・Skill・Agent・hook・インストーラーの正本を製品非依存にし、
+              <code>skill_system_prompt()</code> は説明と本文をそのまま連結します。
+              リポジトリ横断テストが固有名の再混入を検知します。
+            </div>
           </div>
 
           <div class="tab-panel" role="tabpanel" data-panel="documents" data-print-title="User Document Exchange Prompt" hidden>
@@ -1875,10 +1887,10 @@ Judge自身はcodeを修正しない。</code></pre>
           <table>
             <thead><tr><th>Asset</th><th>宣言された特徴</th><th>Local runnerでの実効性</th></tr></thead>
             <tbody>
-              <tr><td><code>agents/supervisor.md</code></td><td><code>memory: project</code>, <code>Skill</code> tool、session常駐</td><td>本文はPromptとして読めるが、Claude固有の常駐memory/toolはランナー自身では実装していない</td></tr>
+              <tr><td><code>agents/supervisor.md</code></td><td><code>memory: project</code>, <code>Skill</code> tool、session常駐</td><td>本文はPromptとして読めるが、特定実行環境の常駐memory/toolはランナー自身では実装していない</td></tr>
               <tr><td><code>agents/ddd.md</code></td><td>用語集・Context mapをMEMORY.mdで継続学習</td><td>assetの行動規範。ローカルAPI呼び出し間の自動永続memoryではない</td></tr>
               <tr><td><code>agents/deploy.md</code></td><td>release履歴、rollback事例、将来hooks</td><td><code>hooks</code>は文書中でも将来実装。Python runnerのhook engineではない</td></tr>
-              <tr><td><code>agents/review.md</code></td><td>過去の指摘パターンをproject memoryへ蓄積</td><td>Run文書の明示注入は可能だが、Claude Agent memory semanticsは移植されていない</td></tr>
+              <tr><td><code>agents/review.md</code></td><td>過去の指摘パターンをproject memoryへ蓄積</td><td>Run文書の明示注入は可能だが、外部実行環境の自動memory semanticsは移植されていない</td></tr>
             </tbody>
           </table>
         </div>
@@ -2257,7 +2269,7 @@ flowchart LR
               <tr><td><code>stages.py</code></td><td>673</td><td>23</td><td>0</td><td>Stage template、agent args、acceptance matrix</td></tr>
               <tr><td><code>cli.py</code></td><td>625</td><td>23</td><td>0</td><td>argparse、14 command dispatch</td></tr>
               <tr><td><code>models.py</code></td><td>480</td><td>5</td><td>23</td><td>dataclass、constant、LLM profile</td></tr>
-              <tr><td><code>skills.py</code></td><td>383</td><td>12</td><td>0</td><td>Skill loader、System/User Prompt builder</td></tr>
+              <tr><td><code>skills.py</code></td><td>385</td><td>12</td><td>0</td><td>Skill loader、System/User Prompt builder</td></tr>
               <tr><td><code>supervisor_runner.py</code></td><td>372</td><td>2</td><td>0</td><td>route文書、Skill実行、legacy supervise</td></tr>
               <tr><td><code>routing.py</code></td><td>296</td><td>11</td><td>0</td><td>task/risk分類、phase推薦、Judge文字列判定</td></tr>
               <tr><td><code>web_jobs.py</code></td><td>275</td><td>18</td><td>4</td><td>安全argv、job/process/log state</td></tr>
@@ -2417,7 +2429,7 @@ flowchart LR
               <tr><td>Web persistence</td><td>Jobファイルは残るがregistry再読込なし</td><td>再起動後UIに履歴が戻らない</td><td>startup recoveryとstale process処理</td></tr>
               <tr><td>LLM latency</td><td><code>complete()</code>ごとにhealth preflight</td><td>多Agent runで往復増加</td><td>短期cache / failure時refresh</td></tr>
               <tr><td>Temp lifecycle</td><td>copy worktree cleanup不明確</td><td>一時容量が蓄積</td><td>成功/失敗両方のretention policy</td></tr>
-              <tr><td>Prompt portability</td><td>Claude固有memory/tool記述を含む</td><td>Local APIでは一部が非実効</td><td>portable coreとruntime adapterを分離</td></tr>
+              <tr><td>Prompt portability</td><td>源流の憲法・Skill・Agent・hookを製品非依存化</td><td>実行時置換なしで同じ正本を利用</td><td>任意のmemory/tool機能はruntime adapterとして明示</td></tr>
               <tr><td>保証水準</td><td>Research preview / noncommercial</td><td>本番保証ではない</td><td>threat model、CI、versioning、migration policy</td></tr>
             </tbody>
           </table>
@@ -2476,21 +2488,21 @@ flowchart LR
         <div class="grid three">
           <article class="card">
             <h3>制御を読む</h3>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/agent_runner.py#L94" target="_blank" rel="noreferrer">agent_runner.py</a></p>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/stage_runner.py#L46" target="_blank" rel="noreferrer">stage_runner.py</a></p>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/routing.py#L127" target="_blank" rel="noreferrer">routing.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/agent_runner.py#L94" target="_blank" rel="noreferrer">agent_runner.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/stage_runner.py#L46" target="_blank" rel="noreferrer">stage_runner.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/routing.py#L127" target="_blank" rel="noreferrer">routing.py</a></p>
           </article>
           <article class="card">
             <h3>Promptを読む</h3>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/skills.py#L66" target="_blank" rel="noreferrer">skills.py</a></p>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/66850426a1bed049d78027512a0ae17a1d96bcf8/sdlc-skills/skills" target="_blank" rel="noreferrer">12 Skill assets</a></p>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/66850426a1bed049d78027512a0ae17a1d96bcf8/sdlc-skills/agents" target="_blank" rel="noreferrer">4 Agent assets</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/skills.py#L66" target="_blank" rel="noreferrer">skills.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/main/sdlc-skills/skills" target="_blank" rel="noreferrer">12 Skill assets</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/main/sdlc-skills/agents" target="_blank" rel="noreferrer">4 Agent assets</a></p>
           </article>
           <article class="card">
             <h3>境界を読む</h3>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/artifacts.py#L2887" target="_blank" rel="noreferrer">artifact_stream_guard()</a></p>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/verification.py#L266" target="_blank" rel="noreferrer">verification.py</a></p>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/66850426a1bed049d78027512a0ae17a1d96bcf8/local_sdlc/web_jobs.py#L88" target="_blank" rel="noreferrer">web_jobs.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/artifacts.py#L2887" target="_blank" rel="noreferrer">artifact_stream_guard()</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/verification.py#L266" target="_blank" rel="noreferrer">verification.py</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/web_jobs.py#L88" target="_blank" rel="noreferrer">web_jobs.py</a></p>
           </article>
         </div>
 
@@ -2523,7 +2535,7 @@ flowchart LR
         <div class="foot-grid">
           <div>
             <strong>local-sdlc-agent — 実装を読み解くビジュアルガイド</strong>
-            <p>基準commit <code>66850426a1bed049d78027512a0ae17a1d96bcf8</code>。本文はコードの静的読解とローカル実行結果に基づきます。推測は制約として明示しました。</p>
+            <p>対象は <code>main</code> 向けの製品非依存化作業ツリー。本文はコードの静的読解とローカル実行結果に基づきます。推測は制約として明示しました。</p>
           </div>
           <div>
             <strong>CDN / offline</strong>
@@ -2635,7 +2647,7 @@ flowchart LR
         "cli", "models", "skills", "supervisor_runner", "routing",
         "web_jobs", "stage_runner", "web_server", "workspace", "phase_runner", "run_state"
       ],
-      values: [6868, 3381, 914, 675, 673, 625, 480, 383, 372, 296, 275, 185, 178, 171, 161, 120]
+      values: [6868, 3381, 914, 675, 673, 625, 480, 385, 372, 296, 275, 185, 178, 171, 161, 120]
     };
 
     function chartColors() {

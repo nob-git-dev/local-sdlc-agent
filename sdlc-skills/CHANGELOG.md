@@ -12,8 +12,9 @@
 - `docs/work-constitution.md` — Supervisor の行動正典テンプレート。「行動の憲法」全12条（検証した
   事実だけに従う／リスク勾配／権威ある定義元／全層を掃く／破壊半径／根治／継ぎ目／判断の外在化／
   ドメイン洞察／適用条件照合／能動的破壊試行／agent-native）と各条の本質。
-- `docs/judgment-principles.md` — `CLAUDE.md` への手動追記用「判断と検証の原則」テンプレート（憲法の
-  普遍要旨を 5 項目に圧縮。fork スキル・subagent への自動継承を想定）。
+- `docs/judgment-principles.md` — エージェント向け指示ファイルへの手動追記用
+  「判断と検証の原則」テンプレート（憲法の普遍要旨を 5 項目に圧縮。対応環境での
+  fork スキル・subagent への継承を想定）。
 
 #### Agents
 - `supervisor.md` §7「判断の原則」— 「速さ（ユーザーの危険信号は即検知）」と「慎重さ（自分が観測した

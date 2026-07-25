@@ -13,8 +13,8 @@
 # Internal docs (not for public release)
 docs/internal/
 
-# Claude Code local state
-.claude/
+# Local agent state
+.local-sdlc-agent/
 MEMORY.md
 
 # Secrets

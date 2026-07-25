@@ -1,6 +1,6 @@
 # Contributing
 
-Claude SDLC Skills へのコントリビューションを歓迎します。
+Local SDLC Skills へのコントリビューションを歓迎します。
 
 ## スタンス
 
@@ -15,8 +15,8 @@ PreToolUse ガードの誤検知・見逃しは最優先で改善したい領域
 
 - 実行したコマンド（機密情報は伏せ字で）
 - 期待した結果 vs 実際の結果
-- `~/.claude/hooks/guard-bash.sh` のバージョン（git commit hash）
-- OS / シェル / Claude Code のバージョン
+- `~/.local-sdlc-agent/hooks/guard-bash.sh` のバージョン（git commit hash）
+- OS / シェル / エージェント実行環境のバージョン
 
 ### 機能提案
 
@@ -34,7 +34,7 @@ PreToolUse ガードの誤検知・見逃しは最優先で改善したい領域
 2. **原典に基づく** — 方法論書籍・論文を参考文献に明記
 3. **汎用性** — 特定のプロジェクト・言語・フレームワークに依存しない
 4. **既存パターンとの整合** — 既存の SKILL.md と同じ構造（原則・実行フロー・アンチパターン）
-5. **description フィールドの明確さ** — Claude が自動起動判断しやすい記述
+5. **description フィールドの明確さ** — 実行エージェントが自動起動判断しやすい記述
 
 ### フック改善の PR
 
@@ -56,8 +56,8 @@ docs(readme): Quick Start を更新
 ### ローカルでの動作確認
 
 ```bash
-# install.sh のドライラン（CLAUDE_DIR を変えて本番に影響を与えない）
-CLAUDE_DIR=/tmp/claude-test ./scripts/install.sh
+# install.sh のドライラン（AGENT_CONFIG_DIR を変えて本番に影響を与えない）
+AGENT_CONFIG_DIR=/tmp/local-sdlc-agent-test ./scripts/install.sh
 
 # フックの単体テスト
 echo '{"tool_input":{"command":"DROP TABLE test"}}' | hooks/guard-bash.sh

@@ -1,4 +1,4 @@
-# Claude Learning Skills
+# Local Learning Skills
 
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![Commercial License Available](https://img.shields.io/badge/Commercial%20License-Available-blue.svg)](LICENSE-COMMERCIAL.md)
@@ -60,7 +60,7 @@ AI エージェントに経験から学ばせたい、というのは自然な�
    人間レビュー → 承認したものだけ、手で反映
 ```
 
-各段は独立した Claude Code スキル（`context: fork`）として隔離実行され、
+各段は独立したスキル（対応する実行環境では `context: fork`）として隔離実行され、
 受け渡しは構造化されたレポート（Learning Log / Skill Patch / Regression Report）を経由します。
 **パイプラインは提案までしか行いません。スキルへの実際の書き込みは自動化していません**——
 それが安全装置の核心です。
@@ -170,8 +170,8 @@ cd local-sdlc-agent/learning-skills
 ./scripts/install.sh
 ```
 
-`install.sh` は **3 つの学習スキルを `~/.claude/skills/` に展開するだけ**です。
-`settings.json` の変更は不要で、`CLAUDE.md` や他のスキルには一切触れません。
+`install.sh` は **3 つの学習スキルを `~/.local-sdlc-agent/skills/` に展開するだけ**です。
+`settings.json` の変更は不要で、既存のエージェント向け指示や他のスキルには一切触れません。
 同名スキルが既にある場合のみ `.backup-learning-YYYYMMDD-HHMMSS/` へ自動バックアップします。
 
 ### このパックだけ取得（sparse-checkout）
@@ -221,7 +221,7 @@ learning-skills/
 │   ├── skill-proposal-engine/SKILL.md          ② 選別と提案
 │   └── skill-regression-checker/SKILL.md        ③ 回帰検査
 ├── scripts/
-│   └── install.sh                               skills/ を ~/.claude/skills/ に展開
+│   └── install.sh                               skills/ を ~/.local-sdlc-agent/skills/ に展開
 ├── LICENSE                                      CC BY-NC-SA 4.0
 └── LICENSE-COMMERCIAL.md                        商用ライセンス
 ```
@@ -243,7 +243,7 @@ learning-skills/
 ## 動作確認済み環境
 
 - macOS (Apple Silicon) / Linux (aarch64 含む)
-- Claude Code v2.1 以降
+- `context: fork` 相当のスキル分離を提供するエージェント実行環境
 - bash（標準インストール済み前提）
 
 ---

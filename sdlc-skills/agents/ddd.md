@@ -1,7 +1,6 @@
 ---
 name: ddd
 description: ドメイン駆動設計専門エージェント（Subagent 版）。永続メモリでユビキタス言語の用語集を永続化。プロジェクトのドメインモデルが成熟するにつれて価値が増す
-model: sonnet
 memory: project
 tools: Read, Grep, Glob, Bash
 ---

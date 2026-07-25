@@ -18,7 +18,7 @@
 
 | 機能・コンポーネント | 目的（この機能が存在する理由） | 変えてはならない本質 |
 |---|---|---|
-| スキルローダー | `sdlc-skills/skills/*/SKILL.md` をプロンプト資産として再利用する | 既存 SKILL.md の内容を勝手に要約・変質させない |
+| スキルローダー | `sdlc-skills/skills/*/SKILL.md` をプロンプト資産として再利用する | 役割・安全規律・生成物契約を保ち、特定製品への依存だけを源流資産から除く |
 | ローカル LLM クライアント | `http://localhost:30000/v1` などの OpenAI 互換 API に接続する | 外部クラウド API を前提にしない |
 | SPEC 駆動フロー | `SPEC.md` を中心に仕様・設計・実装案・レビューを進める | SPEC.md を唯一の根拠として扱う思想を維持する |
 | パッチ提案 | ローカル LLM に unified diff を生成させ、人間確認後に適用できるようにする | 破壊的変更や未確認パッチを自動適用しない |
@@ -119,7 +119,7 @@
 - デフォルト LLM API は `http://localhost:30000/v1` とし、環境変数で上書き可能にする
 - デフォルトではファイル変更・パッチ適用を行わない
 - `SPEC.md` 全文をフェーズプロンプトに含め、省略・要約を既定動作にしない
-- 既存 `sdlc-skills/skills/*/SKILL.md` を直接書き換えない
+- `sdlc-skills/skills/*/SKILL.md` の役割・安全規律・生成物契約を維持し、特定製品・企業・専用ランタイムへの依存表現は源流資産自体で中立化する
 - 各スキルの SKILL.md は system prompt レベルで渡す
 - PM/Coder/Judge は独立した API call とし、後段に渡す情報は保存済み文書だけにする
 - Coder の成果物は Judge の確認対象にし、Coder 自身の自己評価だけで完了扱いにしない
@@ -214,7 +214,7 @@
 **影響:** `doctor` と `run.json` は `model_profile` と role/function 別の有効 model/API 設定を必ず表示・保存する。将来モデルや function が増えても、preset table と function profile table に追加し、散在する条件分岐やハードコードで管理しない。
 
 #### ADR-10: Web UI は CLI harness の薄いローカル adapter として実装する
-**状況:** Claude Code や Codex のようにブラウザ上で依頼を入力し、進捗を追える体験が必要になった。一方で、この agent の安全性は既存 CLI runner の artifact 検査、テスト、Judge、run document 保存に依存している。
+**状況:** ブラウザ型のAI開発エージェントのように、画面上で依頼を入力し、進捗を追える体験が必要になった。一方で、この agent の安全性は既存 CLI runner の artifact 検査、テスト、Judge、run document 保存に依存している。
 **判断:** `local_sdlc.py web` は Python 標準ライブラリの `ThreadingHTTPServer` で単一HTMLを配信し、UI からの依頼を既存 CLI コマンドの argv に変換してローカル子プロセスとして起動する。
 **理由:** Web UI が agent harness を再実装すると、CLI とブラウザで挙動が分岐し、安全制御が抜ける。UI は開始・監視・停止だけに限定し、実装判断は既存 Application/Domain/Infrastructure 層へ委譲する。
 **影響:** Web UI は完全ローカルで動く。外部Web framework、npm、CDNは不要。ジョブログは `.sdlc-runner/web/jobs/` に残り、CLI実行時の `.sdlc-runner/runs/` と合わせて監査できる。
@@ -1026,3 +1026,52 @@ S07 の巨大分割は重要だが、S01-S04 の domain boundary が定義され
 - テスト計画がある
 - 完了検証ループが定義されている
 - リスクと対策がある
+
+---
+
+## 2026-07-25 追記: 源流資産を含む製品非依存化
+
+### 目的
+
+ローカル SDLC agent のプログラム、源流の憲法、SKILL.md、agent prompt、hook、
+インストーラー、CLI 表示、利用者向け文書、説明 HTML から、特定のホスト型
+コーディングエージェント製品・企業・専用ランタイムを前提とする表現を除去する。
+
+実行時の文字列置換で隠すのではなく、同梱する正本を最初から製品非依存にする。
+これにより、ファイルを直接読んだ場合と system prompt として実行した場合の説明を一致させる。
+
+### 固定要件
+
+- SDLC の役割、SPEC.md 優先、安全ゲート、生成物契約は変更しない。
+- 源流の憲法、SKILL.md、agent prompt を直接中立化し、意味・責務・安全性は維持する。
+- system prompt 組み立て時の製品名置換ロジックには依存しない。
+- 製品専用の設定ファイル名、隠しディレクトリ、CLI コマンド、memory / tool semantics は、
+  「エージェント向け指示ファイル」「エージェント設定ディレクトリ」
+  「実行環境が提供する機能」など、実装に即した一般表現へ置き換える。
+- 一般技術用語としての「code／コード」、OpenAI 互換 API、モデル名は、
+  製品ブランドを意味しない範囲で維持する。
+- ライセンス上必須の著作権・出典表示が存在する場合は削除しない。
+- CLI のコマンド名、引数、終了コード、OpenAI 互換 API の呼び出し構造は変更しない。
+
+### 受け入れ条件
+
+- [x] 基礎 system prompt が特定製品・企業・専用ランタイムへの依存を指示しない。
+- [x] 源流の憲法、全 SKILL.md、agent prompt、hook、インストーラーに製品固有名・専用パスが残らない。
+- [x] system prompt 組み立てに製品名置換ロジックが存在せず、源流本文がそのまま組み立てられる。
+- [x] 実際に同梱される全 SKILL.md と Supervisor asset から組み立てた system prompt に製品固有名が残らない。
+- [x] フェーズ指示、CLI help、README、調査文書、説明 HTML が製品非依存の表現になる。
+- [x] リポジトリ内の対象テキスト資産を走査する回帰テストが、製品固有名の再混入を検知する。
+- [x] Python 3.13 の実体パス一時ディレクトリで全テストが成功する。
+- [x] `python3.13 local_sdlc.py doctor --skip-llm` が成功する。
+
+### 検証結果
+
+- リポジトリ横断の対象テキスト走査: 製品・企業固有名の残存 0 件。
+- 同梱する 12 SKILL.md と Supervisor asset から組み立てた runtime system prompt:
+  13 件すべて製品固有名の残存 0 件。
+- 製品名置換関数と置換テーブルを削除し、source description / body の直接組み立てを確認。
+- Python 3.13 / `TMPDIR=/private/tmp`: `Ran 327 tests ... OK (skipped=1)`。
+- `python3.13 local_sdlc.py doctor --skip-llm`: 成功。
+- 変更した shell script 5 件: `bash -n` 成功。両 installer の一時ディレクトリ導入、
+  3 hook の実行権限、write guard の block / allow 分岐を確認。hook 設定 JSON: parse 成功。
+- 説明 HTML: HTML parse と inline JavaScript 構文検査に成功。

@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/YOUR_USER/.claude/hooks/guard-bash.sh",
+            "command": "/Users/YOUR_USER/.local-sdlc-agent/hooks/guard-bash.sh",
             "timeout": 3
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/YOUR_USER/.claude/hooks/guard-write.sh",
+            "command": "/Users/YOUR_USER/.local-sdlc-agent/hooks/guard-write.sh",
             "timeout": 3
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/YOUR_USER/.claude/hooks/suggest-sdlc.sh",
+            "command": "/Users/YOUR_USER/.local-sdlc-agent/hooks/suggest-sdlc.sh",
             "timeout": 3
           }
         ]

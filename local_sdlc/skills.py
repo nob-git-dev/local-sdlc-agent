@@ -66,7 +66,9 @@ def load_prompt_asset(path: Path, fallback_name: str) -> Skill:
 def system_message() -> str:
     return textwrap.dedent(
         """
-        You are a local SDLC development agent running outside Claude Code.
+        You are a standalone local SDLC development agent.
+        Do not assume or depend on any specific hosted coding-agent product,
+        vendor service, hidden memory, or product-specific runtime behavior.
         Preserve the original SDLC discipline:
         - Treat SPEC.md as the primary source of truth.
         - Do not silently change fixed requirements.
@@ -240,7 +242,7 @@ def skill_system_prompt(skill: Skill, agent_level: str) -> str:
         ## Skill
         Name: {skill.name}
         Description: {skill.description}
-        Source: {skill.path}
+        Source: bundled/{skill.name}/SKILL.md
 
         ## SKILL.md instructions
         {skill.body}

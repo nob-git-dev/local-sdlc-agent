@@ -13,6 +13,7 @@ set -eu
 INPUT=$(cat)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || echo "")
 CONTENT=$(echo "$INPUT" | jq -r '.tool_input.content // .tool_input.new_string // empty' 2>/dev/null || echo "")
+AGENT_CONFIG_DIR="${AGENT_CONFIG_DIR:-$HOME/.local-sdlc-agent}"
 
 if [ -z "$FILE_PATH" ]; then
   exit 0
@@ -21,7 +22,7 @@ fi
 block() {
   echo "BLOCKED: $1" >&2
   echo "対象ファイル: $FILE_PATH" >&2
-  echo "このブロックは ~/.claude/hooks/guard-write.sh によるものです" >&2
+  echo "このブロックは $AGENT_CONFIG_DIR/hooks/guard-write.sh によるものです" >&2
   exit 2
 }
 
@@ -54,15 +55,15 @@ if [ -n "$CONTENT" ]; then
 fi
 
 # ============================================================
-# 3. ~/.claude/ 配下の書き込み制限
+# 3. エージェント設定ディレクトリ直下の書き込み制限
 # ============================================================
 
 # settings.json は正当な用途で編集する必要があるため許可
 # （ユーザーに Write の承認ダイアログが出るため、明示的な同意は得られる）
-# その他の直下 .json はブロック（内部ファイルの可能性があるため）
-if echo "$FILE_PATH" | grep -E '^/Users/[^/]+/\.claude/[^/]+\.json$' > /dev/null; then
-  if ! echo "$FILE_PATH" | grep -E '^/Users/[^/]+/\.claude/settings\.json$' > /dev/null; then
-    block "~/.claude/ 直下の .json ファイルは Claude Code 内部用の可能性があります。ユーザーが直接編集してください"
+# その他の直下 .json はブロック（実行環境の内部ファイルの可能性があるため）
+if [ "$(dirname "$FILE_PATH")" = "$AGENT_CONFIG_DIR" ] && echo "$FILE_PATH" | grep -E '\.json$' > /dev/null; then
+  if [ "$(basename "$FILE_PATH")" != "settings.json" ]; then
+    block "エージェント設定ディレクトリ直下の .json ファイルは実行環境内部用の可能性があります。ユーザーが直接編集してください"
   fi
 fi
 

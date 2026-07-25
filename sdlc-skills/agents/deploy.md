@@ -1,7 +1,6 @@
 ---
 name: deploy
 description: デプロイメント専門エージェント（Subagent 版）。永続メモリでプロジェクトのデプロイ履歴・ロールバック事例を学習。hooks で自動検証も可能。不可逆操作の多いリリース時に使う
-model: sonnet
 memory: project
 tools: Read, Grep, Glob, Bash
 permissionMode: default
@@ -89,7 +88,7 @@ MEMORY.md に以下を記録する:
 
 ## 5. hooks 連携（将来実装）
 
-`.claude/agents/deploy.md` の frontmatter に `hooks` を追加することで、
+`agents/deploy.md` の frontmatter に `hooks` を追加することで、
 デプロイ時の自動検証・通知を実装できる:
 
 ```yaml
@@ -107,7 +106,7 @@ hooks:
 ```
 
 現状はプロジェクト固有のスクリプトがまだないため未設定。
-PreToolUse ガード（`~/.claude/hooks/guard-bash.sh`）が基本的な保護を担当する。
+PreToolUse ガード（エージェント設定ディレクトリの `hooks/guard-bash.sh`）が基本的な保護を担当する。
 
 ---
 

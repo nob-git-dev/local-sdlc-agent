@@ -1,55 +1,60 @@
 #!/bin/bash
-# Claude SDLC Skills インストールスクリプト
+# Local SDLC Skills インストールスクリプト
 #
-# このスクリプトは skills/ と agents/ を ~/.claude/ に展開します。
+# このスクリプトは skills/ と agents/ をエージェント設定ディレクトリに展開します。
 # 既存のスキル/エージェントは上書きされるため、事前にバックアップしてください。
 
 set -e
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+AGENT_CONFIG_DIR="${AGENT_CONFIG_DIR:-$HOME/.local-sdlc-agent}"
 
-echo "Claude SDLC Skills インストーラー"
+echo "Local SDLC Skills インストーラー"
 echo "================================"
 echo "リポジトリ: $REPO_DIR"
-echo "インストール先: $CLAUDE_DIR"
+echo "インストール先: $AGENT_CONFIG_DIR"
 echo ""
 
 # バックアップ
-if [ -d "$CLAUDE_DIR/skills" ] || [ -d "$CLAUDE_DIR/agents" ] || [ -d "$CLAUDE_DIR/hooks" ]; then
-  BACKUP_DIR="$CLAUDE_DIR/.backup-$(date +%Y%m%d-%H%M%S)"
+if [ -d "$AGENT_CONFIG_DIR/skills" ] || [ -d "$AGENT_CONFIG_DIR/agents" ] || [ -d "$AGENT_CONFIG_DIR/hooks" ]; then
+  BACKUP_DIR="$AGENT_CONFIG_DIR/.backup-$(date +%Y%m%d-%H%M%S)"
   echo "既存のスキル/エージェント/フックを $BACKUP_DIR にバックアップします..."
   mkdir -p "$BACKUP_DIR"
-  [ -d "$CLAUDE_DIR/skills" ] && cp -r "$CLAUDE_DIR/skills" "$BACKUP_DIR/"
-  [ -d "$CLAUDE_DIR/agents" ] && cp -r "$CLAUDE_DIR/agents" "$BACKUP_DIR/"
-  [ -d "$CLAUDE_DIR/hooks" ] && cp -r "$CLAUDE_DIR/hooks" "$BACKUP_DIR/"
+  [ -d "$AGENT_CONFIG_DIR/skills" ] && cp -r "$AGENT_CONFIG_DIR/skills" "$BACKUP_DIR/"
+  [ -d "$AGENT_CONFIG_DIR/agents" ] && cp -r "$AGENT_CONFIG_DIR/agents" "$BACKUP_DIR/"
+  [ -d "$AGENT_CONFIG_DIR/hooks" ] && cp -r "$AGENT_CONFIG_DIR/hooks" "$BACKUP_DIR/"
   echo "バックアップ完了"
   echo ""
 fi
 
 # インストール
-mkdir -p "$CLAUDE_DIR/skills" "$CLAUDE_DIR/agents" "$CLAUDE_DIR/hooks"
+mkdir -p "$AGENT_CONFIG_DIR/skills" "$AGENT_CONFIG_DIR/agents" "$AGENT_CONFIG_DIR/hooks"
 
 echo "スキルをインストール中..."
-cp -r "$REPO_DIR/skills/"* "$CLAUDE_DIR/skills/"
-for skill in "$CLAUDE_DIR/skills/"*/; do
+cp -r "$REPO_DIR/skills/"* "$AGENT_CONFIG_DIR/skills/"
+for skill in "$AGENT_CONFIG_DIR/skills/"*/; do
   echo "  - $(basename "$skill")"
 done
 
 echo ""
 echo "エージェントをインストール中..."
-cp -r "$REPO_DIR/agents/"* "$CLAUDE_DIR/agents/"
-for agent in "$CLAUDE_DIR/agents/"*.md; do
+cp -r "$REPO_DIR/agents/"* "$AGENT_CONFIG_DIR/agents/"
+for agent in "$AGENT_CONFIG_DIR/agents/"*.md; do
   echo "  - $(basename "$agent" .md)"
 done
 
 echo ""
 echo "フック（PreToolUse ガード）をインストール中..."
-cp "$REPO_DIR/hooks/guard-bash.sh" "$CLAUDE_DIR/hooks/"
-cp "$REPO_DIR/hooks/guard-write.sh" "$CLAUDE_DIR/hooks/"
-chmod +x "$CLAUDE_DIR/hooks/guard-bash.sh" "$CLAUDE_DIR/hooks/guard-write.sh"
+cp "$REPO_DIR/hooks/guard-bash.sh" "$AGENT_CONFIG_DIR/hooks/"
+cp "$REPO_DIR/hooks/guard-write.sh" "$AGENT_CONFIG_DIR/hooks/"
+cp "$REPO_DIR/hooks/suggest-sdlc.sh" "$AGENT_CONFIG_DIR/hooks/"
+chmod +x \
+  "$AGENT_CONFIG_DIR/hooks/guard-bash.sh" \
+  "$AGENT_CONFIG_DIR/hooks/guard-write.sh" \
+  "$AGENT_CONFIG_DIR/hooks/suggest-sdlc.sh"
 echo "  - guard-bash.sh (Bash 危険操作のブロック)"
 echo "  - guard-write.sh (Write/Edit 危険操作のブロック)"
+echo "  - suggest-sdlc.sh (開発タスクの検知と安全なフローの提案)"
 
 echo ""
 echo "================================"
@@ -59,7 +64,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " 最後に1つだけ手動作業があります"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo " $CLAUDE_DIR/settings.json を開いて、"
+echo " $AGENT_CONFIG_DIR/settings.json を開いて、"
 echo " 以下の内容を追加してください。"
 echo ""
 echo " ※ settings.json がまだない場合は、"
@@ -76,7 +81,7 @@ cat << EOF
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_DIR/hooks/guard-bash.sh",
+            "command": "$AGENT_CONFIG_DIR/hooks/guard-bash.sh",
             "timeout": 3
           }
         ]
@@ -86,7 +91,7 @@ cat << EOF
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_DIR/hooks/guard-write.sh",
+            "command": "$AGENT_CONFIG_DIR/hooks/guard-write.sh",
             "timeout": 3
           }
         ]
@@ -97,7 +102,7 @@ cat << EOF
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_DIR/hooks/suggest-sdlc.sh",
+            "command": "$AGENT_CONFIG_DIR/hooks/suggest-sdlc.sh",
             "timeout": 3
           }
         ]
@@ -111,6 +116,6 @@ echo ""
 echo " ※ すでに settings.json に内容がある場合は、"
 echo "   既存の {} の中に \"agent\" と \"hooks\" の部分だけ追加してください。"
 echo ""
-echo " 設定後、次回の claude 起動から有効になります。"
-echo " 動作確認: claude --agent supervisor"
+echo " 設定後、対応するエージェント実行環境の次回起動から有効になります。"
+echo " 動作確認: 実行環境で supervisor agent を選択してください。"
 echo ""

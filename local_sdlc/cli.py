@@ -369,7 +369,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run Claude SDLC skills with a local OpenAI-compatible LLM API."
+        description="Run local SDLC skills with a local OpenAI-compatible LLM API."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -491,7 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
     implement.add_argument("--apply", action="store_true", help="git apply the patch after validation")
     implement.set_defaults(func=command_implement)
 
-    supervisor = sub.add_parser("supervisor", help="route work like the original claude-skills Supervisor")
+    supervisor = sub.add_parser("supervisor", help="route work using the bundled SDLC Supervisor")
     add_common_arguments(supervisor)
     supervisor.add_argument("brief", help="user request to classify and route")
     supervisor.add_argument("--agents-dir", type=Path, default=DEFAULT_AGENTS_DIR, help="directory containing supervisor.md")

@@ -7,7 +7,7 @@
 # 入出力:
 #   stdin: { "tool_input": { "command": "..." }, ... } の JSON
 #   exit 0: 許可
-#   exit 2: ブロック（stderr のメッセージが Claude に伝わる）
+#   exit 2: ブロック（stderr のメッセージが実行エージェントに伝わる）
 #
 # 方針:
 #   - 明確な破壊的操作はブロック
@@ -18,6 +18,7 @@ set -eu
 
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || echo "")
+AGENT_CONFIG_DIR="${AGENT_CONFIG_DIR:-$HOME/.local-sdlc-agent}"
 
 if [ -z "$COMMAND" ]; then
   exit 0
@@ -26,7 +27,7 @@ fi
 block() {
   echo "BLOCKED: $1" >&2
   echo "コマンド: $COMMAND" >&2
-  echo "このブロックは ~/.claude/hooks/guard-bash.sh によるものです" >&2
+  echo "このブロックは $AGENT_CONFIG_DIR/hooks/guard-bash.sh によるものです" >&2
   exit 2
 }
 
@@ -130,7 +131,7 @@ fi
 # ============================================================
 
 if echo "$COMMAND" | grep -E '(^|[;&|]\s*)sudo\s' > /dev/null; then
-  block "sudo 使用はユーザーが直接実行してください（Claude からの実行は禁止）"
+  block "sudo 使用はユーザーが直接実行してください（エージェントからの実行は禁止）"
 fi
 
 # ============================================================

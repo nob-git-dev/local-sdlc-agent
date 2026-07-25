@@ -1,11 +1,11 @@
-# Claude SDLC Skills
+# Local SDLC Skills
 
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
 [![Commercial License Available](https://img.shields.io/badge/Commercial%20License-Available-blue.svg)](LICENSE-COMMERCIAL.md)
 
-**仕様書を中心に、ソフトウェア開発ライフサイクルを規律正しく進める Claude Code スキルセット。**
+**仕様書を中心に、ソフトウェア開発ライフサイクルを規律正しく進める製品非依存のスキルセット。**
 
-Claude Code に `/spec`, `/architect`, `/tdd`, `/review`, `/deploy` などの専門スキルを追加し、  
+ローカルエージェントに `/spec`, `/architect`, `/tdd`, `/review`, `/deploy` などの専門スキルを追加し、
 「仕様の定義 → 設計 → 実装 → 検証」のプロセスを一貫して守りながら開発を駆動します。
 
 ---
@@ -98,7 +98,7 @@ SPEC.md の `## 受け入れ条件` を一つずつ確認コマンドで照合�
 
 ```
 User
-  ↓ claude --agent supervisor
+  ↓ エージェント実行環境で supervisor を選択
   ↓
 Supervisor（意図の分類・危険信号の検知・承認確認）
   ↓
@@ -150,10 +150,10 @@ Supervisor を入れない場合、何が起きるか。
 
 ```
 ユーザー: 「このバグを直して」
-Claude:   （/sdlc を経由せず）直接コードを修正する
+実行エージェント: （/sdlc を経由せず）直接コードを修正する
 ```
 
-開発タスクであっても、Claude はそのまま実装に入る。  
+開発タスクであっても、実行エージェントはそのまま実装に入る。
 仕様書を書く機会も、設計を確認するフェーズも、レビューも——すべて飛ばされる。  
 スキルは揃っているのに、誰もそれを呼ばない状態だ。
 
@@ -199,24 +199,26 @@ cd local-sdlc-agent/sdlc-skills
 ./scripts/install.sh
 ```
 
-`~/.claude/settings.json` にフックと Supervisor を追加（テンプレート: `hooks/settings-snippet.json`）：
+利用する実行環境が次の hook schema をサポートする場合、
+`~/.local-sdlc-agent/settings.json` にフックと Supervisor を追加します
+（テンプレート: `hooks/settings-snippet.json`）：
 
 ```json
 {
   "agent": "supervisor",
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash",       "hooks": [{"type": "command", "command": "~/.claude/hooks/guard-bash.sh",  "timeout": 3}] },
-      { "matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.claude/hooks/guard-write.sh", "timeout": 3}] }
+      { "matcher": "Bash",       "hooks": [{"type": "command", "command": "~/.local-sdlc-agent/hooks/guard-bash.sh",  "timeout": 3}] },
+      { "matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.local-sdlc-agent/hooks/guard-write.sh", "timeout": 3}] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{"type": "command", "command": "~/.claude/hooks/suggest-sdlc.sh", "timeout": 3}] }
+      { "hooks": [{"type": "command", "command": "~/.local-sdlc-agent/hooks/suggest-sdlc.sh", "timeout": 3}] }
     ]
   }
 }
 ```
 
-次回 `claude` 起動時から Supervisor が常駐し、開発タスクを自動的に `/sdlc` へ誘導します。
+設定後、対応する実行環境の次回起動時から Supervisor が開発タスクを `/sdlc` へ誘導します。
 
 特定のスキルだけ取得したい場合は sparse-checkout が使えます：
 
@@ -239,14 +241,14 @@ cd sdlc-skills
 
 | ファイル | 位置づけ | 導入先 |
 |---|---|---|
-| [`docs/judgment-principles.md`](docs/judgment-principles.md) | 全エージェント向けの**薄い普遍要旨**（判断と検証の原則 5 項目）| `~/.claude/CLAUDE.md` に**手動追記** |
-| [`docs/work-constitution.md`](docs/work-constitution.md) | Supervisor 向けの**詳細正典**（行動の憲法 全12条）| Supervisor のメモリ（例: `~/.claude/agent-memory/supervisor/`）に**手動配置** |
+| [`docs/judgment-principles.md`](docs/judgment-principles.md) | 全エージェント向けの**薄い普遍要旨**（判断と検証の原則 5 項目）| 実行環境のエージェント向け指示ファイルに**手動追記** |
+| [`docs/work-constitution.md`](docs/work-constitution.md) | Supervisor 向けの**詳細正典**（行動の憲法 全12条）| Supervisor が参照できるプロジェクトメモリまたは設定領域に**手動配置** |
 
-`CLAUDE.md` に書いた内容は fork スキル・subagent に自動継承されるため、薄い要旨はそこに置きます。
+実行環境が指示の継承を提供する場合、薄い要旨を fork スキル・subagent にも渡します。
 詳細と各条の本質は `work-constitution.md` に置き、二重定義を避けます（単一情報源）。
 
 > **`install.sh` はこれらを配置しません。** インストーラは `skills/`・`agents/`・`hooks/` のみを
-> `~/.claude/` に展開し、**あなたの `CLAUDE.md` や憲法ファイルは一切上書きしません**。
+> `~/.local-sdlc-agent/` に展開し、**既存のエージェント向け指示や憲法ファイルは一切上書きしません**。
 > 判断の原則・憲法の導入は、内容を確認のうえ各テンプレート冒頭の手順に従って**手動で**行ってください。
 
 導入は任意です。スキル群だけでも動作します。原則・憲法を入れると、Supervisor の危険信号検知
@@ -258,7 +260,7 @@ cd sdlc-skills
 
 仕様書プロセスとは別に、物理的なガードレールも含まれています。
 
-PreToolUse フックが Claude のツール実行直前に以下をブロックします：
+PreToolUse 対応の実行環境では、フックがエージェントのツール実行直前に以下をブロックします：
 
 | カテゴリ | 例 |
 |---|---|
@@ -266,7 +268,7 @@ PreToolUse フックが Claude のツール実行直前に以下をブロック�
 | 本番 DB 接続 | `psql ... *_prod` |
 | ファイルシステム破壊 | `rm -rf /`, `rm -rf ~` |
 | 危険な Git 操作 | `main/master` への force push, `reset --hard`, `clean -f` |
-| 権限昇格 | Claude からの `sudo` 実行 |
+| 権限昇格 | エージェントからの `sudo` 実行 |
 | 機密情報露出 | `.env` / `.pem` への書き込み、API キー混入 |
 
 > これは最終防衛線です。完全な保護ではありません（[詳細](docs/pretooluse-guards.md)）。
@@ -295,7 +297,7 @@ sdlc-skills/
     ├── design-decisions.md    設計判断の記録
     ├── pretooluse-guards.md   ガード仕様
     ├── work-constitution.md   行動の憲法（Supervisor 正典テンプレート・手動導入）
-    └── judgment-principles.md 判断と検証の原則（CLAUDE.md 追記テンプレート・手動導入）
+    └── judgment-principles.md 判断と検証の原則（エージェント向け指示への追記テンプレート・手動導入）
 ```
 
 ---
@@ -338,7 +340,7 @@ sdlc-skills/
 
 本スキルセットの開発者自身も、この問題を身をもって経験した。  
 AI エージェントに開発を任せる中で、本番データベースの全消失を短期間に 2 回経験した。  
-`CLAUDE.md` にルールを書いても、メモリに記録しても、防ぐことはできなかった。
+エージェント向け指示ファイルにルールを書いても、メモリに記録しても、防ぐことはできなかった。
 
 ---
 
@@ -371,16 +373,16 @@ AI の実行力を最大限に活かしながら、人間が合意した仕様�
 ## 動作確認済み環境
 
 - macOS (Apple Silicon) / Linux (aarch64 含む)
-- Claude Code v2.1 以降
+- スキル・subagent・PreToolUse hook 相当の機能を提供するエージェント実行環境
 - bash, jq（標準インストール済み前提）
 
 ---
 
 ## 注意事項
 
-- **`install.sh` は既存の `~/.claude/skills/`, `~/.claude/agents/`, `~/.claude/hooks/` を上書きします。**  
+- **`install.sh` は既存の `~/.local-sdlc-agent/skills/`, `agents/`, `hooks/` を上書きします。**
   実行前に `.backup-YYYYMMDD-HHMMSS/` へ自動バックアップされますが、重要な独自スキルがある場合は事前確認してください。
-- **`install.sh` は `~/.claude/CLAUDE.md` および憲法・原則テンプレート（`docs/` 配下）を上書きしません。**  
+- **`install.sh` は既存のエージェント向け指示ファイルおよび憲法・原則テンプレート（`docs/` 配下）を上書きしません。**
   判断の原則・行動の憲法は手動導入です（[該当セクション](#判断と検証の原則行動の憲法任意手動導入)参照）。
 - 個人プロジェクト・ベストエフォート保守。Issue / PR 歓迎。
 
@@ -402,4 +404,4 @@ AI の実行力を最大限に活かしながら、人間が合意した仕様�
 - [設計判断の記録](docs/design-decisions.md)
 - [PreToolUse ガード仕様](docs/pretooluse-guards.md)
 - [行動の憲法（Supervisor 正典テンプレート）](docs/work-constitution.md)
-- [判断と検証の原則（CLAUDE.md 追記テンプレート）](docs/judgment-principles.md)
+- [判断と検証の原則（エージェント向け指示への追記テンプレート）](docs/judgment-principles.md)
