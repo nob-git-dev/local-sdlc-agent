@@ -1,9 +1,10 @@
 # Local SDLC Agent
 
-> **ローカル LLM API で、仕様作成・実装・検証・失敗分析を進める独立したコーディングエージェント。**
+> **OpenAI 互換 API で、仕様作成・実装・検証・失敗分析を進める独立したコーディングエージェント。**
 
 このリポジトリの主成果物は、`python3 local_sdlc.py ...` で起動できるローカル開発エージェントです。
-OpenAI 互換 API を提供するローカル LLM に対して、PM / Coder / Judge / Failure Analysis /
+既定ではローカル LLM の OpenAI 互換 API に接続しますが、設定ファイルやCLI引数で任意の
+OpenAI互換APIへ切り替えられます。PM / Coder / Judge / Failure Analysis /
 Project Policy Triage などを別々の system prompt と API call で実行し、仕様書・実行ログ・
 変更パッチなどの文書化された生成物を介して開発を進めます。
 
@@ -31,10 +32,18 @@ Failure Analysis プロンプトを、フローチャートと図表で日本語
 |---|---|
 | アプリ本体 | `local_sdlc.py` と `local_sdlc/` |
 | 起動単位 | `python3 local_sdlc.py ...` の単独 CLI |
-| LLM 接続 | 既定は `http://localhost:30000/v1` の OpenAI 互換 API |
+| LLM 接続 | 既定は `http://localhost:30000/v1`。設定ファイル/CLIでOpenAI互換APIへ切替可能 |
 | プロンプト資産 | `sdlc-skills/` と `learning-skills/` を同梱資産として再利用 |
 | 状態交換 | 会話履歴ではなく `.sdlc-runner/runs/` の Markdown / JSON 文書 |
 | ベンチマーク | `benchmarks/` に仕様、生成成果物、実験要約を保存 |
+
+## 動作環境
+
+- Python 3.10 以上を対象とします。`pyproject.toml` の `requires-python` も `>=3.10` です。
+- 現在の `.py` ファイルは Python 3.10 / 3.11 の構文として静的解析済みです。3.12 以上専用の構文や、本体での 3.12 以上専用標準ライブラリ API は使っていません。
+- ローカル実行確認は Python 3.12.3 で行っています。
+- Python 3.13 は今回の実機確認対象外です。3.13 対応を保証する場合は CI の検証 matrix に追加してください。
+- コア CLI / Web UI は外部 Python パッケージ不要です。LLM は別途 OpenAI 互換 API として起動・設定します。
 
 ## クイックスタート
 
@@ -51,6 +60,33 @@ python3 local_sdlc.py doctor
 python3 local_sdlc.py run-stages --help
 python3 local_sdlc.py agent --help
 ```
+
+API接続先をプロジェクトに固定する場合は、公開用サンプルをコピーして編集します。
+`local_sdlc.json` / `local_sdlc.yaml` / `local_sdlc.yml` は `.gitignore` 済みです。
+
+```bash
+cp local_sdlc.example.json local_sdlc.json
+export LOCAL_LLM_API_KEY=...
+python3 local_sdlc.py doctor
+```
+
+外部のOpenAI互換APIを使う場合も、キー本体はファイルへ直書きせず `api_key_env` を推奨します。
+
+```json
+{
+  "llm": {
+    "base_url": "https://api.example.com/v1",
+    "api_key_env": "EXAMPLE_API_KEY",
+    "model": "example-model",
+    "model_profile": "default",
+    "timeout": 300,
+    "stream": true
+  }
+}
+```
+
+優先順位は `CLI引数 > project config > 環境変数 > 内蔵デフォルト` です。API call別の調整は
+設定ファイルの `api_profile` / `function_profiles` でも、従来通り `--api-profile` でも指定できます。
 
 ブラウザからチャット形式で使う場合:
 

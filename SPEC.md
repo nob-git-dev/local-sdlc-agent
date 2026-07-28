@@ -2,7 +2,8 @@
 
 ## 目的
 
-ローカル OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析を進める単一 CLI 型のコーディングエージェントとして実行する。
+OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析を進める単一 CLI 型のコーディングエージェントとして実行する。
+既定接続先はローカル LLM API とするが、プロジェクト設定ファイル、環境変数、CLI 引数によって任意の OpenAI 互換 API へ切り替えられる。
 
 ここでいう「単一プログラム」は利用者から見た起動単位を意味し、単一ソースファイルを意味しない。内部実装は責務ごとにモジュール分割し、将来の GUI 組み込みでも同じ Application / Domain / Infrastructure を再利用できる構造にする。
 
@@ -19,7 +20,8 @@
 | 機能・コンポーネント | 目的（この機能が存在する理由） | 変えてはならない本質 |
 |---|---|---|
 | スキルローダー | `sdlc-skills/skills/*/SKILL.md` をプロンプト資産として再利用する | 役割・安全規律・生成物契約を保ち、特定製品への依存だけを源流資産から除く |
-| ローカル LLM クライアント | `http://localhost:30000/v1` などの OpenAI 互換 API に接続する | 外部クラウド API を前提にしない |
+| LLM クライアント | `http://localhost:30000/v1` などの OpenAI 互換 API に接続する | 特定 provider を前提にせず、既定はローカル、必要時は設定で切り替えられる |
+| API Configuration | `local_sdlc.json/yaml/yml`、環境変数、CLI 引数から LLM 接続情報を合成する | 秘密値を Git 管理へ入れず、API 差し替えが role/function profile 設計を壊さない |
 | SPEC 駆動フロー | `SPEC.md` を中心に仕様・設計・実装案・レビューを進める | SPEC.md を唯一の根拠として扱う思想を維持する |
 | パッチ提案 | ローカル LLM に unified diff を生成させ、人間確認後に適用できるようにする | 破壊的変更や未確認パッチを自動適用しない |
 | Doctor/検証 | 実行環境・スキル配置・LLM 接続を確認する | 可変環境事実を未確認のまま固定要件化しない |
@@ -39,6 +41,9 @@
 ## 振る舞い
 
 - `local_sdlc.py doctor` は、スキルディレクトリ、利用可能スキル、`SPEC.md`、git 状態、ローカル LLM API の到達性を確認する。
+- `local_sdlc.py doctor` は、読み込んだ `local_sdlc.json/yaml/yml` または `--config-file` のパスを表示し、実効 LLM API 設定を監査できる。
+- `local_sdlc.py` は、API 接続設定を `CLI 引数 > project config > 環境変数 > 内蔵デフォルト` の順に合成する。
+- `local_sdlc.json/yaml/yml` の `llm.api_key_env` は、API キー値ではなく環境変数名を指す。runner はその環境変数から秘密値を読む。
 - `local_sdlc.py list-skills` は、読み込めるスキル名と説明を表示する。
 - `local_sdlc.py spec "<依頼内容>"` は、`spec` スキル本文と依頼内容を LLM に渡し、`SPEC.md` 草案を生成する。
 - `local_sdlc.py phase <skill>` は、既存 `SPEC.md` 全文と指定スキル本文を LLM に渡し、該当フェーズの提案を生成する。
@@ -64,6 +69,8 @@
 - 書き込みやパッチ適用は `--apply` が指定されたときだけ行う。デフォルトは標準出力またはパッチファイルへの保存に留める。
 - `local_sdlc.py web --host 127.0.0.1 --port 8765` は、Python 標準ライブラリのみで軽量HTTPサーバーを起動し、ブラウザ用の単一HTMLチャットUIを返す。
 - Web UI からの実行は既存 CLI コマンドをローカル子プロセスとして起動し、stdout/stderr と job metadata を `.sdlc-runner/web/jobs/` に保存する。
+- Web UI のプロジェクト欄に存在しない新規ディレクトリを指定した場合、Web サーバー起動時の project 親ディレクトリ配下に限りジョブ開始前に自動作成する。
+- Web UI から別プロジェクトを対象にする場合でも、`--skills-dir` は Web UI を起動したエージェント本体リポジトリ内の `sdlc-skills/skills` を絶対パスで渡す。
 - Web UI はジョブの開始、状態取得、ログ表示、停止だけを担当し、パッチ適用・テスト・Judge 判定などの制御は既存 runner に委譲する。
 - `python3 -m local_sdlc ...` は `local_sdlc.py ...` と同じ CLI を起動し、将来の package install / console script 起動に備える。
 
@@ -99,7 +106,13 @@
 - [x] `python3 local_sdlc.py web --host 127.0.0.1 --port 8765` で、完全ローカルのHTMLチャットUIを起動できる
 - [x] Web UI は外部 Python パッケージ、npm、CDNを使わず、既存CLIを安全な argv 子プロセスとして起動する
 - [x] Web UI から開始したジョブの状態、コマンド、ログ保存先、標準出力をブラウザで確認できる
+- [x] Web UI のプロジェクト欄で作業ルート配下の新規ディレクトリを指定した場合、ジョブ開始前に自動作成し、範囲外の新規ディレクトリ作成は拒否できる
+- [x] Web UI から別プロジェクトを対象にしても、スキルディレクトリはエージェント本体側の絶対パスを使い、対象プロジェクト側に `sdlc-skills/skills` が無くても起動できる
 - [x] `python3 -m local_sdlc web --help` で package entrypoint 経由の起動ヘルプを表示できる
+- [x] `local_sdlc.json` / `local_sdlc.yaml` / `local_sdlc.yml` に `llm.base_url`, `llm.api_key_env`, `llm.model`, `llm.model_profile`, `llm.api_profile` を保存し、CLI引数なしで読み込める
+- [x] `--config-file` で任意の設定ファイルを指定でき、相対パスは `--project` から解決される
+- [x] CLI引数は設定ファイルのAPI設定を上書きできる
+- [x] Web UI は設定ファイルを子プロセスへ引き継ぎ、画面で入力されたAPIキーをコマンド表示やジョブログへ露出しない
 
 ## スコープ（やらないこと）
 
@@ -114,9 +127,14 @@
 - 利用者向けの CLI entrypoint は `local_sdlc.py` として維持する
 - package entrypoint として `python3 -m local_sdlc` を維持する
 - 利用者向けのローカルWeb entrypoint は `local_sdlc.py web` として維持する
+- Web UI が自動作成できる新規 project directory は、Web サーバー起動時の project 親ディレクトリ配下に限定する
+- Web UI の子プロセスには、エージェント本体リポジトリの `sdlc-skills/skills` を絶対 `--skills-dir` として渡す
 - 内部実装は責務ごとに `local_sdlc/` パッケージへ分割する
 - Python 標準ライブラリのみを使う
-- デフォルト LLM API は `http://localhost:30000/v1` とし、環境変数で上書き可能にする
+- デフォルト LLM API は `http://localhost:30000/v1` とし、project config、環境変数、CLI引数で上書き可能にする
+- project config は `local_sdlc.json`, `local_sdlc.yaml`, `local_sdlc.yml` を自動検出し、`--config-file` で明示指定もできる
+- 実設定ファイルは秘密値を含む可能性があるためGit管理しない。公開用には `local_sdlc.example.json` のみを置く
+- APIキーは `api_key_env` で環境変数名を指定する方式を推奨し、Web UI はAPIキーを表示コマンドやジョブログへ残さない
 - デフォルトではファイル変更・パッチ適用を行わない
 - `SPEC.md` 全文をフェーズプロンプトに含め、省略・要約を既定動作にしない
 - `sdlc-skills/skills/*/SKILL.md` の役割・安全規律・生成物契約を維持し、特定製品・企業・専用ランタイムへの依存表現は源流資産自体で中立化する
@@ -127,6 +145,9 @@
 - Qwen/Ornith 等のモデル別最適化は名前付き `model_profile` preset として管理し、散在する個別 flag やハードコードされたモデル名へ退化させない
 - 実効 API 設定は `model_profile default -> global --model -> role override -> function profile -> --api-profile FUNCTION overrides` の階層で合成する
 - model、temperature、max_tokens、thinking は API call 単位で監査可能にし、単一グローバル設定だけに閉じ込めない
+- 分析系 API call は、サービング層が `reasoning_content` と `content` を分離できる場合に thinking on を許可する
+- 成果物生成系 API call は、patch / JSON / `BEGIN_FILE` の機械可読性を守るため thinking off を維持する
+- `reasoning_content` は監査用 metadata として保存するが、後続スキルに渡す本文・artifact・handoff document にはそのまま混ぜない
 - 将来の mixed-model 運用のため、function/API call 単位の model override を維持する
 - `doctor` と `run.json` は有効な `model_profile` と role/function 別 model/API 設定を表示・保存する
 
@@ -213,8 +234,14 @@
 **理由:** ロールは責務、function は認知処理、model profile はモデル特性、api profile は実行設定を表す。これらを分離すると、Qwen/Ornith の比較や、生成物作成だけ Qwen・失敗分析だけ Ornith のような mixed-model 実験を安全に行える。
 **影響:** `doctor` と `run.json` は `model_profile` と role/function 別の有効 model/API 設定を必ず表示・保存する。将来モデルや function が増えても、preset table と function profile table に追加し、散在する条件分岐やハードコードで管理しない。
 
-#### ADR-10: Web UI は CLI harness の薄いローカル adapter として実装する
-**状況:** ブラウザ型のAI開発エージェントのように、画面上で依頼を入力し、進捗を追える体験が必要になった。一方で、この agent の安全性は既存 CLI runner の artifact 検査、テスト、Judge、run document 保存に依存している。
+#### ADR-10: API provider 設定は project config と環境変数で外出しする
+**状況:** 初期運用では `http://localhost:30000/v1` のローカル LLM を前提にしていた。しかし今後は Qwen/Ornith などのローカルモデルだけでなく、任意の OpenAI 互換 API や mixed-model 運用を比較する必要がある。
+**判断:** `local_sdlc.json/yaml/yml` と `--config-file` を導入し、`llm.base_url`, `llm.model`, `llm.model_profile`, `llm.api_profile`, `llm.function_profiles`, `llm.role_profiles`, `llm.api_key_env` をプロジェクト単位で設定できるようにする。優先順位は `CLI 引数 > project config > 環境変数 > 内蔵デフォルト` とする。
+**理由:** API接続先とモデル設定をコードや長いCLI引数に散在させると、比較実験・再実行・公開時の秘匿が難しくなる。project config で provider 設定を外在化し、APIキーは `api_key_env` で環境変数名だけを保存する。
+**影響:** 既定のローカル LLM 運用は維持する。実設定ファイルは `.gitignore` し、公開用には `local_sdlc.example.json` のみを管理する。Web UI は設定ファイルを子プロセスへ渡し、画面で入力されたAPIキーはコマンド表示やジョブログへ残さない。
+
+#### ADR-11: Web UI は CLI harness の薄いローカル adapter として実装する
+**状況:** ブラウザ型の AI 開発エージェントとして、画面上で依頼を入力し、進捗を追える体験が必要になった。一方で、この agent の安全性は既存 CLI runner の artifact 検査、テスト、Judge、run document 保存に依存している。
 **判断:** `local_sdlc.py web` は Python 標準ライブラリの `ThreadingHTTPServer` で単一HTMLを配信し、UI からの依頼を既存 CLI コマンドの argv に変換してローカル子プロセスとして起動する。
 **理由:** Web UI が agent harness を再実装すると、CLI とブラウザで挙動が分岐し、安全制御が抜ける。UI は開始・監視・停止だけに限定し、実装判断は既存 Application/Domain/Infrastructure 層へ委譲する。
 **影響:** Web UI は完全ローカルで動く。外部Web framework、npm、CDNは不要。ジョブログは `.sdlc-runner/web/jobs/` に残り、CLI実行時の `.sdlc-runner/runs/` と合わせて監査できる。

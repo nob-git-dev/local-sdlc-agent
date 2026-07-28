@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import sys
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from .models import DEFAULT_BASE_URL, DEFAULT_MODEL, MODEL_PROFILE_ALIASES, RunnerError
-from .web_jobs import JobRegistry, WebConfig, _repo_entrypoint, build_cli_command
+from .llm_client import build_config
+from .models import DEFAULT_API_KEY, MODEL_PROFILE_ALIASES, RunnerError
+from .web_jobs import JobRegistry, WebConfig, _repo_entrypoint, build_cli_command, resolve_project_path
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
+MAX_PREVIEW_BYTES = 10 * 1024 * 1024
 ASSET_DIR = Path(__file__).resolve().parent / "web_assets"
 INDEX_HTML_PATH = ASSET_DIR / "index.html"
 
@@ -58,6 +61,35 @@ class AgentWebHandler(BaseHTTPRequestHandler):
         if include_body:
             self.wfile.write(data)
 
+    def _send_project_file(self, query: str, include_body: bool = True) -> None:
+        raw_path = (parse_qs(query).get("path") or [""])[0]
+        try:
+            path, _relative = resolve_project_path(self.config.project, raw_path)
+        except RunnerError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST, include_body=include_body)
+            return
+        if not path.exists() or not path.is_file():
+            self._send_json({"error": "file not found"}, HTTPStatus.NOT_FOUND, include_body=include_body)
+            return
+        try:
+            size = path.stat().st_size
+        except OSError:
+            self._send_json({"error": "file cannot be read"}, HTTPStatus.NOT_FOUND, include_body=include_body)
+            return
+        if size > MAX_PREVIEW_BYTES:
+            self._send_json({"error": "file is too large to preview"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, include_body=include_body)
+            return
+        data = path.read_bytes() if include_body else b""
+        content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f"inline; filename={path.name!r}")
+        self.end_headers()
+        if include_body:
+            self.wfile.write(data)
+
     def _read_json(self) -> dict[str, object]:
         raw_length = self.headers.get("Content-Length", "0")
         try:
@@ -78,9 +110,13 @@ class AgentWebHandler(BaseHTTPRequestHandler):
         return payload
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/":
             self._send_html()
+            return
+        if path == "/files":
+            self._send_project_file(parsed.query)
             return
         if path == "/api/config":
             self._send_json(
@@ -88,9 +124,11 @@ class AgentWebHandler(BaseHTTPRequestHandler):
                     "host": self.config.host,
                     "port": self.config.port,
                     "project": str(self.config.project),
+                    "config_file": str(self.config.config_file or ""),
                     "base_url": self.config.base_url,
                     "model": self.config.model,
                     "model_profile": self.config.model_profile,
+                    "api_key_configured": self.config.api_key_configured,
                     "model_profiles": sorted(MODEL_PROFILE_ALIASES),
                 }
             )
@@ -109,9 +147,13 @@ class AgentWebHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_HEAD(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/":
             self._send_html(include_body=False)
+            return
+        if path == "/files":
+            self._send_project_file(parsed.query, include_body=False)
             return
         if path == "/api/config":
             self._send_json({"status": "ok"}, include_body=False)
@@ -165,14 +207,17 @@ def command_web(args: argparse.Namespace) -> int:
     entrypoint = args.entrypoint.resolve()
     if not entrypoint.exists():
         raise RunnerError(f"entrypoint not found: {entrypoint}")
+    llm_config = build_config(args)
     config = WebConfig(
         host=args.host,
         port=args.port,
         project=project,
         entrypoint=entrypoint,
-        base_url=args.base_url or DEFAULT_BASE_URL,
-        model=args.model or DEFAULT_MODEL,
-        model_profile=args.model_profile,
+        config_file=Path(llm_config.config_file) if llm_config.config_file else None,
+        base_url=llm_config.base_url,
+        model=llm_config.model,
+        model_profile=llm_config.model_profile,
+        api_key_configured=bool(llm_config.api_key and llm_config.api_key != DEFAULT_API_KEY),
         open_browser=bool(args.open_browser),
     )
     return serve(config)

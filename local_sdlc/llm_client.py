@@ -12,14 +12,44 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 from typing import Callable
 
+from .config import AppConfig, config_bool, config_number, config_string, config_string_list, config_value, load_app_config
 from .models import *
 from .utils import compact_preview, strip_markdown_fence
+
+MAX_REASONING_RECORD_CHARS = 20000
 
 class LocalLLMClient:
     def __init__(self, config: LLMConfig):
         self.config = config
+        self.reasoning_records: list[dict[str, object]] = []
+
+    def _record_reasoning_content(
+        self,
+        *,
+        agent_level: str,
+        call_function: str,
+        model: str,
+        reasoning: object,
+        original_chars: int | None = None,
+    ) -> None:
+        text = str(reasoning or "")
+        if not text.strip():
+            return
+        chars = int(original_chars) if original_chars is not None else len(text)
+        truncated = chars > len(text) or len(text) > MAX_REASONING_RECORD_CHARS
+        self.reasoning_records.append(
+            {
+                "agent_level": normalize_agent_level(agent_level),
+                "call_function": normalize_call_function(call_function),
+                "model": model,
+                "chars": chars,
+                "truncated": truncated,
+                "reasoning_content": text[:MAX_REASONING_RECORD_CHARS],
+            }
+        )
 
     def _alarm_handler(self, _signum, _frame):
         raise TimeoutError("wall-clock request timeout")
@@ -155,7 +185,7 @@ class LocalLLMClient:
         partial_output_path: Path | None = None,
         progress_callback: Callable[[LLMStreamStats], None] | None = None,
         stream_guard: Callable[[str], ArtifactStreamGuardResult] | None = None,
-    ) -> tuple[str, LLMStreamStats]:
+    ) -> tuple[str, LLMStreamStats, str, int]:
         payload = {
             "model": model,
             "messages": messages,
@@ -177,6 +207,9 @@ class LocalLLMClient:
             method="POST",
         )
         output_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_chars = 0
+        reasoning_saved_chars = 0
         chunks_received = 0
         content_chunks = 0
         reasoning_chunks = 0
@@ -246,7 +279,14 @@ class LocalLLMClient:
                                     threshold=guard_result.threshold,
                                 )
                     elif reasoning:
+                        reasoning_text = str(reasoning)
                         reasoning_chunks += 1
+                        reasoning_chars += len(reasoning_text)
+                        if reasoning_saved_chars < MAX_REASONING_RECORD_CHARS:
+                            remaining = MAX_REASONING_RECORD_CHARS - reasoning_saved_chars
+                            saved_part = reasoning_text[:remaining]
+                            reasoning_parts.append(saved_part)
+                            reasoning_saved_chars += len(saved_part)
                     if progress_callback and (content_chunks == 1 or chunks_received % 20 == 0):
                         progress_callback(
                             LLMStreamStats(
@@ -293,7 +333,8 @@ class LocalLLMClient:
             )
         if not content_text:
             raise RunnerError("LLM streaming API returned an empty message with no content")
-        return content_text, stats
+        reasoning_text = "".join(reasoning_parts)
+        return content_text, stats, reasoning_text, reasoning_chars
 
     def complete(
         self,
@@ -319,7 +360,7 @@ class LocalLLMClient:
 
         try:
             if self.config.stream:
-                content, _stats = self.chat_completion_stream(
+                content, _stats, reasoning, reasoning_chars = self.chat_completion_stream(
                     messages,
                     model=model,
                     temperature=settings.temperature,
@@ -329,6 +370,14 @@ class LocalLLMClient:
                     progress_callback=stream_callback,
                     stream_guard=stream_guard,
                 )
+                if reasoning:
+                    self._record_reasoning_content(
+                        agent_level=agent_level,
+                        call_function=call_function,
+                        model=model,
+                        reasoning=reasoning,
+                        original_chars=reasoning_chars,
+                    )
                 return content
             result = self.chat_completion_raw(
                 messages,
@@ -350,12 +399,20 @@ class LocalLLMClient:
         if not choices:
             raise RunnerError("LLM API returned no choices")
         choice = choices[0]
-        content = (choice.get("message") or {}).get("content")
+        message = choice.get("message") or {}
+        reasoning = message.get("reasoning") or message.get("reasoning_content")
+        if reasoning:
+            self._record_reasoning_content(
+                agent_level=agent_level,
+                call_function=call_function,
+                model=model,
+                reasoning=reasoning,
+            )
+        content = message.get("content")
         if content is None:
             content = choice.get("text")
         if content is None:
-            message = choice.get("message") or {}
-            if message.get("reasoning"):
+            if reasoning:
                 raise RunnerError(
                     "LLM API returned reasoning-only output with empty content; "
                     "try the default no-thinking mode, a larger --max-tokens, or a model that emits message.content"
@@ -363,27 +420,106 @@ class LocalLLMClient:
             raise RunnerError("LLM API returned an empty message with no content")
         return str(content).strip()
 
+def _app_config_for_args(args: argparse.Namespace) -> AppConfig:
+    project = getattr(args, "project", Path.cwd())
+    if not isinstance(project, Path):
+        project = Path(str(project))
+    explicit = getattr(args, "config_file", None)
+    if explicit is not None and not isinstance(explicit, Path):
+        explicit = Path(str(explicit))
+    return load_app_config(project.resolve(), explicit)
+
+
+def _cli_value(args: argparse.Namespace, name: str) -> Any:
+    value = getattr(args, name, None)
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
+def _float_setting(args: argparse.Namespace, section: dict[str, Any], name: str, default: float) -> float:
+    cli = _cli_value(args, name)
+    if cli is not None:
+        return float(cli)
+    config = config_number(section, name, number_type=float)
+    return float(config) if config is not None else float(default)
+
+
+def _int_setting(args: argparse.Namespace, section: dict[str, Any], name: str, default: int) -> int:
+    cli = _cli_value(args, name)
+    if cli is not None:
+        return int(cli)
+    config = config_number(section, name, number_type=int)
+    return int(config) if config is not None else int(default)
+
+
+def _bool_setting(args: argparse.Namespace, section: dict[str, Any], name: str, default: bool) -> bool:
+    cli = _cli_value(args, name)
+    if cli is not None:
+        return bool(cli)
+    config = config_bool(section, name)
+    return bool(config) if config is not None else bool(default)
+
+
+def effective_model_profile(args: argparse.Namespace, app_config: AppConfig | None = None) -> str:
+    loaded = app_config or _app_config_for_args(args)
+    raw = _cli_value(args, "model_profile") or config_string(loaded.llm, "model_profile") or "default"
+    return normalize_model_profile(str(raw))
+
+
 def build_config(args: argparse.Namespace) -> LLMConfig:
-    role_overrides = build_role_overrides(args)
-    function_overrides = build_function_overrides(args)
-    model_profile = normalize_model_profile(getattr(args, "model_profile", "default"))
+    app_config = _app_config_for_args(args)
+    llm_section = app_config.llm
+    role_overrides = build_role_overrides(args, app_config)
+    function_overrides = build_function_overrides(args, app_config)
+    model_profile = effective_model_profile(args, app_config)
     profile_model = MODEL_PROFILE_DEFAULT_MODELS.get(model_profile, "")
+    api_key_env_name = config_string(llm_section, "api_key_env")
+    api_key_from_config_env = os.environ.get(api_key_env_name, "") if api_key_env_name else ""
+    timeout = _float_setting(args, llm_section, "timeout", DEFAULT_TIMEOUT)
+    health_timeout = _float_setting(args, llm_section, "health_timeout", DEFAULT_HEALTH_TIMEOUT)
+    temperature = _float_setting(args, llm_section, "temperature", 0.2)
+    max_tokens = _int_setting(args, llm_section, "max_tokens", 4096)
+    if timeout <= 0:
+        raise RunnerError("timeout must be positive")
+    if health_timeout <= 0:
+        raise RunnerError("health_timeout must be positive")
+    if temperature < 0:
+        raise RunnerError("temperature must be non-negative")
+    if max_tokens < 1:
+        raise RunnerError("max_tokens must be at least 1")
     return LLMConfig(
-        base_url=args.base_url
-        or os.environ.get("LOCAL_LLM_BASE_URL")
-        or os.environ.get("OPENAI_BASE_URL")
-        or DEFAULT_BASE_URL,
-        api_key=args.api_key
-        or os.environ.get("LOCAL_LLM_API_KEY")
-        or os.environ.get("OPENAI_API_KEY")
-        or DEFAULT_API_KEY,
-        model=args.model or os.environ.get("LOCAL_LLM_MODEL") or profile_model or DEFAULT_MODEL,
-        timeout=args.timeout,
-        health_timeout=args.health_timeout,
-        temperature=args.temperature,
-        max_tokens=args.max_tokens,
-        disable_thinking=not args.enable_thinking,
-        stream=bool(args.stream),
+        base_url=(
+            _cli_value(args, "base_url")
+            or config_string(llm_section, "base_url")
+            or os.environ.get("LOCAL_LLM_BASE_URL")
+            or os.environ.get("OPENAI_BASE_URL")
+            or DEFAULT_BASE_URL
+        ),
+        api_key=(
+            _cli_value(args, "api_key")
+            or os.environ.get("LOCAL_SDLC_API_KEY")
+            or api_key_from_config_env
+            or config_string(llm_section, "api_key")
+            or os.environ.get("LOCAL_LLM_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or DEFAULT_API_KEY
+        ),
+        model=(
+            _cli_value(args, "model")
+            or config_string(llm_section, "model")
+            or os.environ.get("LOCAL_LLM_MODEL")
+            or profile_model
+            or DEFAULT_MODEL
+        ),
+        timeout=timeout,
+        health_timeout=health_timeout,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        disable_thinking=not _bool_setting(args, llm_section, "enable_thinking", False),
+        stream=_bool_setting(args, llm_section, "stream", False),
+        model_profile=model_profile,
+        config_file=str(app_config.path or ""),
         role_overrides=role_overrides,
         function_overrides=function_overrides,
     )
@@ -404,18 +540,87 @@ def profile_function_overrides(profile: str) -> dict[str, LLMRoleOverride]:
 def parse_role_thinking(value: str | None) -> bool | None:
     if not value or value == "default":
         return None
-    if value == "off":
+    value = value.strip().lower()
+    if value in {"off", "false", "0", "no"}:
         return True
-    if value == "on":
+    if value in {"on", "true", "1", "yes"}:
         return False
     raise RunnerError(f"unknown thinking mode: {value}")
 
-def build_role_overrides(args: argparse.Namespace) -> dict[str, LLMRoleOverride]:
+
+def _config_thinking(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return not value
+    return parse_role_thinking(str(value))
+
+
+def _mapping_override(mapping: dict[str, Any], source: str) -> LLMRoleOverride:
+    temperature_raw = config_value(mapping, "temperature")
+    max_tokens_raw = config_value(mapping, "max_tokens")
+    thinking_raw = config_value(mapping, "thinking")
+    model = config_string(mapping, "model")
+    temperature = float(temperature_raw) if temperature_raw is not None else None
+    max_tokens = int(max_tokens_raw) if max_tokens_raw is not None else None
+    disable_thinking = _config_thinking(thinking_raw)
+    if temperature is not None and temperature < 0:
+        raise RunnerError(f"{source} temperature must be non-negative")
+    if max_tokens is not None and max_tokens < 1:
+        raise RunnerError(f"{source} max_tokens must be at least 1")
+    return LLMRoleOverride(
+        temperature=temperature,
+        max_tokens=max_tokens,
+        disable_thinking=disable_thinking,
+        model=model,
+    )
+
+
+def _role_section(llm_section: dict[str, Any], role: str) -> dict[str, Any]:
+    roles = config_value(llm_section, "role_profiles", "roles")
+    role_config = roles.get(role) if isinstance(roles, dict) else None
+    return role_config if isinstance(role_config, dict) else {}
+
+
+def build_role_overrides(
+    args: argparse.Namespace,
+    app_config: AppConfig | None = None,
+) -> dict[str, LLMRoleOverride]:
+    loaded = app_config or _app_config_for_args(args)
+    llm_section = loaded.llm
     overrides: dict[str, LLMRoleOverride] = {}
+    defaults = {
+        "pm": (DEFAULT_PM_MAX_TOKENS, 0.2, "default"),
+        "coder": (DEFAULT_CODER_MAX_TOKENS, 0.1, "off"),
+        "judge": (DEFAULT_JUDGE_MAX_TOKENS, 0.0, "off"),
+    }
     for role in ("pm", "coder", "judge"):
-        max_tokens = getattr(args, f"{role}_max_tokens", None)
-        temperature = getattr(args, f"{role}_temperature", None)
-        thinking = parse_role_thinking(getattr(args, f"{role}_thinking", "default"))
+        default_max_tokens, default_temperature, default_thinking = defaults[role]
+        role_section = _role_section(llm_section, role)
+        max_tokens = _cli_value(args, f"{role}_max_tokens")
+        if max_tokens is None:
+            max_tokens = config_number(role_section, "max_tokens", number_type=int)
+        if max_tokens is None:
+            max_tokens = config_number(llm_section, f"{role}_max_tokens", number_type=int)
+        if max_tokens is None:
+            max_tokens = default_max_tokens
+
+        temperature = _cli_value(args, f"{role}_temperature")
+        if temperature is None:
+            temperature = config_number(role_section, "temperature", number_type=float)
+        if temperature is None:
+            temperature = config_number(llm_section, f"{role}_temperature", number_type=float)
+        if temperature is None:
+            temperature = default_temperature
+
+        thinking_raw = _cli_value(args, f"{role}_thinking")
+        if thinking_raw is None:
+            thinking_raw = config_value(role_section, "thinking")
+        if thinking_raw is None:
+            thinking_raw = config_value(llm_section, f"{role}_thinking")
+        if thinking_raw is None:
+            thinking_raw = default_thinking
+        thinking = _config_thinking(thinking_raw)
         if max_tokens is not None and max_tokens < 1:
             raise RunnerError(f"--{role}-max-tokens must be at least 1")
         if temperature is not None and temperature < 0:
@@ -471,8 +676,25 @@ def parse_api_profile_override(value: str) -> tuple[str, LLMRoleOverride]:
         model=model,
     )
 
-def build_function_overrides(args: argparse.Namespace) -> dict[str, LLMRoleOverride]:
-    overrides: dict[str, LLMRoleOverride] = profile_function_overrides(getattr(args, "model_profile", "default"))
+def build_function_overrides(
+    args: argparse.Namespace,
+    app_config: AppConfig | None = None,
+) -> dict[str, LLMRoleOverride]:
+    loaded = app_config or _app_config_for_args(args)
+    llm_section = loaded.llm
+    overrides: dict[str, LLMRoleOverride] = profile_function_overrides(effective_model_profile(args, loaded))
+    function_profiles = config_value(llm_section, "function_profiles", "functions")
+    if isinstance(function_profiles, dict):
+        for raw_name, raw_override in function_profiles.items():
+            if not isinstance(raw_override, dict):
+                raise RunnerError(f"function_profiles.{raw_name} must be an object")
+            overrides[normalize_call_function(str(raw_name))] = _mapping_override(
+                raw_override,
+                f"function_profiles.{raw_name}",
+            )
+    for value in config_string_list(llm_section, "api_profile") or []:
+        name, override = parse_api_profile_override(value)
+        overrides[name] = override
     for value in getattr(args, "api_profile", []) or []:
         name, override = parse_api_profile_override(value)
         overrides[name] = override
@@ -607,7 +829,8 @@ def run_llm_capability_probes(client: LocalLLMClient, model: str, timeout: float
 def llm_role_recommendations(model: str) -> list[str]:
     model_key = model.lower()
     recommendations = [
-        "agent artifact calls: keep chat_template_kwargs.enable_thinking=false unless the runner consumes reasoning_content",
+        "artifact calls: keep chat_template_kwargs.enable_thinking=false so patch/JSON/BEGIN_FILE output stays machine-parseable",
+        "analysis calls: enable thinking only when the server separates reasoning_content from message.content",
         "judge calls: use temperature=0 and evidence-only prompts",
         "coder calls: prefer larger max_tokens than PM/judge when generating patches or file artifacts",
     ]
@@ -630,6 +853,10 @@ def llm_role_recommendations(model: str) -> list[str]:
             "for strict file/JSON artifacts, disable thinking per request with chat_template_kwargs.enable_thinking=false",
         )
     return recommendations
+
+def llm_reasoning_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
+    return list(getattr(client, "reasoning_records", []))
+
 
 def llm_settings_manifest(client: LocalLLMClient) -> dict[str, dict[str, object]]:
     result: dict[str, dict[str, object]] = {}
@@ -655,9 +882,10 @@ def llm_settings_manifest(client: LocalLLMClient) -> dict[str, dict[str, object]
     return result
 
 def llm_model_profile_manifest(args: argparse.Namespace) -> dict[str, object]:
-    profile = normalize_model_profile(getattr(args, "model_profile", "default"))
+    profile = effective_model_profile(args)
     return {
         "profile": profile,
+        "config_file": str(_app_config_for_args(args).path or ""),
         "default_model": MODEL_PROFILE_DEFAULT_MODELS.get(profile, ""),
         "function_overrides": {
             name: {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -12,12 +13,16 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
+from urllib.parse import quote
 
 from .models import DEFAULT_BASE_URL, DEFAULT_MODEL, RunnerError
 
 
 MAX_JOB_LOG_LINES = 4000
+PREVIEWABLE_SUFFIXES = {".html", ".htm", ".css", ".js", ".json", ".md", ".txt", ".py"}
+RUN_DIR_PATTERN = re.compile(r"^run_dir:\s*(?P<path>.+?)\s*$")
 
 
 def _utc_timestamp() -> str:
@@ -51,15 +56,281 @@ def _repo_entrypoint() -> Path:
     return Path(__file__).resolve().parents[1] / "local_sdlc.py"
 
 
+def _tail_file(path: Path, max_lines: int) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as file:
+            return list(deque(file, maxlen=max_lines))
+    except OSError:
+        return []
+
+
+def _find_run_dir(log_path: Path, output_lines: list[str]) -> Path | None:
+    candidates = output_lines
+    if log_path.exists():
+        try:
+            candidates = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            candidates = output_lines
+    for line in candidates:
+        match = RUN_DIR_PATTERN.match(line.strip())
+        if match:
+            return Path(match.group("path")).expanduser().resolve()
+    return None
+
+
+def _read_json_file(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _values_after_flag(command_display: str, flag: str) -> list[str]:
+    try:
+        argv = shlex.split(command_display)
+    except ValueError:
+        return []
+    values: list[str] = []
+    for index, value in enumerate(argv[:-1]):
+        if value == flag:
+            values.append(argv[index + 1])
+    return values
+
+
+def looks_like_creation_request(brief: str) -> bool:
+    text = brief.strip().lower()
+    if not text:
+        return False
+    creation_terms = ("作って", "作成", "作る", "実装", "生成", "build", "create", "make")
+    consult_terms = ("分析", "原因", "相談", "教えて", "なぜ", "どう", "確認")
+    return any(term in text for term in creation_terms) and not any(term in text for term in consult_terms)
+
+
+def suggest_new_files_from_brief(brief: str) -> list[str]:
+    text = brief.strip().lower()
+    if any(term in text for term in ("テトリス", "tetris")):
+        return ["tetris.html"]
+    if any(term in text for term in ("html", "ブラウザ", "web", "ウェブ", "ゲーム", "game")):
+        return ["index.html"]
+    return []
+
+
+def resolve_project_path(project: Path, raw_path: str) -> tuple[Path, str]:
+    if not raw_path:
+        raise RunnerError("file path is required")
+    path = Path(raw_path).expanduser()
+    candidate = path.resolve() if path.is_absolute() else (project / path).resolve()
+    try:
+        relative = candidate.relative_to(project.resolve())
+    except ValueError as exc:
+        raise RunnerError("file path must stay inside the project") from exc
+    return candidate, relative.as_posix()
+
+
+def ensure_project_directory(project: Path, allowed_new_root: Path) -> bool:
+    """Ensure a web-selected project directory exists.
+
+    Existing directories are accepted anywhere the local process can read.
+    New directories are auto-created only inside the web workspace root to
+    avoid turning a typo into an arbitrary filesystem mkdir.
+    """
+    resolved_project = project.expanduser().resolve()
+    if resolved_project.exists():
+        if not resolved_project.is_dir():
+            raise RunnerError(f"project path exists but is not a directory: {resolved_project}")
+        return False
+    root = allowed_new_root.expanduser().resolve()
+    try:
+        resolved_project.relative_to(root)
+    except ValueError as exc:
+        raise RunnerError(f"new project directory must be inside web workspace root: {root}") from exc
+    resolved_project.mkdir(parents=True, exist_ok=True)
+    return True
+
+
+def _artifact_entry(project: Path, raw_path: str, source: str) -> dict[str, object] | None:
+    try:
+        path, relative = resolve_project_path(project, raw_path)
+    except RunnerError:
+        return None
+    suffix = path.suffix.lower()
+    exists = path.exists() and path.is_file()
+    url_path = quote(relative, safe="/")
+    entry: dict[str, object] = {
+        "path": relative,
+        "source": source,
+        "exists": exists,
+        "suffix": suffix,
+        "previewable": exists and suffix in PREVIEWABLE_SUFFIXES,
+        "preview_url": f"/files?path={url_path}",
+    }
+    if exists:
+        try:
+            entry["size"] = path.stat().st_size
+        except OSError:
+            entry["size"] = None
+    return entry
+
+
+def _append_artifact(
+    artifacts: list[dict[str, object]],
+    seen: set[str],
+    project: Path,
+    raw_path: str,
+    source: str,
+) -> None:
+    entry = _artifact_entry(project, raw_path, source)
+    if entry is None:
+        return
+    key = str(entry["path"])
+    if key in seen:
+        return
+    artifacts.append(entry)
+    seen.add(key)
+
+
+def _infer_run_dir_from_job_id(project: Path, log_dir: Path) -> Path | None:
+    job_id = log_dir.name
+    if len(job_id) < 15:
+        return None
+    candidate = project / ".sdlc-runner" / "runs" / job_id[:15]
+    return candidate.resolve() if candidate.exists() and candidate.is_dir() else None
+
+
+def _manifest_for_run(run_dir: Path | None) -> tuple[dict[str, object], Path | None, bool]:
+    if run_dir is None:
+        return {}, None, False
+    final_path = run_dir / "run.json"
+    if final_path.exists():
+        return _read_json_file(final_path), final_path, False
+    partial_path = run_dir / "run.partial.json"
+    if partial_path.exists():
+        return _read_json_file(partial_path), partial_path, True
+    return {}, None, False
+
+
+def _progress_text(payload: dict[str, object], run_dir: Path | None, manifest: dict[str, object], partial: bool) -> str:
+    status = str(payload.get("status") or "")
+    streaming = manifest.get("streaming")
+    if isinstance(streaming, dict):
+        label = str(streaming.get("label") or "").strip()
+        stream_status = str(streaming.get("status") or "").strip()
+        if label or stream_status:
+            suffix = f" ({stream_status})" if stream_status else ""
+            if status == "running":
+                return f"実行中: {label or 'LLM処理'}{suffix}"
+            return f"最終処理: {label or 'LLM処理'}{suffix}"
+    if status == "running" and partial:
+        return "実行中: partial manifest を更新中"
+    if status == "running" and run_dir is not None:
+        return "実行中: run_dir 作成済み"
+    return ""
+
+
+def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Path, output_lines: list[str]) -> dict[str, object]:
+    """Summarize a subprocess job into UI actions and previewable artifacts."""
+    output_log = log_dir / "output.log"
+    run_dir = _find_run_dir(output_log, output_lines) or _infer_run_dir_from_job_id(project, log_dir)
+    manifest, manifest_path, partial_manifest = _manifest_for_run(run_dir)
+    artifacts: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    changed_paths = manifest.get("changed_paths")
+    if isinstance(changed_paths, list):
+        for raw_path in changed_paths:
+            _append_artifact(artifacts, seen, project, str(raw_path), "changed")
+    copied_back = manifest.get("copied_back")
+    if isinstance(copied_back, list):
+        for raw_path in copied_back:
+            _append_artifact(artifacts, seen, project, str(raw_path), "copied_back")
+    for raw_path in _values_after_flag(str(payload.get("command", "")), "--new-file"):
+        _append_artifact(artifacts, seen, project, raw_path, "requested_new_file")
+    for raw_path in _values_after_flag(str(payload.get("command", "")), "--require-path"):
+        _append_artifact(artifacts, seen, project, raw_path, "required_path")
+
+    final_verdict = str(manifest.get("final_verdict") or "")
+    failure_type = str(manifest.get("final_failure_type") or "")
+    next_actions: list[dict[str, object]] = []
+    existing_paths = [str(item["path"]) for item in artifacts if item.get("exists")]
+    if existing_paths:
+        next_actions.append(
+            {
+                "type": "continue_with_files",
+                "label": "このファイルを対象に続ける",
+                "paths": existing_paths,
+                "brief": "Webで確認した結果をもとに、このファイルを修正して",
+            }
+        )
+    brief = str(payload.get("brief") or "")
+    if str(payload.get("mode") or "") == "supervisor" and final_verdict == "planned":
+        next_actions.append(
+            {
+                "type": "execute_supervisor_plan",
+                "label": "この計画を実行する",
+                "brief": brief,
+            }
+        )
+        if looks_like_creation_request(brief):
+            next_actions.append(
+                {
+                    "type": "create_from_prompt",
+                    "label": "新規作成として直接作る",
+                    "brief": brief,
+                    "new_file": suggest_new_files_from_brief(brief),
+                }
+            )
+    if failure_type == "missing_context":
+        next_actions.append(
+            {
+                "type": "create_spec",
+                "label": "仕様書を作って続ける",
+                "brief": f"{payload.get('brief') or 'この依頼'}について、目的、固定要件、受け入れ条件、検証方法をSPEC.mdに整理して",
+            }
+        )
+    if payload.get("status") == "failed":
+        next_actions.append(
+            {
+                "type": "analyze_failure",
+                "label": "失敗理由を分析する",
+                "brief": "このジョブの失敗理由を分析し、次に入力すべき内容を具体的に示して",
+                "include": [str(output_log)] if output_log.exists() else [],
+            }
+        )
+
+    streaming = manifest.get("streaming") if isinstance(manifest.get("streaming"), dict) else {}
+    return {
+        "run_dir": str(run_dir) if run_dir is not None else "",
+        "run_manifest": str(manifest_path) if manifest_path is not None else "",
+        "partial_manifest": partial_manifest,
+        "final_verdict": final_verdict,
+        "failure_type": failure_type,
+        "progress": _progress_text(payload, run_dir, manifest, partial_manifest),
+        "current_round": manifest.get("current_round"),
+        "completed_rounds": manifest.get("completed_rounds"),
+        "api_calls": manifest.get("api_calls"),
+        "streaming_label": streaming.get("label", "") if isinstance(streaming, dict) else "",
+        "artifacts": artifacts,
+        "next_actions": next_actions,
+        "output_log": str(output_log),
+    }
+
+
 @dataclasses.dataclass(frozen=True)
 class WebConfig:
     host: str
     port: int
     project: Path
     entrypoint: Path
+    config_file: Path | None = None
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
     model_profile: str = "default"
+    api_key_configured: bool = False
     open_browser: bool = False
 
 
@@ -68,10 +339,16 @@ class BuiltCommand:
     argv: tuple[str, ...]
     cwd: Path
     display: str
+    env_overrides: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def _append_common_args(command: list[str], payload: dict[str, object], config: WebConfig, project: Path) -> None:
     command.extend(["--project", str(project)])
+    skills_dir = config.entrypoint.parent / "sdlc-skills" / "skills"
+    if skills_dir.exists():
+        command.extend(["--skills-dir", str(skills_dir)])
+    if config.config_file is not None:
+        command.extend(["--config-file", str(config.config_file)])
     base_url = _optional_text(payload, "base_url") or config.base_url
     if base_url:
         command.extend(["--base-url", base_url])
@@ -88,12 +365,16 @@ def _append_common_args(command: list[str], payload: dict[str, object], config: 
 def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCommand:
     """Build a safe argv list for a local agent subprocess."""
     mode = _optional_text(payload, "mode") or "agent"
-    if mode not in {"agent", "run-stages", "spec", "doctor", "health"}:
+    if mode not in {"agent", "run-stages", "spec", "supervisor", "doctor", "health"}:
         raise RunnerError(f"unsupported web mode: {mode}")
 
     project_text = _optional_text(payload, "project")
     project = Path(project_text).expanduser().resolve() if project_text else config.project
     command = [sys.executable, str(config.entrypoint), mode]
+    env_overrides: dict[str, str] = {}
+    api_key = _optional_text(payload, "api_key")
+    if api_key:
+        env_overrides["LOCAL_SDLC_API_KEY"] = api_key
     _append_common_args(command, payload, config, project)
 
     brief = _optional_text(payload, "brief")
@@ -111,6 +392,14 @@ def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCom
         command.append(brief)
         if _as_bool(payload.get("apply"), False):
             command.append("--apply")
+    elif mode == "supervisor":
+        command.append(brief)
+        for include in _string_list(payload.get("include")):
+            command.extend(["--include", include])
+        if _as_bool(payload.get("execute"), False):
+            command.append("--execute")
+        if _as_bool(payload.get("allow_ambiguous"), False):
+            command.append("--allow-ambiguous")
     elif mode == "run-stages":
         command.append(brief)
         spec_file = _optional_text(payload, "spec_file")
@@ -129,9 +418,18 @@ def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCom
         spec_file = _optional_text(payload, "spec_file")
         if spec_file:
             command.extend(["--spec-file", spec_file])
-        for include in _string_list(payload.get("include")):
+        includes = _string_list(payload.get("include"))
+        new_files = _string_list(payload.get("new_file"))
+        allow_no_context = _as_bool(payload.get("allow_no_context"), False)
+        if not includes and not new_files and not allow_no_context:
+            raise RunnerError(
+                "agent mode needs at least one target: add an existing file to Include, "
+                "add a file to Create, or enable No-context execution. "
+                "For questions or error analysis, choose Consult / Analyze instead."
+            )
+        for include in includes:
             command.extend(["--include", include])
-        for new_file in _string_list(payload.get("new_file")):
+        for new_file in new_files:
             command.extend(["--new-file", new_file])
         for require_path in _string_list(payload.get("require_path")):
             command.extend(["--require-path", require_path])
@@ -139,12 +437,12 @@ def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCom
             command.extend(["--test-command", test_command])
         if _as_bool(payload.get("apply"), True):
             command.append("--apply")
-        if _as_bool(payload.get("allow_no_context"), False):
+        if allow_no_context:
             command.append("--allow-no-context")
         if _as_bool(payload.get("worktree_copy"), False):
             command.extend(["--worktree-mode", "copy"])
 
-    return BuiltCommand(tuple(command), project, shlex.join(command))
+    return BuiltCommand(tuple(command), project, shlex.join(command), env_overrides)
 
 
 class AgentJob:
@@ -201,7 +499,24 @@ class AgentJob:
             }
             if include_output:
                 payload["output"] = "".join(lines)
+            payload["result"] = summarize_job_result(payload, self.command.cwd, self.log_dir, lines)
             return payload
+
+
+class PersistedJob:
+    def __init__(self, metadata: dict[str, object], log_dir: Path):
+        self.metadata = dict(metadata)
+        self.log_dir = log_dir
+
+    def to_dict(self, tail: int | None = 300, include_output: bool = True) -> dict[str, object]:
+        payload = dict(self.metadata)
+        payload.setdefault("log_dir", str(self.log_dir))
+        lines = _tail_file(self.log_dir / "output.log", tail or MAX_JOB_LOG_LINES)
+        if include_output:
+            payload["output"] = "".join(lines)
+        cwd = Path(str(payload.get("cwd") or self.log_dir.parent)).expanduser().resolve()
+        payload["result"] = summarize_job_result(payload, cwd, self.log_dir, lines)
+        return payload
 
 
 class JobRegistry:
@@ -214,12 +529,15 @@ class JobRegistry:
 
     def start(self, payload: dict[str, object]) -> AgentJob:
         built = build_cli_command(payload, self.config)
+        created_project = ensure_project_directory(built.cwd, self.config.project.parent)
         mode = _optional_text(payload, "mode") or "agent"
         brief = _optional_text(payload, "brief")
         job_id = time.strftime("%Y%m%d-%H%M%S", time.localtime()) + "-" + uuid.uuid4().hex[:8]
         log_dir = self.jobs_root / job_id
         log_dir.mkdir(parents=True, exist_ok=True)
         job = AgentJob(job_id, built, brief, mode, log_dir)
+        if created_project:
+            job.append_output(f"created_project_dir: {built.cwd}\n")
         job.write_metadata()
         with self._lock:
             self.jobs[job_id] = job
@@ -233,6 +551,7 @@ class JobRegistry:
             process = subprocess.Popen(
                 list(job.command.argv),
                 cwd=job.command.cwd,
+                env={**os.environ, "PYTHONUNBUFFERED": "1", **job.command.env_overrides},
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -257,11 +576,29 @@ class JobRegistry:
     def list_jobs(self) -> list[dict[str, object]]:
         with self._lock:
             jobs = list(self.jobs.values())
-        return [job.to_dict(tail=20) for job in sorted(jobs, key=lambda item: item.started_at, reverse=True)]
+            live_ids = set(self.jobs)
+        payloads = [job.to_dict(tail=20) for job in jobs]
+        for job_json in sorted(self.jobs_root.glob("*/job.json"), reverse=True):
+            job_id = job_json.parent.name
+            if job_id in live_ids:
+                continue
+            metadata = _read_json_file(job_json)
+            if metadata:
+                metadata.setdefault("id", job_id)
+                payloads.append(PersistedJob(metadata, job_json.parent).to_dict(tail=20))
+        return sorted(payloads, key=lambda item: str(item.get("started_at") or ""), reverse=True)
 
-    def get(self, job_id: str) -> AgentJob | None:
+    def get(self, job_id: str) -> AgentJob | PersistedJob | None:
         with self._lock:
-            return self.jobs.get(job_id)
+            live = self.jobs.get(job_id)
+        if live is not None:
+            return live
+        metadata_path = self.jobs_root / job_id / "job.json"
+        metadata = _read_json_file(metadata_path)
+        if not metadata:
+            return None
+        metadata.setdefault("id", job_id)
+        return PersistedJob(metadata, metadata_path.parent)
 
     def stop(self, job_id: str) -> bool:
         job = self.get(job_id)

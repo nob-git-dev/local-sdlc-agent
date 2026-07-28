@@ -127,6 +127,7 @@ def command_supervisor(args: argparse.Namespace) -> int:
         "final_verdict": final_verdict,
         "api_calls": api_calls,
         "llm_settings": llm_settings_manifest(client),
+        "reasoning_records": llm_reasoning_manifest(client),
         "documents": [display_path(path, project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
@@ -360,6 +361,7 @@ def command_supervise(args: argparse.Namespace) -> int:
         "final_verdict": final_verdict,
         "api_calls": call_count,
         "llm_settings": llm_settings_manifest(client),
+        "reasoning_records": llm_reasoning_manifest(client),
         "documents": [display_path(path, project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))

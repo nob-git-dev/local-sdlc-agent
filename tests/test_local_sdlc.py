@@ -49,6 +49,32 @@ class LocalSDLCTest(unittest.TestCase):
         (project / "SPEC.md").write_text(spec, encoding="utf-8")
         return project, skills_dir
 
+    @contextlib.contextmanager
+    def scrub_llm_env(self, extra: dict[str, str] | None = None):
+        keys = {
+            "LOCAL_SDLC_API_KEY",
+            "LOCAL_LLM_BASE_URL",
+            "OPENAI_BASE_URL",
+            "LOCAL_LLM_API_KEY",
+            "OPENAI_API_KEY",
+            "LOCAL_LLM_MODEL",
+        }
+        if extra:
+            keys.update(extra)
+        old = {key: os.environ.get(key) for key in keys}
+        try:
+            for key in keys:
+                os.environ.pop(key, None)
+            if extra:
+                os.environ.update(extra)
+            yield
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_parse_front_matter(self):
         metadata, body = self.local_sdlc.parse_front_matter(
             "---\nname: spec\ndescription: Example\n---\n# Body\n"
@@ -247,6 +273,358 @@ class LocalSDLCTest(unittest.TestCase):
         self.assertIn("python3 -m unittest", built.argv)
         self.assertIn("--apply", built.argv)
         self.assertNotIn("&&", built.display)
+
+    def test_web_build_cli_command_propagates_config_without_leaking_api_key(self):
+        from local_sdlc import web_server
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            config_path = project / "local_sdlc.json"
+            config_path.write_text('{"llm": {"base_url": "https://api.example/v1"}}\n', encoding="utf-8")
+            config = web_server.WebConfig(
+                host="127.0.0.1",
+                port=0,
+                project=project,
+                entrypoint=ENTRYPOINT_PATH,
+                config_file=config_path,
+                base_url="https://api.example/v1",
+                model="remote-model",
+                model_profile="default",
+            )
+            built = web_server.build_cli_command(
+                {
+                    "mode": "health",
+                    "api_key": "secret-value",
+                },
+                config,
+            )
+
+        self.assertIn("--config-file", built.argv)
+        self.assertIn(str(config_path), built.argv)
+        self.assertNotIn("secret-value", built.display)
+        self.assertEqual(built.env_overrides["LOCAL_SDLC_API_KEY"], "secret-value")
+
+    def test_web_build_cli_command_uses_repo_skills_dir_for_external_project(self):
+        from local_sdlc import web_server
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            external_project = project / "new-work"
+            config = web_server.WebConfig(
+                host="127.0.0.1",
+                port=0,
+                project=project,
+                entrypoint=ENTRYPOINT_PATH,
+                base_url="http://localhost:30000/v1",
+                model="qwen3.5-122b",
+                model_profile="qwen-agent",
+            )
+            built = web_server.build_cli_command(
+                {
+                    "mode": "doctor",
+                    "project": str(external_project),
+                    "skip_llm": True,
+                },
+                config,
+            )
+
+        self.assertIn("--skills-dir", built.argv)
+        self.assertIn(str(ENTRYPOINT_PATH.parent / "sdlc-skills" / "skills"), built.argv)
+        self.assertEqual(built.cwd, external_project.resolve())
+
+    def test_web_build_cli_command_supports_supervisor_consult_without_context(self):
+        from local_sdlc import web_server
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            config = web_server.WebConfig(
+                host="127.0.0.1",
+                port=0,
+                project=project,
+                entrypoint=ENTRYPOINT_PATH,
+                base_url="http://localhost:30000/v1",
+                model="qwen3.5-122b",
+                model_profile="qwen-agent",
+            )
+            built = web_server.build_cli_command(
+                {
+                    "mode": "supervisor",
+                    "brief": "エラーの原因を分析して",
+                },
+                config,
+            )
+
+        self.assertIn("supervisor", built.argv)
+        self.assertIn("エラーの原因を分析して", built.argv)
+        self.assertNotIn("--allow-no-context", built.argv)
+        self.assertNotIn("--include", built.argv)
+
+    def test_web_ensure_project_directory_creates_new_project_under_workspace_root(self):
+        from local_sdlc.web_jobs import ensure_project_directory
+
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            current_project = workspace / "local-sdlc-agent"
+            current_project.mkdir(parents=True)
+            new_project = workspace / "run260728"
+
+            created = ensure_project_directory(new_project, current_project.parent)
+
+            self.assertTrue(created)
+            self.assertTrue(new_project.is_dir())
+
+    def test_web_ensure_project_directory_rejects_new_project_outside_workspace_root(self):
+        from local_sdlc.web_jobs import ensure_project_directory
+
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            current_project = workspace / "local-sdlc-agent"
+            current_project.mkdir(parents=True)
+            outside_project = Path(temp) / "outside" / "run260728"
+
+            with self.assertRaisesRegex(self.local_sdlc.RunnerError, "inside web workspace root"):
+                ensure_project_directory(outside_project, current_project.parent)
+
+            self.assertFalse(outside_project.exists())
+
+    def test_web_ensure_project_directory_rejects_file_path(self):
+        from local_sdlc.web_jobs import ensure_project_directory
+
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            workspace.mkdir()
+            file_path = workspace / "not-a-directory"
+            file_path.write_text("not dir\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(self.local_sdlc.RunnerError, "not a directory"):
+                ensure_project_directory(file_path, workspace)
+
+    def test_web_build_cli_command_rejects_agent_without_target_with_helpful_message(self):
+        from local_sdlc import web_server
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            config = web_server.WebConfig(
+                host="127.0.0.1",
+                port=0,
+                project=project,
+                entrypoint=ENTRYPOINT_PATH,
+                base_url="http://localhost:30000/v1",
+                model="qwen3.5-122b",
+                model_profile="qwen-agent",
+            )
+            with self.assertRaisesRegex(self.local_sdlc.RunnerError, "Consult / Analyze"):
+                web_server.build_cli_command(
+                    {
+                        "mode": "agent",
+                        "brief": "エラーの原因を分析して",
+                    },
+                    config,
+                )
+
+    def test_web_ui_beginner_ux_contract_scores_at_least_90_percent(self):
+        from local_sdlc import web_server
+
+        html = web_server._index_html()
+        ux_markers = [
+            "相談・分析",
+            "新規作成",
+            "既存修正",
+            "仕様から段階実行",
+            "状態確認",
+            "読むファイル",
+            "作るファイル",
+            "確認コマンド",
+            "詳細設定",
+            "コード作成/修正には対象が必要です",
+            "Webで開く",
+            "このファイルを対象に続ける",
+            "仕様書を作って続ける",
+            "結果と次の操作",
+            "作成依頼として検出",
+            "suggestedNewFilesFromBrief",
+            "partial: 実行中の途中結果です",
+            "まだ実行準備中です",
+        ]
+        passed = sum(1 for marker in ux_markers if marker in html)
+
+        self.assertGreaterEqual(passed / len(ux_markers), 0.9)
+
+    def test_web_persisted_job_summary_exposes_preview_and_followup_actions(self):
+        from local_sdlc import web_server
+        from local_sdlc.web_jobs import JobRegistry
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "game.html").write_text("<!doctype html><title>game</title>", encoding="utf-8")
+            run_dir = project / ".sdlc-runner" / "runs" / "20260101-010203"
+            run_dir.mkdir(parents=True)
+            (run_dir / "run.json").write_text(
+                json.dumps({"changed_paths": ["game.html"], "final_verdict": "approved"}),
+                encoding="utf-8",
+            )
+            job_id = "20260101-010203-deadbeef"
+            job_dir = project / ".sdlc-runner" / "web" / "jobs" / job_id
+            job_dir.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "id": job_id,
+                        "mode": "agent",
+                        "brief": "make game",
+                        "status": "completed",
+                        "returncode": 0,
+                        "started_at": "2026-01-01T01:02:03Z",
+                        "ended_at": "2026-01-01T01:02:04Z",
+                        "cwd": str(project),
+                        "command": f"{sys.executable} local_sdlc.py agent make --new-file game.html --apply",
+                        "log_dir": str(job_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job_dir / "output.log").write_text(f"run_dir: {run_dir}\nfinal_verdict: approved\n", encoding="utf-8")
+            registry = JobRegistry(
+                web_server.WebConfig(
+                    host="127.0.0.1",
+                    port=0,
+                    project=project,
+                    entrypoint=ENTRYPOINT_PATH,
+                    base_url="http://localhost:30000/v1",
+                    model="qwen3.5-122b",
+                    model_profile="qwen-agent",
+                )
+            )
+            jobs = registry.list_jobs()
+            job = registry.get(job_id)
+
+            self.assertEqual(jobs[0]["id"], job_id)
+            self.assertIsNotNone(job)
+            result = job.to_dict()["result"]
+            self.assertEqual(result["final_verdict"], "approved")
+            self.assertEqual(result["artifacts"][0]["path"], "game.html")
+            self.assertEqual(result["artifacts"][0]["preview_url"], "/files?path=game.html")
+            self.assertIn("continue_with_files", {action["type"] for action in result["next_actions"]})
+
+    def test_web_running_job_summary_reads_partial_run_progress_without_stdout(self):
+        from local_sdlc.web_jobs import summarize_job_result
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            run_dir = project / ".sdlc-runner" / "runs" / "20260101-030405"
+            log_dir = project / ".sdlc-runner" / "web" / "jobs" / "20260101-030405-aabbccdd"
+            run_dir.mkdir(parents=True)
+            log_dir.mkdir(parents=True)
+            (project / "tetris.html").write_text("<!doctype html>", encoding="utf-8")
+            (run_dir / "run.partial.json").write_text(
+                json.dumps(
+                    {
+                        "current_round": 1,
+                        "api_calls": 2,
+                        "streaming": {"label": "judge round 1", "status": "starting"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = summarize_job_result(
+                {
+                    "mode": "agent",
+                    "brief": "テトリスを作って",
+                    "status": "running",
+                    "command": "python3 local_sdlc.py agent 'テトリスを作って' --new-file tetris.html",
+                },
+                project,
+                log_dir,
+                [],
+            )
+
+        self.assertEqual(result["run_dir"], str(run_dir))
+        self.assertTrue(result["partial_manifest"])
+        self.assertIn("judge round 1", result["progress"])
+        self.assertEqual(result["current_round"], 1)
+        self.assertEqual(result["artifacts"][0]["path"], "tetris.html")
+        self.assertTrue(result["artifacts"][0]["exists"])
+
+    def test_web_final_job_summary_does_not_report_running_progress(self):
+        from local_sdlc.web_jobs import summarize_job_result
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            run_dir = project / ".sdlc-runner" / "runs" / "20260101-040506"
+            log_dir = project / ".sdlc-runner" / "web" / "jobs" / "20260101-040506-aabbccdd"
+            run_dir.mkdir(parents=True)
+            log_dir.mkdir(parents=True)
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "final_verdict": "test_failed",
+                        "api_calls": 8,
+                        "streaming": {"label": "judge round 3", "status": "completed"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (log_dir / "output.log").write_text(f"run_dir: {run_dir}\n", encoding="utf-8")
+            result = summarize_job_result(
+                {
+                    "mode": "agent",
+                    "brief": "テトリスを作って",
+                    "status": "failed",
+                    "command": "python3 local_sdlc.py agent 'テトリスを作って' --new-file tetris.html",
+                },
+                project,
+                log_dir,
+                [],
+            )
+
+        self.assertIn("最終処理: judge round 3", result["progress"])
+        self.assertNotIn("実行中:", result["progress"])
+        self.assertFalse(result["partial_manifest"])
+
+    def test_web_planned_supervisor_job_offers_execute_and_create_actions(self):
+        from local_sdlc.web_jobs import summarize_job_result
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            run_dir = project / ".sdlc-runner" / "runs" / "20260101-020304"
+            log_dir = project / ".sdlc-runner" / "web" / "jobs" / "20260101-020304-feedface"
+            run_dir.mkdir(parents=True)
+            log_dir.mkdir(parents=True)
+            (run_dir / "run.json").write_text(
+                json.dumps({"final_verdict": "planned"}),
+                encoding="utf-8",
+            )
+            (log_dir / "output.log").write_text(f"run_dir: {run_dir}\nfinal_verdict: planned\n", encoding="utf-8")
+            result = summarize_job_result(
+                {
+                    "mode": "supervisor",
+                    "brief": "テトリスを作って",
+                    "status": "completed",
+                    "command": "python3 local_sdlc.py supervisor 'テトリスを作って'",
+                },
+                project,
+                log_dir,
+                [],
+            )
+
+        actions = {action["type"]: action for action in result["next_actions"]}
+        self.assertIn("execute_supervisor_plan", actions)
+        self.assertIn("create_from_prompt", actions)
+        self.assertEqual(actions["create_from_prompt"]["new_file"], ["tetris.html"])
+
+    def test_web_project_file_resolution_rejects_paths_outside_project(self):
+        from local_sdlc.web_jobs import resolve_project_path
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "project"
+            project.mkdir()
+            (project / "index.html").write_text("ok", encoding="utf-8")
+            path, relative = resolve_project_path(project, "index.html")
+
+            self.assertEqual(path, project / "index.html")
+            self.assertEqual(relative, "index.html")
+            with self.assertRaisesRegex(self.local_sdlc.RunnerError, "inside the project"):
+                resolve_project_path(project, "../secret.txt")
 
     def test_run_skill_call_forwards_stream_parameters(self):
         class FakeClient:
@@ -7042,6 +7420,66 @@ Required fixes:
         self.assertTrue(any(path.endswith("02-r01-coder-output.partial.md") for path in manifest["documents"]))
         self.assertTrue(any(path.endswith("06-r01-judge-review.partial.md") for path in manifest["documents"]))
 
+    def test_agent_final_manifest_records_reasoning_records(self):
+        reasoning_records = [
+            {
+                "agent_level": "judge",
+                "call_function": "judge_review",
+                "model": "test-model",
+                "chars": 17,
+                "truncated": False,
+                "reasoning_content": "separated-analysis",
+            }
+        ]
+        outputs = {
+            "plan_work": "## PM\n- implement app",
+            "generate_artifact": "BEGIN_FILE: app.py\nprint('fixed')\nEND_FILE",
+            "judge_review": "## Verdict\napproved\n",
+        }
+
+        class FakeClient:
+            def __init__(self, _config):
+                self.reasoning_records = reasoning_records
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                return outputs[call_function]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            (project / "app.py").write_text("print('old')\n", encoding="utf-8")
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "fix app",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--apply",
+                        "--domain-modeling",
+                        "never",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(manifest["final_verdict"], "approved")
+        self.assertEqual(manifest["reasoning_records"], reasoning_records)
+
     def test_agent_resume_continues_from_previous_run_documents(self):
         calls = []
 
@@ -8815,6 +9253,52 @@ END_FILE"""
         self.assertEqual(payloads[0]["temperature"], 0.0)
         self.assertEqual(payloads[0]["max_tokens"], 7777)
 
+    def test_complete_records_reasoning_content_without_mixing_into_result(self):
+        config = self.local_sdlc.LLMConfig(
+            base_url="http://localhost:30000/v1",
+            api_key="dummy-local",
+            model="test-model",
+            timeout=10.0,
+            health_timeout=0.2,
+            temperature=0.0,
+            max_tokens=16,
+            disable_thinking=True,
+            function_overrides={
+                "failure_analysis": self.local_sdlc.LLMRoleOverride(disable_thinking=False),
+            },
+        )
+        client = self.local_sdlc.LocalLLMClient(config)
+        payloads = []
+
+        def fake_request(method, path, payload=None, timeout=None):
+            if path == "/models":
+                return {"data": [{"id": "test-model"}]}
+            payloads.append(payload)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "reasoning_content": "private chain used for analysis",
+                            "content": '{"verdict":"ok"}',
+                        }
+                    }
+                ]
+            }
+
+        client._request = fake_request
+        result = client.complete(
+            [{"role": "user", "content": "analyze"}],
+            agent_level="judge",
+            call_function="failure_analysis",
+        )
+
+        self.assertEqual(result, '{"verdict":"ok"}')
+        self.assertNotIn("chat_template_kwargs", payloads[0])
+        records = self.local_sdlc.llm_reasoning_manifest(client)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["call_function"], "failure_analysis")
+        self.assertEqual(records[0]["reasoning_content"], "private chain used for analysis")
+
     def test_complete_streams_content_to_partial_file(self):
         config = self.local_sdlc.LLMConfig(
             base_url="http://localhost:30000/v1",
@@ -8950,6 +9434,148 @@ END_FILE"""
         self.assertEqual(client.call_settings("judge").temperature, 0.0)
         self.assertTrue(client.call_settings("coder").disable_thinking)
 
+    def test_build_config_reads_project_json_api_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "local_sdlc.json").write_text(
+                json.dumps(
+                    {
+                        "llm": {
+                            "base_url": "https://api.example.test/v1",
+                            "api_key_env": "TEST_LOCAL_SDLC_KEY",
+                            "model_profile": "qwen-agent",
+                            "model": "configured-model",
+                            "timeout": 123,
+                            "health_timeout": 4,
+                            "stream": True,
+                            "function_profiles": {
+                                "failure_analysis": {
+                                    "model": "analysis-model",
+                                    "max_tokens": 7777,
+                                    "temperature": 0,
+                                    "thinking": "off",
+                                }
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = self.local_sdlc.build_parser().parse_args(
+                ["doctor", "--project", str(project), "--skip-llm"]
+            )
+            with self.scrub_llm_env({"TEST_LOCAL_SDLC_KEY": "secret-from-env"}):
+                config = self.local_sdlc.build_config(args)
+
+        client = self.local_sdlc.LocalLLMClient(config)
+        analysis = client.call_settings("judge", "failure_analysis")
+        generated = client.call_settings("coder", "generate_artifact")
+        self.assertEqual(config.base_url, "https://api.example.test/v1")
+        self.assertEqual(config.api_key, "secret-from-env")
+        self.assertEqual(config.model, "configured-model")
+        self.assertEqual(config.model_profile, "qwen-agent")
+        self.assertEqual(config.timeout, 123)
+        self.assertEqual(config.health_timeout, 4)
+        self.assertTrue(config.stream)
+        self.assertEqual(analysis.model, "analysis-model")
+        self.assertEqual(analysis.max_tokens, 7777)
+        self.assertTrue(analysis.disable_thinking)
+        self.assertEqual(generated.max_tokens, 49152)
+
+    def test_build_config_reads_yaml_api_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "local_sdlc.yaml").write_text(
+                textwrap.dedent(
+                    """
+                    llm:
+                      base_url: https://yaml.example/v1
+                      api_key_env: YAML_SDLC_KEY
+                      model_profile: ornith-agent
+                      role_profiles:
+                        coder:
+                          max_tokens: 1234
+                          temperature: 0.03
+                          thinking: off
+                      api_profile:
+                        - repair_artifact:max_tokens=4321,temperature=0,thinking=off
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            args = self.local_sdlc.build_parser().parse_args(
+                ["doctor", "--project", str(project), "--skip-llm"]
+            )
+            with self.scrub_llm_env({"YAML_SDLC_KEY": "yaml-secret"}):
+                config = self.local_sdlc.build_config(args)
+
+        client = self.local_sdlc.LocalLLMClient(config)
+        coder = client.call_settings("coder")
+        repair = client.call_settings("coder", "repair_artifact")
+        self.assertEqual(config.base_url, "https://yaml.example/v1")
+        self.assertEqual(config.api_key, "yaml-secret")
+        self.assertEqual(config.model_profile, "ornith-agent")
+        self.assertEqual(coder.max_tokens, 1234)
+        self.assertEqual(coder.temperature, 0.03)
+        self.assertTrue(coder.disable_thinking)
+        self.assertEqual(repair.max_tokens, 4321)
+
+    def test_build_config_cli_overrides_project_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "custom.json").write_text(
+                json.dumps(
+                    {
+                        "llm": {
+                            "base_url": "https://config.example/v1",
+                            "api_key": "config-secret",
+                            "model_profile": "qwen-agent",
+                            "model": "config-model",
+                            "timeout": 999,
+                            "api_profile": [
+                                "failure_analysis:model=config-analysis,max_tokens=111,temperature=0,thinking=off"
+                            ],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "doctor",
+                    "--project",
+                    str(project),
+                    "--config-file",
+                    "custom.json",
+                    "--base-url",
+                    "https://cli.example/v1",
+                    "--api-key",
+                    "cli-secret",
+                    "--model",
+                    "cli-model",
+                    "--model-profile",
+                    "ornith-agent",
+                    "--timeout",
+                    "12",
+                    "--api-profile",
+                    "failure_analysis:model=cli-analysis,max_tokens=222,temperature=0,thinking=off",
+                    "--skip-llm",
+                ]
+            )
+            with self.scrub_llm_env():
+                config = self.local_sdlc.build_config(args)
+
+        client = self.local_sdlc.LocalLLMClient(config)
+        analysis = client.call_settings("judge", "failure_analysis")
+        self.assertEqual(config.base_url, "https://cli.example/v1")
+        self.assertEqual(config.api_key, "cli-secret")
+        self.assertEqual(config.model, "cli-model")
+        self.assertEqual(config.model_profile, "ornith-agent")
+        self.assertEqual(config.timeout, 12)
+        self.assertEqual(analysis.model, "cli-analysis")
+        self.assertEqual(analysis.max_tokens, 222)
+
     def test_build_config_allows_role_overrides_from_cli(self):
         args = self.local_sdlc.build_parser().parse_args(
             [
@@ -9012,6 +9638,40 @@ END_FILE"""
         self.assertTrue(generated.disable_thinking)
         self.assertEqual(repaired.max_tokens, 12345)
         self.assertEqual(repaired.temperature, 0.02)
+
+    def test_qwen_agent_uses_thinking_only_for_analysis_functions(self):
+        args = self.local_sdlc.build_parser().parse_args(
+            ["doctor", "--skip-llm", "--model-profile", "qwen-agent"]
+        )
+        config = self.local_sdlc.build_config(args)
+        client = self.local_sdlc.LocalLLMClient(config)
+
+        analysis_functions = [
+            "route_task",
+            "plan_work",
+            "explore_code",
+            "failure_analysis",
+            "patch_planner",
+            "project_policy_triage",
+            "root_cause_analysis",
+            "judge_review",
+            "verify_acceptance",
+        ]
+        artifact_functions = [
+            "generate_artifact",
+            "repair_artifact",
+            "root_cause_patch",
+            "artifact_writer",
+            "semantic_repair",
+            "format_repair",
+        ]
+
+        for function_name in analysis_functions:
+            with self.subTest(function_name=function_name):
+                self.assertFalse(client.call_settings("default", function_name).disable_thinking)
+        for function_name in artifact_functions:
+            with self.subTest(function_name=function_name):
+                self.assertTrue(client.call_settings("default", function_name).disable_thinking)
 
     def test_llm_model_profile_manifest_reports_overrides(self):
         args = self.local_sdlc.build_parser().parse_args(
@@ -9157,7 +9817,7 @@ END_FILE"""
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Run local SDLC skills", result.stdout)
+        self.assertIn("Run SDLC skills with a configurable OpenAI-compatible LLM API", result.stdout)
         self.assertNotRegex(result.stdout, product_name_pattern())
         self.assertIn("agent", result.stdout)
 

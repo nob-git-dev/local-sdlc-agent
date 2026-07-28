@@ -74,8 +74,9 @@ def command_doctor(args: argparse.Namespace) -> int:
         print("git: unavailable")
 
     print(f"llm_base_url: {config.base_url}")
+    print(f"llm_config_file: {config.config_file or '(none)'}")
     print(f"llm_configured_model: {config.model or '(auto)'}")
-    print(f"llm_model_profile: {normalize_model_profile(args.model_profile)}")
+    print(f"llm_model_profile: {config.model_profile}")
     for role in ("pm", "coder", "judge"):
         settings = client.call_settings(role)
         thinking = "off" if settings.disable_thinking else "on"
@@ -330,35 +331,44 @@ def command_compare_runs(args: argparse.Namespace) -> int:
 
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", type=Path, default=Path.cwd(), help="project root")
+    parser.add_argument(
+        "--config-file",
+        type=Path,
+        default=None,
+        help="project config file; defaults to local_sdlc.json/yaml/yml when present",
+    )
     parser.add_argument("--skills-dir", type=Path, default=DEFAULT_SKILLS_DIR, help="directory containing */SKILL.md")
     parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
-    parser.add_argument("--api-key", default=None, help="API key for the local endpoint")
+    parser.add_argument("--api-key", default=None, help="API key for the configured endpoint")
     parser.add_argument("--model", default=None, help="model name")
     parser.add_argument(
         "--model-profile",
         choices=sorted(MODEL_PROFILE_ALIASES),
-        default="default",
+        default=None,
         help="named model optimization profile for function-level API settings",
     )
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="HTTP timeout seconds")
-    parser.add_argument("--health-timeout", type=float, default=DEFAULT_HEALTH_TIMEOUT, help="short timeout for /v1/models health probes")
-    parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
-    parser.add_argument("--max-tokens", type=int, default=4096, help="max completion tokens")
-    parser.add_argument("--enable-thinking", action="store_true", help="do not send chat_template_kwargs.enable_thinking=false")
-    parser.add_argument("--stream", action="store_true", help="stream chat completions and checkpoint partial output when supported")
-    parser.add_argument("--pm-max-tokens", type=int, default=DEFAULT_PM_MAX_TOKENS, help="completion tokens for PM/supervisor/spec calls")
-    parser.add_argument("--coder-max-tokens", type=int, default=DEFAULT_CODER_MAX_TOKENS, help="completion tokens for coder calls")
-    parser.add_argument("--judge-max-tokens", type=int, default=DEFAULT_JUDGE_MAX_TOKENS, help="completion tokens for judge calls")
-    parser.add_argument("--pm-temperature", type=float, default=0.2, help="temperature for PM/supervisor/spec calls")
-    parser.add_argument("--coder-temperature", type=float, default=0.1, help="temperature for coder calls")
-    parser.add_argument("--judge-temperature", type=float, default=0.0, help="temperature for judge calls")
-    parser.add_argument("--pm-thinking", choices=["default", "on", "off"], default="default", help="thinking mode override for PM/supervisor/spec calls")
-    parser.add_argument("--coder-thinking", choices=["default", "on", "off"], default="off", help="thinking mode override for coder artifact calls")
-    parser.add_argument("--judge-thinking", choices=["default", "on", "off"], default="off", help="thinking mode override for judge calls")
+    parser.add_argument("--timeout", type=float, default=None, help=f"HTTP timeout seconds (default {DEFAULT_TIMEOUT:g})")
+    parser.add_argument("--health-timeout", type=float, default=None, help=f"short timeout for /v1/models health probes (default {DEFAULT_HEALTH_TIMEOUT:g})")
+    parser.add_argument("--temperature", type=float, default=None, help="base LLM temperature (default 0.2)")
+    parser.add_argument("--max-tokens", type=int, default=None, help="base max completion tokens (default 4096)")
+    parser.set_defaults(enable_thinking=None, stream=None)
+    parser.add_argument("--enable-thinking", dest="enable_thinking", action="store_true", help="do not send chat_template_kwargs.enable_thinking=false")
+    parser.add_argument("--disable-thinking", dest="enable_thinking", action="store_false", help="force chat_template_kwargs.enable_thinking=false")
+    parser.add_argument("--stream", dest="stream", action="store_true", help="stream chat completions and checkpoint partial output when supported")
+    parser.add_argument("--no-stream", dest="stream", action="store_false", help="disable streaming even when config enables it")
+    parser.add_argument("--pm-max-tokens", type=int, default=None, help=f"completion tokens for PM/supervisor/spec calls (default {DEFAULT_PM_MAX_TOKENS})")
+    parser.add_argument("--coder-max-tokens", type=int, default=None, help=f"completion tokens for coder calls (default {DEFAULT_CODER_MAX_TOKENS})")
+    parser.add_argument("--judge-max-tokens", type=int, default=None, help=f"completion tokens for judge calls (default {DEFAULT_JUDGE_MAX_TOKENS})")
+    parser.add_argument("--pm-temperature", type=float, default=None, help="temperature for PM/supervisor/spec calls (default 0.2)")
+    parser.add_argument("--coder-temperature", type=float, default=None, help="temperature for coder calls (default 0.1)")
+    parser.add_argument("--judge-temperature", type=float, default=None, help="temperature for judge calls (default 0.0)")
+    parser.add_argument("--pm-thinking", choices=["default", "on", "off"], default=None, help="thinking mode override for PM/supervisor/spec calls")
+    parser.add_argument("--coder-thinking", choices=["default", "on", "off"], default=None, help="thinking mode override for coder artifact calls")
+    parser.add_argument("--judge-thinking", choices=["default", "on", "off"], default=None, help="thinking mode override for judge calls")
     parser.add_argument(
         "--api-profile",
         action="append",
-        default=[],
+        default=None,
         metavar="FUNCTION:KEY=VALUE,...",
         help=(
             "override a function-level API profile, e.g. "
@@ -369,7 +379,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run local SDLC skills with a local OpenAI-compatible LLM API."
+        description="Run SDLC skills with a configurable OpenAI-compatible LLM API."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

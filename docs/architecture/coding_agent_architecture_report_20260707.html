@@ -232,6 +232,31 @@ flowchart LR
     </section>
 
     <section>
+      <h2>動作環境と検証範囲</h2>
+      <div class="grid cols-2">
+        <div>
+          <table>
+            <thead><tr><th>項目</th><th>現在の扱い</th></tr></thead>
+            <tbody>
+              <tr><td>最低対象Python</td><td>Python 3.10 以上。<code>pyproject.toml</code> の <code>requires-python</code> は <code>&gt;=3.10</code>。</td></tr>
+              <tr><td>静的確認</td><td>現在の <code>.py</code> は Python 3.10 / 3.11 grammar で parse 可能。3.12 以上専用構文は検出されていません。</td></tr>
+              <tr><td>実行確認</td><td>ローカルでは Python 3.12.3 で CLI smoke とユニットテストを確認。</td></tr>
+              <tr><td>Python 3.13</td><td>今回の実機確認対象外。保証する場合は CI matrix に追加して確認する方針。</td></tr>
+              <tr><td>依存関係</td><td>コア CLI / Web UI は外部 Python パッケージ不要。LLM は別途 OpenAI 互換 API として接続。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <h3>表記方針</h3>
+          <p>
+            現時点の静的根拠では、最低対象は Python 3.10 以上です。
+            ただし実行済みの主環境は Python 3.12.3 なので、READMEでは「対象」と「検証済み」を分けて表記します。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>インタラクティブ解説</h2>
       <div class="tabs">
         <button class="tab-btn active" data-tab="flow">実行フロー</button>

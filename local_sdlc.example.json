@@ -1,0 +1,18 @@
+{
+  "llm": {
+    "base_url": "http://localhost:30000/v1",
+    "api_key_env": "LOCAL_LLM_API_KEY",
+    "model_profile": "qwen-agent",
+    "model": "",
+    "timeout": 300,
+    "health_timeout": 5,
+    "temperature": 0.2,
+    "max_tokens": 4096,
+    "enable_thinking": false,
+    "stream": false,
+    "api_profile": [
+      "generate_artifact:max_tokens=49152,temperature=0.05,thinking=off",
+      "repair_artifact:max_tokens=24576,temperature=0,thinking=off"
+    ]
+  }
+}

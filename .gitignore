@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .sdlc-runner/
 .verify/
+local_sdlc.json
+local_sdlc.yaml
+local_sdlc.yml

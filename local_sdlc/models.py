@@ -87,6 +87,8 @@ class LLMConfig:
     max_tokens: int
     disable_thinking: bool
     stream: bool = False
+    model_profile: str = "default"
+    config_file: str = ""
     role_overrides: dict[str, "LLMRoleOverride"] = dataclasses.field(default_factory=dict)
     function_overrides: dict[str, "LLMRoleOverride"] = dataclasses.field(default_factory=dict)
 
@@ -215,25 +217,26 @@ MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
         "verify_acceptance": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
     },
     # Qwen3 reasoning models are capable, but for this runner the highest-risk
-    # failure mode is leaking long analysis into executable artifacts. This
-    # profile keeps artifacts no-thinking, lowers generation entropy, and gives
-    # diagnostic roles enough space to produce useful structured evidence.
+    # failure mode is leaking long analysis into executable artifacts. Analysis
+    # and review calls may think when the serving stack separates
+    # reasoning_content from content; artifact-producing calls stay no-thinking
+    # so patch protocols remain machine-parseable.
     "qwen-agent": {
-        "route_task": LLMRoleOverride(temperature=0.1, max_tokens=8192, disable_thinking=True),
-        "plan_work": LLMRoleOverride(temperature=0.1, max_tokens=12288, disable_thinking=True),
-        "explore_code": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
-        "failure_analysis": LLMRoleOverride(temperature=0.0, max_tokens=16384, disable_thinking=True),
-        "patch_planner": LLMRoleOverride(temperature=0.0, max_tokens=12288, disable_thinking=True),
-        "project_policy_triage": LLMRoleOverride(temperature=0.0, max_tokens=12288, disable_thinking=True),
+        "route_task": LLMRoleOverride(temperature=0.1, max_tokens=8192, disable_thinking=False),
+        "plan_work": LLMRoleOverride(temperature=0.1, max_tokens=12288, disable_thinking=False),
+        "explore_code": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
+        "failure_analysis": LLMRoleOverride(temperature=0.0, max_tokens=16384, disable_thinking=False),
+        "patch_planner": LLMRoleOverride(temperature=0.0, max_tokens=12288, disable_thinking=False),
+        "project_policy_triage": LLMRoleOverride(temperature=0.0, max_tokens=12288, disable_thinking=False),
         "generate_artifact": LLMRoleOverride(temperature=0.05, max_tokens=49152, disable_thinking=True),
         "repair_artifact": LLMRoleOverride(temperature=0.0, max_tokens=24576, disable_thinking=True),
-        "root_cause_analysis": LLMRoleOverride(temperature=0.0, max_tokens=12288, disable_thinking=True),
+        "root_cause_analysis": LLMRoleOverride(temperature=0.0, max_tokens=12288, disable_thinking=False),
         "root_cause_patch": LLMRoleOverride(temperature=0.0, max_tokens=16384, disable_thinking=True),
         "artifact_writer": LLMRoleOverride(temperature=0.0, max_tokens=16384, disable_thinking=True),
         "semantic_repair": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
         "format_repair": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
-        "judge_review": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
-        "verify_acceptance": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
+        "judge_review": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
+        "verify_acceptance": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
     },
     # Deep profile is intentionally separate from qwen-agent. It allows hidden
     # reasoning only for non-artifact diagnostic calls. Artifact-producing calls
