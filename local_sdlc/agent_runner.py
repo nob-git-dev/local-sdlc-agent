@@ -373,6 +373,42 @@ def command_agent(args: argparse.Namespace) -> int:
         evidence_records.append(evidence)
         return not blockers
 
+    def record_python_probe_evidence(
+        command_docs: list[tuple[str, str]],
+        *,
+        filename_prefix: str,
+        initial: bool = False,
+        round_index: int | None = None,
+    ) -> None:
+        for item in run_python_probe_evidence(project, command_docs, args.command_timeout):
+            slug = str(item.observations.get("slug") or item.command.rsplit(" ", 1)[-1])
+            path = write_run_document(run_dir, f"{filename_prefix}-mechanical-probe-{slug}.md", item.document)
+            written.append(path)
+            if initial:
+                title = "Initial " + item.name[:1].lower() + item.name[1:]
+            elif round_index is not None:
+                title = f"{item.name} round {round_index}"
+            else:
+                title = item.name
+            documents.append((title, item.document))
+            command_docs.append((title, item.document))
+            evidence = {
+                "id": f"E{len(evidence_records) + 1:02d}",
+                "kind": item.kind,
+                "name": title,
+                "status": item.status,
+                "command": item.command,
+                "exit_code": item.exit_code,
+                "duration_seconds": item.duration_seconds,
+                "failure_type": item.failure_type,
+                "document": display_path(path, original_project),
+            }
+            if item.covers:
+                evidence["covers"] = list(item.covers)
+            if item.observations:
+                evidence["observations"] = dict(item.observations)
+            evidence_records.append(evidence)
+
     def make_stream_callback(
         label: str,
         partial_path: Path,
@@ -1259,42 +1295,7 @@ def command_agent(args: argparse.Namespace) -> int:
             written.append(path)
             documents.append(("Initial observation summary", summary_doc))
             initial_command_docs.append(("Initial observation summary", summary_doc))
-            struct_probe_doc = python_struct_probe_document(project, initial_command_docs)
-            if struct_probe_doc:
-                path = write_run_document(run_dir, "00-initial-mechanical-probe-struct.md", struct_probe_doc)
-                written.append(path)
-                documents.append(("Initial mechanical struct probe", struct_probe_doc))
-                initial_command_docs.append(("Initial mechanical struct probe", struct_probe_doc))
-            api_probe_doc = python_api_probe_document(project, initial_command_docs)
-            if api_probe_doc:
-                path = write_run_document(run_dir, "00-initial-mechanical-probe-api.md", api_probe_doc)
-                written.append(path)
-                documents.append(("Initial mechanical API probe", api_probe_doc))
-                initial_command_docs.append(("Initial mechanical API probe", api_probe_doc))
-            precondition_probe_doc = expected_exception_precondition_probe_document(project, initial_command_docs)
-            if precondition_probe_doc:
-                path = write_run_document(run_dir, "00-initial-mechanical-probe-precondition.md", precondition_probe_doc)
-                written.append(path)
-                documents.append(("Initial mechanical precondition probe", precondition_probe_doc))
-                initial_command_docs.append(("Initial mechanical precondition probe", precondition_probe_doc))
-            cli_probe_doc = python_cli_probe_document(project, initial_command_docs)
-            if cli_probe_doc:
-                path = write_run_document(run_dir, "00-initial-mechanical-probe-cli.md", cli_probe_doc)
-                written.append(path)
-                documents.append(("Initial mechanical CLI probe", cli_probe_doc))
-                initial_command_docs.append(("Initial mechanical CLI probe", cli_probe_doc))
-            cli_state_probe_doc = python_cli_state_probe_document(project, initial_command_docs)
-            if cli_state_probe_doc:
-                path = write_run_document(run_dir, "00-initial-mechanical-probe-cli-state.md", cli_state_probe_doc)
-                written.append(path)
-                documents.append(("Initial mechanical CLI state probe", cli_state_probe_doc))
-                initial_command_docs.append(("Initial mechanical CLI state probe", cli_state_probe_doc))
-            storage_state_probe_doc = python_storage_state_probe_document(project, initial_command_docs)
-            if storage_state_probe_doc:
-                path = write_run_document(run_dir, "00-initial-mechanical-probe-storage-state.md", storage_state_probe_doc)
-                written.append(path)
-                documents.append(("Initial mechanical storage state probe", storage_state_probe_doc))
-                initial_command_docs.append(("Initial mechanical storage state probe", storage_state_probe_doc))
+            record_python_probe_evidence(initial_command_docs, filename_prefix="00-initial", initial=True)
             initial_advice = repair_advice_from_command_docs(
                 initial_command_docs,
                 test_commands,
@@ -2956,36 +2957,11 @@ def command_agent(args: argparse.Namespace) -> int:
             path = write_run_document(run_dir, f"05-r{round_index:02d}-observation-summary.md", summary_doc)
             written.append(path)
             command_docs.append((f"Observation summary round {round_index}", summary_doc))
-            struct_probe_doc = python_struct_probe_document(project, command_docs)
-            if struct_probe_doc:
-                path = write_run_document(run_dir, f"05-r{round_index:02d}-mechanical-probe-struct.md", struct_probe_doc)
-                written.append(path)
-                command_docs.append((f"Mechanical struct probe round {round_index}", struct_probe_doc))
-            api_probe_doc = python_api_probe_document(project, command_docs)
-            if api_probe_doc:
-                path = write_run_document(run_dir, f"05-r{round_index:02d}-mechanical-probe-api.md", api_probe_doc)
-                written.append(path)
-                command_docs.append((f"Mechanical API probe round {round_index}", api_probe_doc))
-            precondition_probe_doc = expected_exception_precondition_probe_document(project, command_docs)
-            if precondition_probe_doc:
-                path = write_run_document(run_dir, f"05-r{round_index:02d}-mechanical-probe-precondition.md", precondition_probe_doc)
-                written.append(path)
-                command_docs.append((f"Mechanical precondition probe round {round_index}", precondition_probe_doc))
-            cli_probe_doc = python_cli_probe_document(project, command_docs)
-            if cli_probe_doc:
-                path = write_run_document(run_dir, f"05-r{round_index:02d}-mechanical-probe-cli.md", cli_probe_doc)
-                written.append(path)
-                command_docs.append((f"Mechanical CLI probe round {round_index}", cli_probe_doc))
-            cli_state_probe_doc = python_cli_state_probe_document(project, command_docs)
-            if cli_state_probe_doc:
-                path = write_run_document(run_dir, f"05-r{round_index:02d}-mechanical-probe-cli-state.md", cli_state_probe_doc)
-                written.append(path)
-                command_docs.append((f"Mechanical CLI state probe round {round_index}", cli_state_probe_doc))
-            storage_state_probe_doc = python_storage_state_probe_document(project, command_docs)
-            if storage_state_probe_doc:
-                path = write_run_document(run_dir, f"05-r{round_index:02d}-mechanical-probe-storage-state.md", storage_state_probe_doc)
-                written.append(path)
-                command_docs.append((f"Mechanical storage state probe round {round_index}", storage_state_probe_doc))
+            record_python_probe_evidence(
+                command_docs,
+                filename_prefix=f"05-r{round_index:02d}",
+                round_index=round_index,
+            )
             new_contracts = extract_semantic_contracts_from_command_docs(command_docs, project)
             if new_contracts:
                 existing_texts = {contract.text for contract in semantic_contracts}

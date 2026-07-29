@@ -4,6 +4,7 @@ from pathlib import Path
 
 from local_sdlc.harnesses.html_browser import HtmlBrowserHarness, run_html_smoke_evidence
 from local_sdlc.harnesses.python_cli import PythonCliHarness, run_command_evidence
+from local_sdlc.harnesses.python_probes import PythonProbeHarness
 from tests.helpers import LocalSDLCTestCase
 
 
@@ -128,3 +129,31 @@ class HarnessPluginTests(LocalSDLCTestCase):
         document, ok = evidence.to_legacy_result()
         self.assertTrue(ok)
         self.assertIn("legacy", document)
+
+    def test_python_probe_harness_returns_mechanical_probe_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            target = project / "storage.py"
+            target.write_text(
+                "import struct\nHEADER_FORMAT = 'II'\nHEADER_SIZE = 16\nstruct.pack('II', 1, 2)\n",
+                encoding="utf-8",
+            )
+            doc = self.local_sdlc.command_result_document(
+                "python3 -m unittest",
+                1,
+                "",
+                f'File "{target}", line 2, in <module>\nheader size mismatch\n',
+                0.01,
+            )
+
+            evidence = PythonProbeHarness().run(project, [("Command result", doc)])
+
+        self.assertEqual(len(evidence), 1)
+        item = evidence[0]
+        self.assertEqual(item.kind, "mechanical_probe")
+        self.assertEqual(item.status, "pass")
+        self.assertEqual(item.command, "mechanical-probe struct")
+        self.assertIn("python_struct", item.covers)
+        self.assertIn("calcsize=8", item.document)
+        self.assertNotIn("approved", item.__dict__)
+        self.assertNotIn("final_verdict", item.__dict__)

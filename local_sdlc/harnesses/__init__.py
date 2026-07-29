@@ -3,10 +3,12 @@
 from .base import Harness, HarnessEvidence
 from .html_browser import HtmlBrowserHarness
 from .python_cli import PythonCliHarness
+from .python_probes import PythonProbeHarness
 
 __all__ = [
     "Harness",
     "HarnessEvidence",
     "HtmlBrowserHarness",
     "PythonCliHarness",
+    "PythonProbeHarness",
 ]

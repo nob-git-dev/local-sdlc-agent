@@ -5502,6 +5502,95 @@ Required fixes:
         self.assertEqual(manifest["acceptance_matrix"][0]["status"], "fail")
         self.assertEqual(manifest["acceptance_matrix"][0]["evidence_ids"], ["E01"])
 
+    def test_agent_records_python_probe_evidence_after_command_failure(self):
+        calls = []
+
+        class FakeClient:
+            def __init__(self, config):
+                self.config = config
+
+            def complete(self, messages):
+                calls.append(messages)
+                return (
+                    "BEGIN_FILE: storage.py\n"
+                    "import struct\n"
+                    "HEADER_FORMAT = 'II'\n"
+                    "HEADER_SIZE = 16\n"
+                    "struct.pack('II', 1, 2)\n"
+                    "END_FILE"
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            storage_path = project / "storage.py"
+            storage_path.write_text(
+                "import struct\nHEADER_FORMAT = 'II'\nHEADER_SIZE = 16\nstruct.pack('II', 1, 2)\n",
+                encoding="utf-8",
+            )
+            (project / "fail_struct.py").write_text(
+                textwrap.dedent(
+                    """
+                    import pathlib
+                    import sys
+
+                    path = pathlib.Path("storage.py").resolve()
+                    print(f'File "{path}", line 2, in <module>', file=sys.stderr)
+                    print("header size mismatch", file=sys.stderr)
+                    sys.exit(1)
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "fix storage",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "storage.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--test-command",
+                        f"{sys.executable} fail_struct.py",
+                        "--max-rounds",
+                        "1",
+                        "--protocol-repair-rounds",
+                        "0",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "0",
+                        "--domain-modeling",
+                        "never",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        mechanical = [item for item in manifest["evidence"] if item.get("kind") == "mechanical_probe"]
+        self.assertEqual(result, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(manifest["final_verdict"], "test_failed")
+        self.assertTrue(any("python_struct" in item.get("covers", []) for item in mechanical))
+        self.assertTrue(any(item["document"].endswith("mechanical-probe-struct.md") for item in mechanical))
+        self.assertTrue(any(path.endswith("mechanical-probe-struct.md") for path in manifest["documents"]))
+
     def test_required_path_checks_missing_artifact(self):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp)

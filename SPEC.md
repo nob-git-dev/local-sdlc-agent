@@ -349,6 +349,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |
 | S02: HTML/browser smoke は harness plugin として Evidence を返し、既存 `run_html_smoke_checks()` / `run_browser_tetris_check()` の互換挙動を維持する | `tests.test_harnesses`, `test_html_smoke_flags_broken_tetris_file`, `test_browser_tetris_smoke_requires_visible_active_piece`, full suite | PASS |
 | S03a: Python/CLI command checks は安全判定を維持したまま harness Evidence を返し、legacy `(document, ok)` へ射影できる | `tests.test_harnesses.HarnessPluginTests` | PASS |
+| S03b: Python/API/CLI/storage mechanical probes は harness Evidence を返し、agent 実行後の `run.json.evidence` に記録される | `tests.test_harnesses.HarnessPluginTests`, `test_agent_records_python_probe_evidence_after_command_failure`, full suite | PASS |
 | S07d: `artifacts.py` を互換facade化し、artifact protocol / lint-stream / repair advice / Python analysis / mechanical probes を責務別モジュールへ分割する | `tests.test_artifact_ops`, `tests.test_harnesses`, full suite | PASS |
 
 ### テスト環境
@@ -1036,7 +1037,7 @@ local_sdlc/
 - [ ] `fail`, `unverified`, `blocked`, `invalid_evidence` が区別され、`pass` 以外は approval blocker になる
 - [x] HTML/browser smoke は harness plugin として実装され、core runner に Tetris 固有判定が直書きされない
 - [x] S03a: Python/CLI command check は harness plugin として Evidence 化される
-- [ ] Python/API/CLI/storage probe は harness plugin として実装される
+- [x] S03b: Python/API/CLI/storage probe は harness plugin として Evidence 化され、agent run manifest に記録される
 - [ ] repair advice は generic rules と domain rules に分離される
 - [ ] acceptance blocker から Repair Action が生成され、次 Coder call に文書として渡る
 - [ ] stage planner は stage ごとに required observables と writable/readonly paths を保存する

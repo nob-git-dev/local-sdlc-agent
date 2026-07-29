@@ -13,6 +13,7 @@ from typing import Sequence
 
 from ..python_project_analysis import class_owner_paths_from_project, project_python_product_paths
 from ..utils import unique_ordered
+from .base import HarnessEvidence
 
 def python_struct_probe_document(
     project: Path | None,
@@ -891,3 +892,69 @@ print(json.dumps(result, sort_keys=True))
         ]
     )
     return "\n".join(lines)
+
+
+PYTHON_PROBE_SEQUENCE = (
+    ("struct", "python_struct", "Mechanical struct probe", python_struct_probe_document),
+    ("api", "python_api", "Mechanical API probe", python_api_probe_document),
+    ("precondition", "python_precondition", "Mechanical precondition probe", expected_exception_precondition_probe_document),
+    ("cli", "python_cli", "Mechanical CLI probe", python_cli_probe_document),
+    ("cli-state", "python_cli_state", "Mechanical CLI state probe", python_cli_state_probe_document),
+    ("storage-state", "python_storage_state", "Mechanical storage state probe", python_storage_state_probe_document),
+)
+
+
+def mechanical_probe_status(document: str) -> tuple[str, int, str | None]:
+    if re.search(r"(?m)^\s*-\s*status:\s*ERROR\s*$", document):
+        return "fail", 1, "mechanical_probe_error"
+    return "pass", 0, None
+
+
+def mechanical_probe_evidence(slug: str, kind_slug: str, title: str, document: str) -> HarnessEvidence:
+    status, exit_code, failure_type = mechanical_probe_status(document)
+    return HarnessEvidence(
+        kind="mechanical_probe",
+        name=title,
+        status=status,
+        command=f"mechanical-probe {slug}",
+        exit_code=exit_code,
+        duration_seconds=0.0,
+        document=document,
+        failure_type=failure_type,
+        covers=("mechanical_probe", kind_slug),
+        observations={"slug": slug, "title": title},
+    )
+
+
+class PythonProbeHarness:
+    """Run deterministic Python probes and return evidence records."""
+
+    name = "python_probes"
+
+    def run(
+        self,
+        project: Path | None,
+        command_docs: Sequence[tuple[str, str]],
+        timeout: float = 5.0,
+    ) -> list[HarnessEvidence]:
+        evidence: list[HarnessEvidence] = []
+        working_docs = list(command_docs)
+        for slug, kind_slug, title, probe in PYTHON_PROBE_SEQUENCE:
+            if slug in {"cli-state", "storage-state"}:
+                document = probe(project, working_docs, timeout)  # type: ignore[misc]
+            else:
+                document = probe(project, working_docs)  # type: ignore[misc]
+            if not document:
+                continue
+            evidence_item = mechanical_probe_evidence(slug, kind_slug, title, document)
+            evidence.append(evidence_item)
+            working_docs.append((title, document))
+        return evidence
+
+
+def run_python_probe_evidence(
+    project: Path | None,
+    command_docs: Sequence[tuple[str, str]],
+    timeout: float = 5.0,
+) -> list[HarnessEvidence]:
+    return PythonProbeHarness().run(project, command_docs, timeout)

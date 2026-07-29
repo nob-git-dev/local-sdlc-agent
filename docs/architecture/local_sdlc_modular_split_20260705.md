@@ -186,6 +186,38 @@ Verification:
 - `python3 -m unittest tests.test_harnesses`
 - `python3 -m py_compile local_sdlc/harnesses/base.py local_sdlc/harnesses/html_browser.py local_sdlc/harnesses/python_cli.py tests/test_harnesses.py`
 
+## 2026-07-29 Implementation Slice S03b
+
+Python/API/CLI/storage mechanical probes now cross the harness boundary as
+first-class evidence.
+
+Implementation:
+
+- `local_sdlc/harnesses/python_probes.py` exposes `PythonProbeHarness`, which
+  runs deterministic struct, API, precondition, CLI, CLI-state, and
+  storage-state probes in sequence.
+- Probe documents are converted into `HarnessEvidence(kind="mechanical_probe")`
+  with stable `covers` values such as `python_struct` and `python_storage_state`.
+- `agent_runner.py` writes each probe document to the run directory and records
+  the same observation in `run.json.evidence`.
+- The runner still owns approval and final verdict decisions. Mechanical probes
+  can prove or falsify facts, but they do not approve an agent run.
+
+Boundary rule:
+
+- A probe is an observable, not a policy decision. It may add facts and failure
+  types to the evidence set, and repair planning may consume those facts in the
+  next round.
+- Probe output must remain deterministic and project-scoped. Project-specific
+  interpretation continues to belong to repair advice, policy triage, or judge
+  functions.
+
+Verification:
+
+- `python3 -m unittest tests.test_harnesses`
+- `python3 -m unittest tests.test_local_sdlc.LocalSDLCTest.test_agent_records_python_probe_evidence_after_command_failure`
+- `python3 -m py_compile local_sdlc/harnesses/python_probes.py local_sdlc/harnesses/__init__.py local_sdlc/agent_runner.py tests/test_harnesses.py tests/test_local_sdlc.py`
+
 ## 2026-07-29 Refactor Slice S07d
 
 `local_sdlc/artifacts.py` is now a compatibility facade. The former mixed
