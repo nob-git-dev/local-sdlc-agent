@@ -12,7 +12,8 @@
 | `local_sdlc/models.py` | dataclasses, defaults, enum-like constants, API profile normalization |
 | `local_sdlc/llm_client.py` | OpenAI-compatible HTTP client, health checks, streaming, role/function API profiles |
 | `local_sdlc/skills.py` | skill loading and system-prompt construction |
-| `local_sdlc/artifacts.py` | artifact extraction, linting, stream guards, repair advice |
+| `local_sdlc/artifact_ops.py` | artifact extraction and artifact application primitives |
+| `local_sdlc/artifacts.py` | compatibility facade, linting, stream guards, semantic probes, repair advice |
 | `local_sdlc/verification.py` | command execution, command result documents, smoke checks, evidence helpers |
 | `local_sdlc/stages.py` | deterministic stage queue, stage-specific paths/tests, acceptance summaries |
 | `local_sdlc/stage_runner.py` | `stage-plan` and `run-stages` command execution |
@@ -40,3 +41,22 @@ After the split:
 - `python3 -m unittest discover -s tests`
 
 Both checks passed during the split.
+
+## 2026-07-29 Refactor Slice S07a
+
+`local_sdlc/artifacts.py` had grown past 6,800 lines. The first behavior-preserving
+split moved JSON/BEGIN_FILE/diff/search_replace extraction and artifact apply
+primitives into `local_sdlc/artifact_ops.py`.
+
+Compatibility rule:
+
+- `local_sdlc/artifacts.py` re-exports `artifact_ops` symbols, including helper
+  names needed by the remaining stream guard and repair-advice code.
+- Existing callers that import from `local_sdlc.artifacts` keep working.
+- No feature behavior changed in this slice.
+
+Verification:
+
+- `python3 -m py_compile local_sdlc.py local_sdlc/*.py`
+- artifact extraction/apply focused tests
+- `python3 -m unittest tests.test_local_sdlc`

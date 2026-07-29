@@ -338,6 +338,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | work-start progress event を記録し、cancel 後の work-start を検出できる | `test_work_start_progress_is_blocked_after_cancel` | PASS |
 | cancel 済み `run-stages` が stage agent call を開始しない | `test_run_stages_refuses_cancelled_run_before_stage_agent_call` | PASS |
 | command action の SafetyDecision を実行前に記録し、approval-required / blocked command を停止する | `test_run_checked_command_records_allowed_safety_decision`, `test_run_checked_command_records_approval_required_safety_decision`, `test_run_checked_command_records_blocked_safety_decision`, `test_run_checked_command_requires_approval_for_risky_class_without_legacy_block_reason`, `test_agent_applies_patch_and_runs_test_command` | PASS |
+| S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 
 ### テスト環境
 
@@ -527,7 +528,8 @@ local_sdlc/
   models.py                    # dataclass と共有型
   llm_client.py                # OpenAI 互換 API、health、streaming
   skills.py                    # SKILL.md 読み込みと prompt assembly
-  artifacts.py                 # JSON/BEGIN_FILE/diff/search_replace parser
+  artifact_ops.py              # JSON/BEGIN_FILE/diff/search_replace parser と artifact apply
+  artifacts.py                 # artifact facade、stream guard、semantic lint、repair advice
   protocol.py                  # failure classification と repair policy
   supervisor.py                # PM/Coder/Judge と router
   agent_loop.py                # apply/test/judge repair loop
