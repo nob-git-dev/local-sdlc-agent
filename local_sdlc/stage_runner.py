@@ -15,6 +15,7 @@ from .routing import *
 from .verification import *
 from .artifacts import *
 from .control import *
+from .safety import *
 from .run_state import *
 from .stages import *
 from .agent_runner import command_agent
@@ -115,7 +116,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         final_ok = True
         for index, command in enumerate(args.test_command or [], start=1):
             record_work_start(run_dir, f"final_command_{index}")
-            doc, ok = run_checked_command(project, command, args.command_timeout)
+            doc, ok = run_checked_command(project, command, args.command_timeout, run_dir)
             path = write_run_document(run_dir, f"99-final-command-{index:02d}.md", doc)
             written.append(path)
             final_checks.append(
@@ -179,6 +180,8 @@ def command_run_stages(args: argparse.Namespace) -> int:
         }
         manifest["api_calls"] = int(manifest.get("api_calls", 0)) + integration_repair.api_calls
     manifest["documents"] = [display_path(path, project) for path in written]
+    manifest["safety_decisions_log"] = display_path(safety_decisions_file_path(run_dir), project)
+    manifest["safety_decision_count"] = len(read_safety_decisions(run_dir))
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     written.append(manifest_path)
 

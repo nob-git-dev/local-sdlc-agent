@@ -133,6 +133,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] P01b: work-start を `progress.jsonl` に append-only 記録し、cancel sequence より後に work-start が存在しないことを機械的に検査できる
 - [x] P01c: cancel 済み `run-stages` は stage agent call を開始せず拒否する
 - [ ] P02: 危険 action は人間承認なしに実行されず、`SafetyDecision` として `require_approval` または `block` が記録される
+- [x] P02a: command action は実行前に `SafetyDecision` を記録し、危険コマンドは `require_approval` または `block` として実行しない
 - [ ] P03: progress vector が一定時間変化しない場合、goal または stage が `STALLED` に遷移する
 - [ ] P04: `STALLED` 後、許可された recovery が存在する場合は `RECOVERY_PLANNED` を記録し、resume / retry / split / profile switch のいずれかへ遷移できる
 - [ ] P05: 同一 failure family が閾値以上続く場合、通常 retry ではなく failure analysis または root cause recovery へ遷移する
@@ -336,6 +337,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | cancel token を永続化し、cancel 済み resume を API call 前に拒否する | `test_request_cancel_writes_cancel_json`, `test_agent_refuses_cancelled_resume_before_llm_call` | PASS |
 | work-start progress event を記録し、cancel 後の work-start を検出できる | `test_work_start_progress_is_blocked_after_cancel` | PASS |
 | cancel 済み `run-stages` が stage agent call を開始しない | `test_run_stages_refuses_cancelled_run_before_stage_agent_call` | PASS |
+| command action の SafetyDecision を実行前に記録し、approval-required / blocked command を停止する | `test_run_checked_command_records_allowed_safety_decision`, `test_run_checked_command_records_approval_required_safety_decision`, `test_run_checked_command_records_blocked_safety_decision`, `test_run_checked_command_requires_approval_for_risky_class_without_legacy_block_reason`, `test_agent_applies_patch_and_runs_test_command` | PASS |
 
 ### テスト環境
 

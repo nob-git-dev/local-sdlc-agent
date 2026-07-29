@@ -21,6 +21,7 @@ from typing import Sequence
 from urllib.parse import quote
 
 from .models import RunnerError
+from .safety import *
 from .utils import display_path, truncate_text, unique_ordered
 from .workspace import resolve_project_path
 
@@ -263,13 +264,15 @@ def evidence_from_command_document(kind: str, name: str, ok: bool, path: Path, b
         evidence["covers"] = unique_ordered(covers)
     return evidence
 
-def run_checked_command(project: Path, command: str, timeout: float) -> tuple[str, bool]:
+def run_checked_command(project: Path, command: str, timeout: float, run_dir: Path | None = None) -> tuple[str, bool]:
     reason = dangerous_command_reason(command)
-    if reason:
-        return command_result_document(command, 2, "", "", 0.0, reason), False
     shell_reason = unsupported_shell_command_reason(command)
-    if shell_reason:
-        return command_result_document(command, 2, "", "", 0.0, shell_reason), False
+    decision = command_safety_decision(command, danger_reason=reason, shell_reason=shell_reason)
+    if run_dir:
+        record_safety_decision(run_dir, decision)
+    blocked_reason = blocked_reason_from_safety_decision(decision)
+    if blocked_reason:
+        return command_result_document(command, 2, "", "", 0.0, blocked_reason), False
 
     started = time.monotonic()
     try:

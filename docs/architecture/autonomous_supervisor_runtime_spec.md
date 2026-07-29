@@ -305,3 +305,29 @@ Still open for full P01:
 
 - direct tests for cancelled `run-stages` final command and copy-back boundaries
 - optional Web integration test proving stop writes cancel before a later resume attempt
+
+### 2026-07-29 P02a Command Safety Gate
+
+Implemented:
+
+- `SafetyDecision` domain record
+- append-only `safety_decisions.jsonl`
+- command safety classification into `allow`, `require_approval`, or `block`
+- `run_checked_command()` records a SafetyDecision before executing allowed commands
+- approval-required and blocked commands return a blocked command document without subprocess execution
+- agent/run-stages command execution paths pass their run directory to the safety gate
+- agent/run manifests include `safety_decisions_log` and `safety_decision_count`
+
+Verified:
+
+- `test_run_checked_command_records_allowed_safety_decision`
+- `test_run_checked_command_records_approval_required_safety_decision`
+- `test_run_checked_command_records_blocked_safety_decision`
+- `test_run_checked_command_requires_approval_for_risky_class_without_legacy_block_reason`
+- `test_agent_applies_patch_and_runs_test_command`
+
+Still open for full P02:
+
+- approval-token model for explicit human approval
+- safety decisions for artifact apply, copy-back, service control, Docker control, git operations, and network exposure
+- Web UI display for `APPROVAL_REQUIRED` and `SAFETY_BLOCKED`

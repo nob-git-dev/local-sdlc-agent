@@ -18,6 +18,7 @@ from .routing import *
 from .verification import *
 from .artifacts import *
 from .control import *
+from .safety import *
 from .run_state import *
 from .stages import *
 
@@ -295,6 +296,8 @@ def command_agent(args: argparse.Namespace) -> int:
             "cancel_state": load_cancel_state(run_dir) or None,
             "progress_log": display_path(progress_file_path(run_dir), original_project),
             "progress_event_count": len(read_progress_events(run_dir)),
+            "safety_decisions_log": display_path(safety_decisions_file_path(run_dir), original_project),
+            "safety_decision_count": len(read_safety_decisions(run_dir)),
             "documents": [display_path(path, original_project) for path in written],
         }
         if latest_stream_status:
@@ -1240,7 +1243,7 @@ def command_agent(args: argparse.Namespace) -> int:
 
         for index, command in enumerate(test_commands, start=1):
             guard_action(f"initial_test_command_{index}")
-            doc, ok = run_checked_command(project, command, args.command_timeout)
+            doc, ok = run_checked_command(project, command, args.command_timeout, run_dir)
             path = write_run_document(run_dir, f"00-initial-command-{index:02d}.md", doc)
             written.append(path)
             documents.append((f"Initial command {index}", doc))
@@ -1404,6 +1407,8 @@ def command_agent(args: argparse.Namespace) -> int:
             "cancel_state": load_cancel_state(run_dir) or None,
             "progress_log": display_path(progress_file_path(run_dir), original_project),
             "progress_event_count": len(read_progress_events(run_dir)),
+            "safety_decisions_log": display_path(safety_decisions_file_path(run_dir), original_project),
+            "safety_decision_count": len(read_safety_decisions(run_dir)),
             "documents": [display_path(path, original_project) for path in written],
         }
         manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
@@ -2930,7 +2935,7 @@ def command_agent(args: argparse.Namespace) -> int:
 
             for index, command in enumerate(test_commands, start=1):
                 guard_action(f"round_test_command_{index}")
-                doc, ok = run_checked_command(project, command, args.command_timeout)
+                doc, ok = run_checked_command(project, command, args.command_timeout, run_dir)
                 path = write_run_document(run_dir, f"05-r{round_index:02d}-command-{index:02d}.md", doc)
                 written.append(path)
                 command_docs.append((f"Command result round {round_index}.{index}", doc))
@@ -3405,6 +3410,8 @@ def command_agent(args: argparse.Namespace) -> int:
         "cancel_state": load_cancel_state(run_dir) or None,
         "progress_log": display_path(progress_file_path(run_dir), original_project),
         "progress_event_count": len(read_progress_events(run_dir)),
+        "safety_decisions_log": display_path(safety_decisions_file_path(run_dir), original_project),
+        "safety_decision_count": len(read_safety_decisions(run_dir)),
         "documents": [display_path(path, original_project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
