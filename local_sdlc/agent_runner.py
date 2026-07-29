@@ -135,7 +135,7 @@ def command_agent(args: argparse.Namespace) -> int:
     else:
         run_dir = make_run_dir(original_project, args.run_dir)
 
-    ensure_not_cancelled(run_dir, "agent setup")
+    record_work_start(run_dir, "agent_setup")
 
     resume_worktree_source: Path | None = None
     if args.resume_worktree_path:
@@ -232,7 +232,7 @@ def command_agent(args: argparse.Namespace) -> int:
             )
 
     def guard_action(action: str) -> None:
-        ensure_not_cancelled(run_dir, action)
+        record_work_start(run_dir, action)
 
     def write_partial_manifest(status: str, extra: dict[str, object] | None = None) -> None:
         partial_doc: dict[str, object] = {
@@ -293,6 +293,8 @@ def command_agent(args: argparse.Namespace) -> int:
             "state_transitions": state_transitions,
             "cancel_requested": cancel_requested(run_dir),
             "cancel_state": load_cancel_state(run_dir) or None,
+            "progress_log": display_path(progress_file_path(run_dir), original_project),
+            "progress_event_count": len(read_progress_events(run_dir)),
             "documents": [display_path(path, original_project) for path in written],
         }
         if latest_stream_status:
@@ -1400,6 +1402,8 @@ def command_agent(args: argparse.Namespace) -> int:
             "state_transitions": state_transitions,
             "cancel_requested": cancel_requested(run_dir),
             "cancel_state": load_cancel_state(run_dir) or None,
+            "progress_log": display_path(progress_file_path(run_dir), original_project),
+            "progress_event_count": len(read_progress_events(run_dir)),
             "documents": [display_path(path, original_project) for path in written],
         }
         manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
@@ -3399,6 +3403,8 @@ def command_agent(args: argparse.Namespace) -> int:
         "state_transitions": state_transitions,
         "cancel_requested": cancel_requested(run_dir),
         "cancel_state": load_cancel_state(run_dir) or None,
+        "progress_log": display_path(progress_file_path(run_dir), original_project),
+        "progress_event_count": len(read_progress_events(run_dir)),
         "documents": [display_path(path, original_project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))

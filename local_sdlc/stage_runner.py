@@ -64,7 +64,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
             break
         prior_context_paths.extend(stage_required_paths(stage))
     run_dir = make_run_dir(project, args.run_dir)
-    ensure_not_cancelled(run_dir, "run-stages setup")
+    record_work_start(run_dir, "run_stages_setup")
     written: list[Path] = []
     completed: list[StageRunSummary] = []
     final_checks: list[dict[str, object]] = []
@@ -92,7 +92,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         if (project / path).is_file()
     )
     for stage in stages:
-        ensure_not_cancelled(run_dir, f"stage {stage.stage_id} start")
+        record_work_start(run_dir, f"stage_{stage.stage_id}_start")
         stage_dir = run_dir / f"{stage.stage_id.lower()}-{slugify(stage.title)}"
         stage_args = build_stage_agent_args(args, stage, stage_dir, completed, prior_changed_paths)
         print(f"stage: {stage.stage_id} {stage.title}")
@@ -114,7 +114,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
     if final_status == "approved" and args.apply:
         final_ok = True
         for index, command in enumerate(args.test_command or [], start=1):
-            ensure_not_cancelled(run_dir, f"final command {index}")
+            record_work_start(run_dir, f"final_command_{index}")
             doc, ok = run_checked_command(project, command, args.command_timeout)
             path = write_run_document(run_dir, f"99-final-command-{index:02d}.md", doc)
             written.append(path)
@@ -128,7 +128,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
             )
             final_ok = final_ok and ok
         final_required_paths = all_stage_required_paths(stages)
-        ensure_not_cancelled(run_dir, "final required path checks")
+        record_work_start(run_dir, "final_required_path_checks")
         for index, (doc, ok) in enumerate(run_required_path_checks(project, final_required_paths), start=1):
             path = write_run_document(run_dir, f"99-final-required-path-{index:02d}.md", doc)
             written.append(path)
@@ -146,7 +146,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
 
     integration_repair: StageRunSummary | None = None
     if final_status == "final_check_failed" and args.apply and args.final_repair_rounds > 0:
-        ensure_not_cancelled(run_dir, "final integration repair")
+        record_work_start(run_dir, "final_integration_repair")
         repair_stage = StageWorkItem(
             stage_id="S99",
             title="Final integration repair",

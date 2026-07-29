@@ -227,6 +227,24 @@ class LocalSDLCTest(unittest.TestCase):
             self.assertEqual(persisted["reason"], "user_cancelled")
             self.assertIn("requested_at", persisted)
 
+    def test_work_start_progress_is_blocked_after_cancel(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            run_dir.mkdir()
+
+            first = self.local_sdlc.record_work_start(run_dir, "pm_api_call")
+            cancel_state = self.local_sdlc.request_cancel(run_dir, source="test", reason="stop")
+
+            with self.assertRaises(self.local_sdlc.RunnerError):
+                self.local_sdlc.record_work_start(run_dir, "coder_api_call")
+
+            events = self.local_sdlc.read_progress_events(run_dir)
+            violating = self.local_sdlc.work_starts_after_cancel(run_dir)
+            self.assertEqual(first["sequence"], 1)
+            self.assertEqual(cancel_state["progress_sequence"], 1)
+            self.assertEqual([event["event"] for event in events], ["work_start", "cancel_requested"])
+            self.assertEqual(violating, [])
+
     def test_agent_refuses_cancelled_resume_before_llm_call(self):
         calls = []
 
@@ -278,6 +296,7 @@ class LocalSDLCTest(unittest.TestCase):
         self.assertIn("cancelled", str(caught.exception))
         self.assertEqual(calls, [])
         self.assertEqual(app_content, "print('original')\n")
+        self.assertEqual(self.local_sdlc.work_starts_after_cancel(run_dir), [])
 
     def test_agent_parser_accepts_adaptive_rounds(self):
         args = self.local_sdlc.build_parser().parse_args(
@@ -5736,6 +5755,48 @@ FAILED (failures=1)
         self.assertEqual(manifest["status"], "dry_run")
         self.assertEqual(manifest["stage_count"], 2)
         self.assertTrue(queue_exists)
+
+    def test_run_stages_refuses_cancelled_run_before_stage_agent_call(self):
+        calls = []
+
+        def fake_command_agent(_args):
+            calls.append(_args)
+            return 0
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Mini SQLite Engine\nSQL parser and B+Tree\n")
+            run_dir = project / "run"
+            self.local_sdlc.request_cancel(run_dir, source="test", reason="stop_before_stage")
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "build mini sqlite",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--from-stage",
+                    "S01",
+                    "--to-stage",
+                    "S01",
+                    "--apply",
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+
+            original_command_agent = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                with self.assertRaises(self.local_sdlc.RunnerError) as caught:
+                    self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc._stage_runner.command_agent = original_command_agent
+
+        self.assertIn("cancelled", str(caught.exception))
+        self.assertEqual(calls, [])
+        self.assertEqual(self.local_sdlc.work_starts_after_cancel(run_dir), [])
 
     def test_run_stages_executes_each_stage_as_agent_run(self):
         calls = []

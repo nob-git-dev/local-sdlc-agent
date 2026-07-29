@@ -284,3 +284,24 @@ Still open for full P01:
 - append-only `progress.jsonl`
 - proof that no progress event after cancellation starts work
 - direct tests for cancelled `run-stages` stage start, final command, and copy-back boundaries
+
+### 2026-07-29 P01b Progress Event Proof
+
+Implemented:
+
+- append-only `progress.jsonl`
+- `record_work_start()` for action-boundary work-start events
+- `work_starts_after_cancel()` to mechanically detect any work-start event after the cancel sequence
+- `agent` manifests include `progress_log` and `progress_event_count`
+- parent `run-stages` records stage/final-check work-start events through the same mechanism
+
+Verified:
+
+- `test_work_start_progress_is_blocked_after_cancel`
+- `test_agent_refuses_cancelled_resume_before_llm_call`
+- `test_run_stages_refuses_cancelled_run_before_stage_agent_call`
+
+Still open for full P01:
+
+- direct tests for cancelled `run-stages` final command and copy-back boundaries
+- optional Web integration test proving stop writes cancel before a later resume attempt
