@@ -14,6 +14,11 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 生成物（artifact）: LLM が runner へ渡す適用候補。unified diff、`BEGIN_FILE`、`BEGIN_SEARCH_REPLACE`、JSON の `replace_file` / `search_replace` などを含む。利用者向け文書では、原則として「生成物」「変更パッチ」「生成ファイル」と表記する。
 - 文書成果物: `.sdlc-runner/runs/` に保存される Markdown / JSON の判断記録、実行証拠、失敗分析、生成物ログ。
 - runner: LLM の出力を検査し、許可された場合だけファイル適用、テスト実行、証拠保存を行う決定的な実行制御層。
+- 自律 Supervisor Runtime: agent / run-stages / Web job を外側から監視し、停止・停滞・失敗を状態として分類し、安全条件を満たす範囲で resume / retry / split / blocked へ遷移させる親制御層。
+- Safety/Suppression Harness: command、artifact apply、resume、service 操作、git 操作などの action を実行前に分類し、allow / require_approval / block を決定する安全制御層。
+- 中核命題: 現時点で固定してよい安全・進捗・証拠の不変条件。例: Safety は完走性より優先する、cancel 後に新しい action を開始しない。
+- 発見命題: 実装・検証・失敗分析で新たに判明した条件。証拠、適用範囲、反例、汎用化理由を持つ場合だけ SPEC.md または learning record へ昇格できる。
+- 過剰適合: 特定 benchmark、特定モデル、特定失敗ログだけに合わせた規則を一般規則として実装し、未知タスクへの解決力や安全性を下げること。
 
 ### 機能ごとの目的
 
@@ -37,6 +42,9 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | Function API Profile | API 設定を実際の認知処理単位で最適化する | ロール責務を曖昧にせず、関数別 profile を role の下位実行設定として扱う |
 | Model/API Preset Profile | Qwen/Ornith/Nemotron などモデル特性ごとの既定 model・temperature・max_tokens・thinking を名前付き preset として管理する | モデル差し替えを散在 CLI flag ではなく `--model-profile` と function-level override で行い、API call ごとの model 選択余地を残す |
 | Local Web Chat UI | ブラウザから chat 形式で `agent` / `run-stages` / `spec` / `doctor` / `health` を投入・監視・停止する | Web UI は薄い presentation adapter に留め、既存 CLI harness の実行規律を迂回しない |
+| Autonomous Supervisor Runtime | 長時間実行、停滞、失敗、再開、stage split を goal 単位で管理し、完了または理由付き blocked へ到達させる | 停止した agent 自身に自己観測を任せず、外側の親制御層が観測・判断・再投入を行う |
+| Safety/Suppression Harness | すべての action を実行前に安全分類し、人間 cancel / approval-required / block を完走性より優先する | LLM に実行承認権限を渡さず、危険操作を粘り強く再試行する自律ループにしない |
+| Anti-overfitting Governance | 失敗から得た学習を中核命題と発見命題に分け、適用範囲と反例を持つ規則だけを昇格する | Tetris / Mini SQLite / 特定モデルなど個別経験を無条件に一般規則へしない |
 
 ## 振る舞い
 
@@ -73,6 +81,13 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - Web UI から別プロジェクトを対象にする場合でも、`--skills-dir` は Web UI を起動したエージェント本体リポジトリ内の `sdlc-skills/skills` を絶対パスで渡す。
 - Web UI はジョブの開始、状態取得、ログ表示、停止だけを担当し、パッチ適用・テスト・Judge 判定などの制御は既存 runner に委譲する。
 - `python3 -m local_sdlc ...` は `local_sdlc.py ...` と同じ CLI を起動し、将来の package install / console script 起動に備える。
+- 自律 Supervisor Runtime は goal を `PLANNED -> RUNNING -> PROGRESSING -> STALLED -> RECOVERY_PLANNED -> RESUMED -> VERIFYING -> COMPLETED` または `USER_CANCELLED` / `SAFETY_BLOCKED` / `APPROVAL_REQUIRED` / `BLOCKED` の状態機械として扱う。
+- 自律 Supervisor Runtime は `progress.jsonl`、`run.partial.json`、子プロセス状態、stream stats、evidence 変化を使い、長時間思考と停滞を区別する。
+- Safety/Suppression Harness は各 action 実行前に `SafetyDecision` を生成し、`safety_decisions.jsonl` に保存する。
+- 人間が goal/job/stage を cancel した場合、既存プロセスを停止し、その後の新規 API call、command、resume、retry、stage split、copy back を開始しない。
+- `require_approval` の action は人間承認が記録されるまで実行しない。LLM 出力、Judge 承認、成功予測は人間承認の代替にならない。
+- 発見命題を一般規則に昇格する場合は、根拠となる evidence、適用範囲、既知の反例、汎用化理由、回帰テストを持たせる。
+- 過去 benchmark から得た個別修復規則は、core runner に直接ハードコードせず、まず発見命題または scope 付き regression memory として保存する。
 
 ## 受け入れ条件
 
@@ -113,6 +128,18 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] `--config-file` で任意の設定ファイルを指定でき、相対パスは `--project` から解決される
 - [x] CLI引数は設定ファイルのAPI設定を上書きできる
 - [x] Web UI は設定ファイルを子プロセスへ引き継ぎ、画面で入力されたAPIキーをコマンド表示やジョブログへ露出しない
+- [ ] P01: cancel 後、新しい API call / command / resume / retry / stage split / copy back が開始されない
+- [ ] P02: 危険 action は人間承認なしに実行されず、`SafetyDecision` として `require_approval` または `block` が記録される
+- [ ] P03: progress vector が一定時間変化しない場合、goal または stage が `STALLED` に遷移する
+- [ ] P04: `STALLED` 後、許可された recovery が存在する場合は `RECOVERY_PLANNED` を記録し、resume / retry / split / profile switch のいずれかへ遷移できる
+- [ ] P05: 同一 failure family が閾値以上続く場合、通常 retry ではなく failure analysis または root cause recovery へ遷移する
+- [ ] P06: artifact 生成中に形式違反が確定した場合、stream guard が早期停止し、次 action を format repair または blocked に限定する
+- [ ] P07: `COMPLETED` は acceptance matrix の全条件が pass した場合だけ成立する
+- [ ] P08: `BLOCKED` は reason、supporting evidence、next required human input を持つ
+- [ ] P09: 自律 loop は goal / stage / recovery / API call / wall-clock の予算上限を持ち、上限到達時に理由付きで停止する
+- [ ] P10: 自律 mode のファイル変更は既定で隔離 worktree 上で行われ、承認済み成果物だけが元 project へ copy back される
+- [ ] P11: 発見命題は evidence、scope、counterexamples、generalization_rationale、regression_tests を持たない限り中核規則へ昇格されない
+- [ ] P12: Tetris、Mini SQLite、Redis など既存 benchmark 固有の失敗規則は、未知小課題に対する regression で過剰発火しないことを確認する
 
 ## スコープ（やらないこと）
 
@@ -121,6 +148,9 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - Docker サービスや LLM サーバーをこのプログラム内に同梱しない
 - 外部クラウドサービス、npm build、CDN、重いWeb framework に依存したUIは作らない
 - 複数エージェントで暗黙の会話履歴やメモリを共有しない
+- 完走性を理由に Safety/Suppression Harness を迂回しない
+- LLM に人間承認、危険操作の最終許可、cancel 解除を代行させない
+- 特定 benchmark の成功だけを根拠に、scope なしの一般規則を追加しない
 
 ## 固定要件
 
@@ -150,6 +180,13 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - `reasoning_content` は監査用 metadata として保存するが、後続スキルに渡す本文・artifact・handoff document にはそのまま混ぜない
 - 将来の mixed-model 運用のため、function/API call 単位の model override を維持する
 - `doctor` と `run.json` は有効な `model_profile` と role/function 別 model/API 設定を表示・保存する
+- 自律 Supervisor Runtime では Safety/Suppression Harness の判断を完走性より優先する
+- cancel 後に新しい action を開始してはならない
+- 危険 action の承認は人間または明示 policy だけが与えられる。LLM は承認を代替しない
+- すべての自律 action は実行前に Safety/Suppression Harness を通す
+- 自律 loop には goal / stage / recovery / API call / wall-clock の予算上限を必ず設ける
+- 自律 mode の変更適用は既定で隔離 worktree 上で行う
+- 中核命題と発見命題を分離し、発見命題を一般規則へ昇格するには evidence、scope、counterexamples、generalization_rationale、regression_tests を必須とする
 
 ## システム構成（コンポーネント依存関係）
 
@@ -162,6 +199,18 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 変更対象: `.sdlc-runner/runs/<timestamp>/`
   - 依存している: Supervisor 実行、PM/Coder/Judge の出力
   - 依存されている: 後続エージェントの入力文書、ユーザーレビュー、将来の監査
+- 変更対象: `.sdlc-runner/control/<goal-id>/`
+  - 依存している: Web UI / CLI stop、human approval、Safety/Suppression Harness
+  - 依存されている: Autonomous Supervisor Runtime、子 agent 起動可否、resume/retry 抑止
+- 変更対象: `.sdlc-runner/runs/<timestamp>/progress.jsonl`
+  - 依存している: API call、stream callback、command runner、artifact apply、evidence gate
+  - 依存されている: Watchdog、Web UI、stalled 判定、recovery planner
+- 変更対象: `.sdlc-runner/runs/<timestamp>/safety_decisions.jsonl`
+  - 依存している: Safety/Suppression Harness、risk classifier、human approval
+  - 依存されている: Autonomous Supervisor Runtime、audit、blocked/approval-required UI
+- 変更対象: `docs/architecture/autonomous_supervisor_runtime_spec.md`
+  - 依存している: 本 SPEC.md、これまでの Tetris / Mini SQLite / Redis 実験で得た停止・安全・過剰適合の知見
+  - 依存されている: 今後の実装フェーズ、TDD、review
 - 変更対象: `tests/test_local_sdlc.py`
   - 依存している: `local_sdlc.py`, 一時ディレクトリ上のテスト用 SKILL.md
   - 依存されている: 受け入れ条件の検証
@@ -173,10 +222,10 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 ### コンポーネント構成
 
 - Presentation 層: `argparse` による CLI、標準出力、標準ライブラリHTTPサーバーによるローカルWeb UI
-- Application 層: Supervisor、agent loop、stage runner、repair budget、workflow orchestration
-- Domain 層: Skill model、生成物プロトコル、failure classification、semantic contract、stage work item
+- Application 層: Supervisor、agent loop、stage runner、repair budget、workflow orchestration、Autonomous Supervisor Runtime
+- Domain 層: Skill model、生成物プロトコル、failure classification、semantic contract、stage work item、ProgressEvent、SafetyDecision、Core/Discovered Proposition
 - Infrastructure 層: OpenAI 互換 HTTP クライアント、streaming、git/subprocess、ファイルシステム読み書き
-- Persistence 層: run manifest、run_dir、SPEC.md、観測ログ、docs 出力
+- Persistence 層: run manifest、run_dir、SPEC.md、progress.jsonl、safety_decisions.jsonl、control token、観測ログ、docs 出力
 
 ### ADR
 
