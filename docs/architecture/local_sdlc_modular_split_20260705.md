@@ -90,3 +90,32 @@ Verification:
 - `python3 -m unittest discover -s tests`
 - `python3 -m py_compile local_sdlc.py local_sdlc/*.py tests/*.py`
 - `git diff --check`
+
+## 2026-07-29 Refactor Slice S07c
+
+The third behavior-preserving test split moved the stage runner surface into a
+focused module.
+
+Moved test scope:
+
+- `stage-plan` JSON output and relative `--spec-file` resolution.
+- `run-stages` parser options, dry-run manifest writing, cancellation before a
+  stage agent call, per-stage agent execution, and final test gate ordering.
+- Stage queue synthesis and `build_stage_agent_args` propagation of function API
+  profiles and absolute project/spec paths.
+
+Boundary rule:
+
+- `tests/test_stage_runner.py` owns deterministic stage queue and stage command
+  runner behavior.
+- Stage-scope lint, semantic repair, and repair advice tests remain outside this
+  slice because they belong to higher-level artifact / repair control.
+- This slice changes test organization only; production behavior is unchanged.
+
+Verification:
+
+- `python3 -m unittest tests.test_stage_runner`
+- `python3 -m unittest tests.test_local_sdlc`
+- `python3 -m unittest discover -s tests`
+- `python3 -m py_compile local_sdlc.py local_sdlc/*.py tests/*.py`
+- `git diff --check`
