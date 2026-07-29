@@ -341,6 +341,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 | S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |
+| S02: HTML/browser smoke は harness plugin として Evidence を返し、既存 `run_html_smoke_checks()` / `run_browser_tetris_check()` の互換挙動を維持する | `tests.test_harnesses`, `test_html_smoke_flags_broken_tetris_file`, `test_browser_tetris_smoke_requires_visible_active_piece`, full suite | PASS |
 
 ### テスト環境
 
@@ -1018,7 +1019,7 @@ local_sdlc/
 - [ ] `Requirement`, `Observable`, `Evidence`, `Verdict`, `RepairAction`, `RegressionMemory` が型として定義されている
 - [ ] 既存 `acceptance_matrix` は新 domain model から生成され、既存 `run.json` 互換を維持する
 - [ ] `fail`, `unverified`, `blocked`, `invalid_evidence` が区別され、`pass` 以外は approval blocker になる
-- [ ] HTML/browser smoke は harness plugin として実装され、core runner に Tetris 固有判定が直書きされない
+- [x] HTML/browser smoke は harness plugin として実装され、core runner に Tetris 固有判定が直書きされない
 - [ ] Python/API/CLI/storage probe は harness plugin として実装される
 - [ ] repair advice は generic rules と domain rules に分離される
 - [ ] acceptance blocker から Repair Action が生成され、次 Coder call に文書として渡る

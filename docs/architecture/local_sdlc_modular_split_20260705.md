@@ -21,6 +21,8 @@
 | `local_sdlc/supervisor_runner.py` | `supervisor` and legacy `supervise` command execution |
 | `local_sdlc/phase_runner.py` | `spec`, `phase`, and `implement` command execution |
 | `local_sdlc/agent_runner.py` | application-level coding agent loop |
+| `local_sdlc/harnesses/base.py` | harness plugin evidence contract |
+| `local_sdlc/harnesses/html_browser.py` | HTML static smoke and browser/Tetris DOM behavior smoke |
 | `local_sdlc/run_state.py` | run directories, resume context, worktree copy-back |
 | `local_sdlc/workspace.py` | project file discovery, context collection, safe path resolution |
 | `local_sdlc/utils.py` | small pure helpers shared across layers |
@@ -119,3 +121,33 @@ Verification:
 - `python3 -m unittest discover -s tests`
 - `python3 -m py_compile local_sdlc.py local_sdlc/*.py tests/*.py`
 - `git diff --check`
+
+## 2026-07-29 Implementation Slice S02
+
+The HTML/browser smoke checks were moved out of `verification.py` into the
+harness plugin boundary.
+
+Implementation:
+
+- `local_sdlc/harnesses/base.py` defines `HarnessEvidence` and the generic
+  harness protocol.
+- `local_sdlc/harnesses/html_browser.py` owns static HTML smoke checks,
+  browser/Tetris DOM behavior smoke, and the Tetris startup render predicate.
+- `verification.py` keeps the previous public functions as compatibility
+  wrappers: `run_html_smoke_checks()`, `run_browser_tetris_check()`, and
+  `has_tetris_initial_render_sequence()`.
+
+Boundary rule:
+
+- Harnesses return evidence records and legacy command documents.
+- Harnesses do not set `approved`, `final_verdict`, or any run-level approval
+  state. Approval remains an application-layer decision based on requirements,
+  evidence, and judge policy.
+
+Verification:
+
+- `python3 -m unittest tests.test_harnesses`
+- HTML smoke regression tests
+- browser/Tetris smoke regression test when Chromium is available
+- `python3 -m unittest discover -s tests`
+- `python3 -m py_compile local_sdlc.py local_sdlc/*.py local_sdlc/harnesses/*.py tests/*.py`
