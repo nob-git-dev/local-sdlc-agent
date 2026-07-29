@@ -129,6 +129,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] CLI引数は設定ファイルのAPI設定を上書きできる
 - [x] Web UI は設定ファイルを子プロセスへ引き継ぎ、画面で入力されたAPIキーをコマンド表示やジョブログへ露出しない
 - [ ] P01: cancel 後、新しい API call / command / resume / retry / stage split / copy back が開始されない
+- [x] P01a: `cancel.json` を run_dir に永続化でき、cancel 済み run_dir の `agent --resume` は LLM API call を開始せず拒否する
 - [ ] P02: 危険 action は人間承認なしに実行されず、`SafetyDecision` として `require_approval` または `block` が記録される
 - [ ] P03: progress vector が一定時間変化しない場合、goal または stage が `STALLED` に遷移する
 - [ ] P04: `STALLED` 後、許可された recovery が存在する場合は `RECOVERY_PLANNED` を記録し、resume / retry / split / profile switch のいずれかへ遷移できる
@@ -330,6 +331,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | 受け入れ条件ごとの証拠不足を gate として扱い、未証明のまま承認しない | `test_acceptance_criteria_parse_plain_bullets_and_gate_unverified`, `test_agent_manifest_records_acceptance_matrix_and_failure_classifier` | PASS |
 | browser-tetris-smoke が Start 後の可視 active piece 不在を失敗として扱う | `test_browser_tetris_smoke_requires_visible_active_piece` | PASS |
 | acceptance gate blocker を次ラウンドの repair advice へ変換できる | `test_repair_advice_converts_acceptance_gate_blockers_to_actions` | PASS |
+| cancel token を永続化し、cancel 済み resume を API call 前に拒否する | `test_request_cancel_writes_cancel_json`, `test_agent_refuses_cancelled_resume_before_llm_call` | PASS |
 
 ### テスト環境
 

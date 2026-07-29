@@ -17,7 +17,8 @@ from collections import deque
 from pathlib import Path
 from urllib.parse import quote
 
-from .models import DEFAULT_BASE_URL, DEFAULT_MODEL, RunnerError
+from .control import request_cancel
+from .models import DEFAULT_BASE_URL, DEFAULT_MODEL, GENERATED_DIR, RunnerError
 
 
 MAX_JOB_LOG_LINES = 4000
@@ -198,7 +199,10 @@ def _infer_run_dir_from_job_id(project: Path, log_dir: Path) -> Path | None:
     job_id = log_dir.name
     if len(job_id) < 15:
         return None
-    candidate = project / ".sdlc-runner" / "runs" / job_id[:15]
+    exact = project / GENERATED_DIR / "runs" / job_id
+    if exact.exists() and exact.is_dir():
+        return exact.resolve()
+    candidate = project / GENERATED_DIR / "runs" / job_id[:15]
     return candidate.resolve() if candidate.exists() and candidate.is_dir() else None
 
 
@@ -362,6 +366,14 @@ def _append_common_args(command: list[str], payload: dict[str, object], config: 
         command.append("--stream")
 
 
+def _append_run_dir_arg(command: list[str], payload: dict[str, object], project: Path) -> None:
+    run_dir_text = _optional_text(payload, "run_dir")
+    if not run_dir_text:
+        return
+    run_dir, _relative = resolve_project_path(project, run_dir_text)
+    command.extend(["--run-dir", str(run_dir)])
+
+
 def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCommand:
     """Build a safe argv list for a local agent subprocess."""
     mode = _optional_text(payload, "mode") or "agent"
@@ -394,6 +406,7 @@ def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCom
             command.append("--apply")
     elif mode == "supervisor":
         command.append(brief)
+        _append_run_dir_arg(command, payload, project)
         for include in _string_list(payload.get("include")):
             command.extend(["--include", include])
         if _as_bool(payload.get("execute"), False):
@@ -402,6 +415,7 @@ def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCom
             command.append("--allow-ambiguous")
     elif mode == "run-stages":
         command.append(brief)
+        _append_run_dir_arg(command, payload, project)
         spec_file = _optional_text(payload, "spec_file")
         if spec_file:
             command.extend(["--spec-file", spec_file])
@@ -415,6 +429,7 @@ def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCom
             command.extend(["--test-command", test_command])
     else:
         command.append(brief)
+        _append_run_dir_arg(command, payload, project)
         spec_file = _optional_text(payload, "spec_file")
         if spec_file:
             command.extend(["--spec-file", spec_file])
@@ -528,11 +543,16 @@ class JobRegistry:
         self.jobs_root.mkdir(parents=True, exist_ok=True)
 
     def start(self, payload: dict[str, object]) -> AgentJob:
-        built = build_cli_command(payload, self.config)
-        created_project = ensure_project_directory(built.cwd, self.config.project.parent)
         mode = _optional_text(payload, "mode") or "agent"
         brief = _optional_text(payload, "brief")
         job_id = time.strftime("%Y%m%d-%H%M%S", time.localtime()) + "-" + uuid.uuid4().hex[:8]
+        project_text = _optional_text(payload, "project")
+        project = Path(project_text).expanduser().resolve() if project_text else self.config.project
+        command_payload = dict(payload)
+        if mode in {"agent", "run-stages", "supervisor"} and not _optional_text(command_payload, "run_dir"):
+            command_payload["run_dir"] = str(project / GENERATED_DIR / "runs" / job_id)
+        built = build_cli_command(command_payload, self.config)
+        created_project = ensure_project_directory(built.cwd, self.config.project.parent)
         log_dir = self.jobs_root / job_id
         log_dir.mkdir(parents=True, exist_ok=True)
         job = AgentJob(job_id, built, brief, mode, log_dir)
@@ -602,8 +622,16 @@ class JobRegistry:
 
     def stop(self, job_id: str) -> bool:
         job = self.get(job_id)
-        if job is None or job.process is None or job.process.poll() is not None:
+        if not isinstance(job, AgentJob) or job.process is None or job.process.poll() is not None:
             return False
+        metadata = {"job_id": job.id, "mode": job.mode}
+        request_cancel(job.log_dir, source="web", reason="user_stop", metadata=metadata)
+        run_dir = _find_run_dir(job.log_dir / "output.log", job.output_lines) or _infer_run_dir_from_job_id(
+            job.command.cwd,
+            job.log_dir,
+        )
+        if run_dir is not None:
+            request_cancel(run_dir, source="web", reason="user_stop", metadata=metadata)
         job.mark("stopped")
         if os.name == "posix":
             os.killpg(os.getpgid(job.process.pid), signal.SIGTERM)

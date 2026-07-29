@@ -258,3 +258,29 @@ The first vertical slice should cover:
 
 No autonomous retry is allowed in the first slice. Recovery comes after the
 system can stop safely.
+
+## Implementation Log
+
+### 2026-07-29 P01a Cancel Token and Resume Guard
+
+Implemented:
+
+- `cancel.json` persistence through `request_cancel()`
+- fail-closed cancel-state loading for malformed cancel files
+- `agent` setup guard that refuses a cancelled run directory before PM/Coder/Judge API calls
+- action-boundary guards before agent API calls, artifact apply, executable checks, and copy-back
+- `run-stages` parent-run guards before stage start, final checks, and integration repair
+- Web stop writes `cancel.json` to both the web job log directory and the inferred run directory
+- Web-created agent/supervisor/run-stages jobs receive an explicit run directory so cancellation and partial progress can be correlated before final stdout appears
+
+Verified:
+
+- `test_request_cancel_writes_cancel_json`
+- `test_agent_refuses_cancelled_resume_before_llm_call`
+- full test suite: `python3 -m unittest tests.test_local_sdlc`
+
+Still open for full P01:
+
+- append-only `progress.jsonl`
+- proof that no progress event after cancellation starts work
+- direct tests for cancelled `run-stages` stage start, final command, and copy-back boundaries
