@@ -218,6 +218,37 @@ Verification:
 - `python3 -m unittest tests.test_local_sdlc.LocalSDLCTest.test_agent_records_python_probe_evidence_after_command_failure`
 - `python3 -m py_compile local_sdlc/harnesses/python_probes.py local_sdlc/harnesses/__init__.py local_sdlc/agent_runner.py tests/test_harnesses.py tests/test_local_sdlc.py`
 
+## 2026-07-29 Implementation Slice S04a
+
+Acceptance blockers now produce structured repair actions.
+
+Implementation:
+
+- `local_sdlc/models.py` defines `RepairAction`.
+- `local_sdlc/repair_advice.py` extracts acceptance-gate blockers from command
+  documents and converts them into `RepairAction` objects.
+- `repair_advice_to_manifest()` projects existing `RepairAdvice` into the
+  previous manifest shape plus `repair_actions`.
+- `agent_runner.py` stores repair advice through the shared projection, so
+  run manifests expose the same repair-action schema across normal repair,
+  stage-scope repair, project-policy triage, and failure-analysis recovery.
+- Focused Coder prompts include repair-action instructions such as
+  `R01 produce_acceptance_evidence: ...`.
+
+Boundary rule:
+
+- `RepairAction` is a proposed next action, not execution authority. The runner
+  still applies artifact path policy, safety checks, command gates, and
+  acceptance verification before any run can be approved.
+- Acceptance-specific actions are derived from observed blocker facts. Broader
+  generic/domain repair-rule separation remains a later S04b slice.
+
+Verification:
+
+- `python3 -m unittest tests.test_local_sdlc.LocalSDLCTest.test_repair_advice_converts_acceptance_gate_blockers_to_actions`
+- `python3 -m unittest tests.test_local_sdlc.LocalSDLCTest.test_agent_records_acceptance_repair_actions_for_next_round`
+- `python3 -m py_compile local_sdlc/models.py local_sdlc/repair_advice.py local_sdlc/agent_runner.py tests/test_local_sdlc.py`
+
 ## 2026-07-29 Refactor Slice S07d
 
 `local_sdlc/artifacts.py` is now a compatibility facade. The former mixed

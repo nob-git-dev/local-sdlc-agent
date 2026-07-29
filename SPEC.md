@@ -337,7 +337,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | 生成テストハーネス所有権のようなプロジェクト依存判断では Project Policy Triage を独立 API call として保存し、repair advice に反映できる | `test_agent_runs_project_policy_triage_for_generated_test_harness_ownership` | PASS |
 | 受け入れ条件ごとの証拠不足を gate として扱い、未証明のまま承認しない | `test_acceptance_criteria_parse_plain_bullets_and_gate_unverified`, `test_agent_manifest_records_acceptance_matrix_and_failure_classifier` | PASS |
 | browser-tetris-smoke が Start 後の可視 active piece 不在を失敗として扱う | `test_browser_tetris_smoke_requires_visible_active_piece` | PASS |
-| acceptance gate blocker を次ラウンドの repair advice へ変換できる | `test_repair_advice_converts_acceptance_gate_blockers_to_actions` | PASS |
+| acceptance gate blocker を次ラウンドの repair advice / RepairAction へ変換できる | `test_repair_advice_converts_acceptance_gate_blockers_to_actions`, `test_agent_records_acceptance_repair_actions_for_next_round` | PASS |
 | Web 初回 `agent` 新規作成時に最小SPECをbootstrapし、明確な作成依頼だけ安全な target path へ補完できる | `tests.test_web_jobs` | PASS |
 | Webジョブから成果物生成・プレビューまで到達できる | `tests.test_web_integration.WebIntegrationTest.test_web_job_runs_agent_generates_artifact_and_serves_preview` | PASS |
 | cancel token を永続化し、cancel 済み resume を API call 前に拒否する | `test_request_cancel_writes_cancel_json`, `test_agent_refuses_cancelled_resume_before_llm_call` | PASS |
@@ -981,6 +981,13 @@ local_sdlc/
 - acceptance blocker が次ラウンド prompt に具体命題として渡る。
 - HTML固有の advice が core artifact parser に依存しない。
 
+2026-07-29 S04a:
+
+- `RepairAction` 型を追加し、`RepairAdvice` から manifest 用の `repair_actions` を生成する。
+- acceptance gate blocker は blocker ID、status、required covers、instruction を持つ `RepairAction` として保存される。
+- 次ラウンドの Coder prompt は `R01 produce_acceptance_evidence: ...` のように構造化された修復命題を受け取る。
+- generic rules と domain rules の完全分離は後続S04bとして残す。
+
 #### S05: Stage Planner 強化
 
 - stage work item に `requirements`, `observables`, `writable_paths`, `readonly_evidence_paths`, `api_profile`, `max_rounds` を持たせる。
@@ -1039,7 +1046,7 @@ local_sdlc/
 - [x] S03a: Python/CLI command check は harness plugin として Evidence 化される
 - [x] S03b: Python/API/CLI/storage probe は harness plugin として Evidence 化され、agent run manifest に記録される
 - [ ] repair advice は generic rules と domain rules に分離される
-- [ ] acceptance blocker から Repair Action が生成され、次 Coder call に文書として渡る
+- [x] S04a: acceptance blocker から Repair Action が生成され、次 Coder call と run manifest に渡る
 - [ ] stage planner は stage ごとに required observables と writable/readonly paths を保存する
 - [ ] failure history は機械利用可能な regression memory として保存される
 - [ ] Tetris active piece false positive は regression test として残る

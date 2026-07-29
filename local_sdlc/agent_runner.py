@@ -409,6 +409,13 @@ def command_agent(args: argparse.Namespace) -> int:
                 evidence["observations"] = dict(item.observations)
             evidence_records.append(evidence)
 
+    def remember_repair_advice(
+        advice: RepairAdvice,
+        command_docs: Sequence[tuple[str, str]] = (),
+    ) -> None:
+        latest_repair_advice.clear()
+        latest_repair_advice.update(repair_advice_to_manifest(advice, command_docs))
+
     def make_stream_callback(
         label: str,
         partial_path: Path,
@@ -1245,22 +1252,21 @@ def command_agent(args: argparse.Namespace) -> int:
         path = write_run_document(run_dir, "00-stage-scope-preflight.md", preflight_doc)
         written.append(path)
         documents.append(("Stage scope preflight", preflight_doc))
-        latest_repair_advice.clear()
-        latest_repair_advice.update(
-            {
-                "strategy": "rewrite_current_stage_tests_to_scope",
-                "focus_files": unique_ordered(
-                    finding.path for finding in stage_scope_preflight_findings if finding.path
+        remember_repair_advice(
+            RepairAdvice(
+                strategy="rewrite_current_stage_tests_to_scope",
+                focus_files=tuple(
+                    unique_ordered(finding.path for finding in stage_scope_preflight_findings if finding.path)
                 ),
-                "instructions": [
+                instructions=(
                     "Existing generated/current-stage tests assert future-stage behavior.",
                     "Rewrite current-stage test artifacts to match only the current stage goal before product-code repair.",
                     "Use one BEGIN_FILE/END_FILE full replacement for each affected test file; do not use search_replace for polluted whole-file test rewrites.",
                     "Remove future-stage tests instead of implementing future-stage product behavior.",
                     "Do not implement future-stage predicates just to satisfy polluted generated tests.",
-                ],
-                "evidence": ["stage_scope_preflight"],
-            }
+                ),
+                evidence=("stage_scope_preflight",),
+            )
         )
         write_partial_manifest("stage_scope_preflight")
 
@@ -1303,15 +1309,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 stage_generated_test_paths,
             )
             if initial_advice:
-                latest_repair_advice.clear()
-                latest_repair_advice.update(
-                    {
-                        "strategy": initial_advice.strategy,
-                        "focus_files": list(initial_advice.focus_files),
-                        "instructions": list(initial_advice.instructions),
-                        "evidence": list(initial_advice.evidence),
-                    }
-                )
+                remember_repair_advice(initial_advice, initial_command_docs)
                 advice_doc = repair_advice_document(initial_advice)
                 path = write_run_document(run_dir, "00-initial-repair-advice.md", advice_doc)
                 written.append(path)
@@ -1858,6 +1856,18 @@ def command_agent(args: argparse.Namespace) -> int:
                 for item in latest_repair_advice.get("instructions", [])
                 if isinstance(item, str)
             ]
+            raw_repair_actions = latest_repair_advice.get("repair_actions", [])
+            if isinstance(raw_repair_actions, list):
+                for action in raw_repair_actions:
+                    if not isinstance(action, dict):
+                        continue
+                    instruction = str(action.get("instruction") or "").strip()
+                    if not instruction:
+                        continue
+                    action_id = str(action.get("id") or "R??")
+                    action_kind = str(action.get("kind") or "repair_action")
+                    advice_instructions.append(f"{action_id} {action_kind}: {instruction}")
+            advice_instructions = unique_ordered(advice_instructions)
             focus_label = (
                 "generated_test_and_product_focus_files"
                 if mixed_product_test_strategy
@@ -2620,19 +2630,19 @@ def command_agent(args: argparse.Namespace) -> int:
                 if triage_allows_test_harness_edit(triage_record):
                     editable_paths = triage_string_list(triage_record, "editable_paths")
                     readonly_paths = triage_string_list(triage_record, "readonly_paths")
-                    latest_repair_advice.clear()
-                    latest_repair_advice.update(
-                        {
-                            "strategy": "replace_test_harness",
-                            "focus_files": unique_ordered([*editable_paths, *readonly_paths]),
-                            "instructions": [
+                    remember_repair_advice(
+                        RepairAdvice(
+                            strategy="replace_test_harness",
+                            focus_files=tuple(unique_ordered([*editable_paths, *readonly_paths])),
+                            instructions=(
                                 "Project-policy triage authorized generated test-harness repair.",
                                 "Edit only the triage editable_paths; use readonly_paths as product API context.",
-                            ],
-                            "evidence": [
+                            ),
+                            evidence=(
                                 f"project_policy_triage={triage_record.get('case_type')}:{triage_record.get('safe_next_action')}",
-                            ],
-                        }
+                            ),
+                        ),
+                        command_docs,
                     )
             transition_evidence = lint_doc
             if triage_record:
@@ -2996,15 +3006,7 @@ def command_agent(args: argparse.Namespace) -> int:
                         f"decide whether `{advice.strategy}` may edit generated tests",
                     )
                     advice = apply_project_policy_triage_to_advice(advice, triage_record)
-                latest_repair_advice.clear()
-                latest_repair_advice.update(
-                    {
-                        "strategy": advice.strategy,
-                        "focus_files": list(advice.focus_files),
-                        "instructions": list(advice.instructions),
-                        "evidence": list(advice.evidence),
-                    }
-                )
+                remember_repair_advice(advice, command_docs)
                 advice_doc = repair_advice_document(advice)
                 path = write_run_document(run_dir, f"05-r{round_index:02d}-repair-advice.md", advice_doc)
                 written.append(path)
@@ -3084,31 +3086,37 @@ def command_agent(args: argparse.Namespace) -> int:
                             for item in failure_analyses[-1].get("active_constraints", [])
                             if isinstance(item, str)
                         ]
-                    latest_repair_advice.clear()
-                    latest_repair_advice.update(
-                        {
-                            "strategy": "root_cause_patch",
-                            "focus_files": unique_ordered(
-                                [
-                                    *focus_from_analysis,
-                                    *previous_focus_files,
-                                ]
-                            )[:8],
-                            "instructions": unique_ordered(
-                                [
-                                    "Use the structured failure analysis as binding root-cause evidence.",
-                                    *[f"Required focus from failure analysis: {item}" for item in required_focus],
-                                    *[f"Do not repeat forbidden focus: {item}" for item in forbidden_focus],
-                                    *[f"Active constraint: {item}" for item in active_constraints],
-                                ]
+                    remember_repair_advice(
+                        RepairAdvice(
+                            strategy="root_cause_patch",
+                            focus_files=tuple(
+                                unique_ordered(
+                                    [
+                                        *focus_from_analysis,
+                                        *previous_focus_files,
+                                    ]
+                                )[:8]
                             ),
-                            "evidence": unique_ordered(
-                                [
-                                    f"failure_analysis_round={round_index}",
-                                    *previous_evidence,
-                                ]
+                            instructions=tuple(
+                                unique_ordered(
+                                    [
+                                        "Use the structured failure analysis as binding root-cause evidence.",
+                                        *[f"Required focus from failure analysis: {item}" for item in required_focus],
+                                        *[f"Do not repeat forbidden focus: {item}" for item in forbidden_focus],
+                                        *[f"Active constraint: {item}" for item in active_constraints],
+                                    ]
+                                )
                             ),
-                        }
+                            evidence=tuple(
+                                unique_ordered(
+                                    [
+                                        f"failure_analysis_round={round_index}",
+                                        *previous_evidence,
+                                    ]
+                                )
+                            ),
+                        ),
+                        command_docs,
                     )
                     pending_deterministic_repair = failure_analyses[-1]
 
@@ -3186,21 +3194,21 @@ def command_agent(args: argparse.Namespace) -> int:
                     existing_paths=tuple(existing_project_paths),
                     allow_extra_new_files=not bool(args.no_extra_files),
                 )
-                latest_repair_advice.clear()
-                latest_repair_advice.update(
-                    {
-                        "strategy": "replace_test_harness",
-                        "focus_files": unique_ordered([*triage_editable, *triage_readonly]),
-                        "instructions": [
+                remember_repair_advice(
+                    RepairAdvice(
+                        strategy="replace_test_harness",
+                        focus_files=tuple(unique_ordered([*triage_editable, *triage_readonly])),
+                        instructions=(
                             "Project-policy triage authorized generated test-oracle repair after repeated identical failure.",
                             "Edit only the authorized stage-owned test harness paths.",
                             "Align the test proposition with SPEC.md and the current product API; do not weaken external acceptance requirements.",
-                        ],
-                        "evidence": [
+                        ),
+                        evidence=(
                             f"project_policy_triage={triage_record.get('case_type')}:{triage_record.get('safe_next_action')}",
                             "repeated stage-owned test failure referenced: " + ", ".join(repeated_stage_test_failures),
-                        ],
-                    }
+                        ),
+                    ),
+                    command_docs,
                 )
                 if failure_analyses:
                     pending_deterministic_repair = failure_analyses[-1]

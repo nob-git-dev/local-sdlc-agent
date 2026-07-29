@@ -3427,6 +3427,15 @@ FAILED (failures=1)
         self.assertTrue(any("Acceptance evidence gate failed" in item for item in advice.instructions))
         self.assertTrue(any("Keyboard operation moves" in item for item in advice.instructions))
         self.assertTrue(any("score, level, and line counters" in item for item in advice.instructions))
+        actions = self.local_sdlc.repair_actions_from_advice(advice, [("gate", doc)])
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0].kind, "produce_acceptance_evidence")
+        self.assertEqual(actions[0].source, "acceptance_gate")
+        self.assertEqual(actions[0].required_covers, ("keyboard_interaction",))
+        self.assertIn("Keyboard operation moves", actions[0].instruction)
+        manifest = self.local_sdlc.repair_advice_to_manifest(advice, [("gate", doc)])
+        self.assertEqual(manifest["repair_actions"][0]["id"], "R01")
+        self.assertEqual(manifest["repair_actions"][1]["required_covers"], ["score_update", "line_clear"])
 
     def test_browser_tetris_smoke_requires_visible_active_piece(self):
         if not (
@@ -5501,6 +5510,82 @@ Required fixes:
         self.assertEqual(manifest["evidence"][0]["failure_type"], "syntax_error")
         self.assertEqual(manifest["acceptance_matrix"][0]["status"], "fail")
         self.assertEqual(manifest["acceptance_matrix"][0]["evidence_ids"], ["E01"])
+
+    def test_agent_records_acceptance_repair_actions_for_next_round(self):
+        calls = []
+
+        class FakeClient:
+            def __init__(self, config):
+                self.config = config
+
+            def complete(self, messages):
+                calls.append(messages)
+                return (
+                    "BEGIN_FILE: tetris.html\n"
+                    "<!doctype html><html><body><button id=\"start-btn\">Start</button></body></html>\n"
+                    "END_FILE"
+                )
+
+        spec = "\n".join(
+            [
+                "# SPEC",
+                "",
+                "## 受け入れ条件",
+                "- Keyboard operation moves the current piece",
+                "- Score, level, and line count update",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, spec)
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "create tetris",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--new-file",
+                        "tetris.html",
+                        "--require-path",
+                        "tetris.html",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--max-rounds",
+                        "2",
+                        "--protocol-repair-rounds",
+                        "0",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "0",
+                        "--domain-modeling",
+                        "never",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 1)
+        self.assertGreaterEqual(len(calls), 2)
+        actions = manifest["repair_advice"]["repair_actions"]
+        self.assertTrue(any(action["kind"] == "produce_acceptance_evidence" for action in actions))
+        self.assertTrue(any("keyboard_interaction" in action["required_covers"] for action in actions))
+        self.assertIn("R01 produce_acceptance_evidence", calls[1][1]["content"])
+        self.assertIn("Keyboard operation moves", calls[1][1]["content"])
 
     def test_agent_records_python_probe_evidence_after_command_failure(self):
         calls = []

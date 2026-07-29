@@ -407,6 +407,17 @@ class RepairAdvice:
 
 
 @dataclasses.dataclass(frozen=True)
+class RepairAction:
+    action_id: str
+    kind: str
+    source: str
+    target_paths: tuple[str, ...]
+    required_covers: tuple[str, ...]
+    instruction: str
+    evidence: tuple[str, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True)
 class ProjectPolicyTriage:
     trigger: str
     case_type: str
