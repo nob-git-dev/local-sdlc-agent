@@ -83,10 +83,49 @@ def synthesize_stage_queue(spec: str, project_files: Sequence[str] = ()) -> list
 
     return stages
 
+
+def stage_required_observables(stage: StageWorkItem) -> tuple[str, ...]:
+    if stage.required_observables:
+        return stage.required_observables
+    observables: list[str] = []
+    observables.extend(f"focus:{item}" for item in stage.test_focus)
+    observables.extend(f"command:{command}" for command in auto_stage_test_commands(stage))
+    observables.extend(f"required_path:{path}" for path in stage_required_paths(stage))
+    return tuple(unique_ordered(observables))
+
+
+def stage_writable_paths(stage: StageWorkItem) -> tuple[str, ...]:
+    if stage.writable_paths:
+        return stage.writable_paths
+    return stage_required_paths(stage)
+
+
+def stage_readonly_evidence_paths(stage: StageWorkItem) -> tuple[str, ...]:
+    return stage.readonly_evidence_paths
+
+
+def stage_work_item_manifest(stage: StageWorkItem) -> dict[str, object]:
+    return {
+        "stage_id": stage.stage_id,
+        "title": stage.title,
+        "goal": stage.goal,
+        "suggested_paths": list(stage.suggested_paths),
+        "test_focus": list(stage.test_focus),
+        "test_paths": list(stage_test_paths(stage)),
+        "test_commands": auto_stage_test_commands(stage),
+        "required_observables": list(stage_required_observables(stage)),
+        "writable_paths": list(stage_writable_paths(stage)),
+        "readonly_evidence_paths": list(stage_readonly_evidence_paths(stage)),
+        "api_profile": list(stage.api_profile),
+        "max_rounds": stage.max_rounds,
+    }
+
+
 def stage_queue_document(stages: Sequence[StageWorkItem]) -> str:
     lines = ["# Stage Queue", ""]
     for stage in stages:
         test_paths = stage_test_paths(stage)
+        manifest = stage_work_item_manifest(stage)
         lines.extend(
             [
                 f"## {stage.stage_id}: {stage.title}",
@@ -100,6 +139,12 @@ def stage_queue_document(stages: Sequence[StageWorkItem]) -> str:
                 *[f"  - {path}" for path in test_paths],
                 "- test_commands:",
                 *[f"  - {command}" for command in auto_stage_test_commands(stage)],
+                "- required_observables:",
+                *[f"  - {item}" for item in manifest["required_observables"]],
+                "- writable_paths:",
+                *[f"  - {path}" for path in manifest["writable_paths"]],
+                "- readonly_evidence_paths:",
+                *[f"  - {path}" for path in manifest["readonly_evidence_paths"]],
                 "",
             ]
         )
@@ -138,6 +183,9 @@ def stage_brief(base_brief: str, stage: StageWorkItem, completed: Sequence[Stage
     paths = "\n".join(f"- {path}" for path in stage.suggested_paths) or "- none"
     test_paths = "\n".join(f"- {path}" for path in stage_test_paths(stage)) or "- none"
     focus = "\n".join(f"- {item}" for item in stage.test_focus) or "- command evidence"
+    required_observables = "\n".join(f"- {item}" for item in stage_required_observables(stage)) or "- none"
+    writable_paths = "\n".join(f"- {path}" for path in stage_writable_paths(stage)) or "- none"
+    readonly_evidence_paths = "\n".join(f"- {path}" for path in stage_readonly_evidence_paths(stage)) or "- none"
     return textwrap.dedent(
         f"""
         {base_brief}
@@ -150,11 +198,20 @@ def stage_brief(base_brief: str, stage: StageWorkItem, completed: Sequence[Stage
         ## Suggested Writable Paths
         {paths}
 
+        ## Writable Paths
+        {writable_paths}
+
+        ## Readonly Evidence Paths
+        {readonly_evidence_paths}
+
         ## Required Stage Test Paths
         {test_paths}
 
         ## Stage Test Focus
         {focus}
+
+        ## Required Observables
+        {required_observables}
 
         ## Completed Earlier Stages
         {completed_text}
@@ -206,7 +263,7 @@ def stage_paths_for_agent(
     prior_changed_paths: Sequence[str],
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     existing_paths = set(listed_project_files(project))
-    safe_stage_paths = normalize_new_files(stage_required_paths(stage))
+    safe_stage_paths = normalize_new_files(stage_writable_paths(stage))
     include_paths: list[str] = []
     new_files: list[str] = []
     for path in safe_stage_paths:
@@ -214,10 +271,10 @@ def stage_paths_for_agent(
             include_paths.append(path)
         else:
             new_files.append(path)
-    required_paths = unique_ordered(safe_stage_paths)
+    required_paths = unique_ordered(stage_required_paths(stage))
     context_paths = [
         path
-        for path in unique_ordered(prior_changed_paths)
+        for path in unique_ordered([*prior_changed_paths, *stage_readonly_evidence_paths(stage)])
         if path in existing_paths and path not in include_paths
     ]
     return include_paths, new_files, required_paths, context_paths
@@ -271,7 +328,7 @@ def build_stage_agent_args(
         max_tokens=args.max_tokens,
         enable_thinking=args.enable_thinking,
         stream=args.stream,
-        api_profile=list(getattr(args, "api_profile", []) or []),
+        api_profile=list(unique_ordered([*list(getattr(args, "api_profile", []) or []), *stage.api_profile])),
         pm_max_tokens=args.pm_max_tokens,
         coder_max_tokens=args.coder_max_tokens,
         judge_max_tokens=args.judge_max_tokens,
@@ -310,7 +367,7 @@ def build_stage_agent_args(
         resume_worktree=False,
         resume_worktree_path=None,
         worktree_mode=args.worktree_mode,
-        max_rounds=args.stage_max_rounds,
+        max_rounds=stage.max_rounds or args.stage_max_rounds,
         protocol_repair_rounds=args.protocol_repair_rounds,
         adaptive_rounds=args.adaptive_rounds,
         root_cause_patch_rounds=args.root_cause_patch_rounds,
@@ -494,18 +551,7 @@ def stage_run_manifest(
         "completed_stage_count": len(completed),
         "api_calls": sum(item.api_calls for item in completed),
         "final_test_commands": list(test_commands),
-        "stages": [
-            {
-                "stage_id": stage.stage_id,
-                "title": stage.title,
-                "goal": stage.goal,
-                "suggested_paths": list(stage.suggested_paths),
-                "test_focus": list(stage.test_focus),
-                "test_paths": list(stage_test_paths(stage)),
-                "test_commands": auto_stage_test_commands(stage),
-            }
-            for stage in stages
-        ],
+        "stages": [stage_work_item_manifest(stage) for stage in stages],
         "completed_stages": [
             {
                 "stage_id": item.stage_id,

@@ -350,6 +350,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | S02: HTML/browser smoke は harness plugin として Evidence を返し、既存 `run_html_smoke_checks()` / `run_browser_tetris_check()` の互換挙動を維持する | `tests.test_harnesses`, `test_html_smoke_flags_broken_tetris_file`, `test_browser_tetris_smoke_requires_visible_active_piece`, full suite | PASS |
 | S03a: Python/CLI command checks は安全判定を維持したまま harness Evidence を返し、legacy `(document, ok)` へ射影できる | `tests.test_harnesses.HarnessPluginTests` | PASS |
 | S03b: Python/API/CLI/storage mechanical probes は harness Evidence を返し、agent 実行後の `run.json.evidence` に記録される | `tests.test_harnesses.HarnessPluginTests`, `test_agent_records_python_probe_evidence_after_command_failure`, full suite | PASS |
+| S05a: stage work item は required_observables / writable_paths / readonly_evidence_paths / api_profile / max_rounds を stage-plan JSON と run manifest に保存する | `tests.test_stage_runner.StageRunnerTests` | PASS |
 | S07d: `artifacts.py` を互換facade化し、artifact protocol / lint-stream / repair advice / Python analysis / mechanical probes を責務別モジュールへ分割する | `tests.test_artifact_ops`, `tests.test_harnesses`, full suite | PASS |
 
 ### テスト環境
@@ -999,6 +1000,13 @@ local_sdlc/
 - Mini SQLite の stage resume が、S03以降から再開可能。
 - 1 stage の観測対象と修復対象が run manifest で確認できる。
 
+2026-07-29 S05a:
+
+- `StageWorkItem` に `required_observables`, `writable_paths`, `readonly_evidence_paths`, `api_profile`, `max_rounds` を追加する。
+- `stage-plan --format json` と `run-stages` manifest は同じ `stage_work_item_manifest` schema を使う。
+- stage brief は Required Observables / Writable Paths / Readonly Evidence Paths を明示し、Coder が現在stageの証明対象を読めるようにする。
+- stageごとの細分化判断や自動resume戦略は後続S05b以降に残す。
+
 #### S06: Regression Memory
 
 - failure history を `history.py` で正規化する。
@@ -1047,7 +1055,7 @@ local_sdlc/
 - [x] S03b: Python/API/CLI/storage probe は harness plugin として Evidence 化され、agent run manifest に記録される
 - [ ] repair advice は generic rules と domain rules に分離される
 - [x] S04a: acceptance blocker から Repair Action が生成され、次 Coder call と run manifest に渡る
-- [ ] stage planner は stage ごとに required observables と writable/readonly paths を保存する
+- [x] S05a: stage planner は stage ごとに required observables と writable/readonly paths を保存する
 - [ ] failure history は機械利用可能な regression memory として保存される
 - [ ] Tetris active piece false positive は regression test として残る
 - [ ] Mini SQLite stage resume regression が残る

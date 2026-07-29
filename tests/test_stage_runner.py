@@ -27,6 +27,12 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertTrue(any("minisqlite/storage/btree.py" in stage.suggested_paths for stage in stages))
         lexer_stage = next(stage for stage in stages if stage.title == "SQL lexer")
         self.assertEqual(self.local_sdlc.stage_test_paths(lexer_stage), ("tests/test_lexer.py",))
+        manifest = self.local_sdlc.stage_work_item_manifest(lexer_stage)
+        self.assertIn("required_observables", manifest)
+        self.assertIn("writable_paths", manifest)
+        self.assertIn("readonly_evidence_paths", manifest)
+        self.assertIn("command:python3 -m unittest discover -s tests -p test_lexer.py", manifest["required_observables"])
+        self.assertIn("tests/test_lexer.py", manifest["writable_paths"])
 
     def test_stage_agent_args_propagate_function_api_profiles(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -59,6 +65,55 @@ class StageRunnerTests(LocalSDLCTestCase):
         )
         self.assertEqual(stage_args.model_profile, "qwen-agent")
         self.assertEqual(stage_args.protocol_repair_rounds, 3)
+
+    def test_stage_work_item_policy_flows_to_agent_args(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Custom staged project\n")
+            (project / "app.py").write_text("print('ok')\n", encoding="utf-8")
+            (project / "tests").mkdir()
+            (project / "tests" / "test_app.py").write_text("import unittest\n", encoding="utf-8")
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "custom stage",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--api-profile",
+                    "judge_review:max_tokens=2048",
+                ]
+            )
+            stage = self.local_sdlc.StageWorkItem(
+                stage_id="S10",
+                title="Custom API stage",
+                goal="Exercise custom stage metadata.",
+                suggested_paths=("app.py",),
+                test_focus=("custom smoke",),
+                test_commands=("python3 app.py",),
+                required_observables=("command:python3 app.py",),
+                writable_paths=("app.py",),
+                readonly_evidence_paths=("tests/test_app.py",),
+                api_profile=("generate_artifact:max_tokens=4096",),
+                max_rounds=7,
+            )
+
+            stage_args = self.local_sdlc.build_stage_agent_args(args, stage, project / "run", [], [])
+
+        self.assertEqual(stage_args.include, ["app.py"])
+        self.assertEqual(stage_args.context, ["tests/test_app.py"])
+        self.assertEqual(stage_args.new_file, [])
+        self.assertEqual(stage_args.require_path, ["app.py"])
+        self.assertEqual(
+            stage_args.api_profile,
+            ["judge_review:max_tokens=2048", "generate_artifact:max_tokens=4096"],
+        )
+        self.assertEqual(stage_args.max_rounds, 7)
+        self.assertIn("## Required Observables", stage_args.brief)
+        self.assertIn("command:python3 app.py", stage_args.brief)
+        self.assertIn("## Readonly Evidence Paths", stage_args.brief)
+        self.assertIn("tests/test_app.py", stage_args.brief)
 
     def test_stage_agent_args_pass_absolute_project_and_spec_file(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -106,6 +161,10 @@ class StageRunnerTests(LocalSDLCTestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(result, 0)
         self.assertTrue(any(stage["title"] == "SQL lexer" for stage in payload["stages"]))
+        lexer_stage = next(stage for stage in payload["stages"] if stage["title"] == "SQL lexer")
+        self.assertIn("required_observables", lexer_stage)
+        self.assertIn("writable_paths", lexer_stage)
+        self.assertIn("readonly_evidence_paths", lexer_stage)
 
     def test_run_stages_dry_run_writes_queue_manifest(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -138,6 +197,8 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertEqual(result, 0)
         self.assertEqual(manifest["status"], "dry_run")
         self.assertEqual(manifest["stage_count"], 2)
+        self.assertIn("required_observables", manifest["stages"][0])
+        self.assertIn("writable_paths", manifest["stages"][0])
         self.assertTrue(queue_exists)
 
     def test_run_stages_refuses_cancelled_run_before_stage_agent_call(self):

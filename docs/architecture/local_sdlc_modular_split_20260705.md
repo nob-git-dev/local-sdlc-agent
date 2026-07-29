@@ -249,6 +249,35 @@ Verification:
 - `python3 -m unittest tests.test_local_sdlc.LocalSDLCTest.test_agent_records_acceptance_repair_actions_for_next_round`
 - `python3 -m py_compile local_sdlc/models.py local_sdlc/repair_advice.py local_sdlc/agent_runner.py tests/test_local_sdlc.py`
 
+## 2026-07-29 Implementation Slice S05a
+
+Stage work items now expose the minimum schema needed by autonomous control.
+
+Implementation:
+
+- `StageWorkItem` includes `required_observables`, `writable_paths`,
+  `readonly_evidence_paths`, `api_profile`, and `max_rounds` with backward
+  compatible defaults.
+- `stage_work_item_manifest()` is the shared projection for `stage-plan
+  --format json`, `run-stages` manifests, and stage queue documentation.
+- Stage briefs now show Required Observables, Writable Paths, and Readonly
+  Evidence Paths before the stage agent is called.
+- Stage-specific API profile and round-budget metadata can flow into the child
+  `agent` invocation when a future planner sets those fields.
+
+Boundary rule:
+
+- This slice records stage-control metadata but does not yet change how stages
+  are synthesized or resumed. Automatic split/retry decisions remain future
+  supervisor work.
+- The default writable set matches previous required paths, so existing stage
+  behavior stays compatible.
+
+Verification:
+
+- `python3 -m unittest tests.test_stage_runner`
+- `python3 -m py_compile local_sdlc/models.py local_sdlc/stages.py local_sdlc/stage_runner.py tests/test_stage_runner.py`
+
 ## 2026-07-29 Refactor Slice S07d
 
 `local_sdlc/artifacts.py` is now a compatibility facade. The former mixed

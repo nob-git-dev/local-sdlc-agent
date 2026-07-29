@@ -455,6 +455,11 @@ class StageWorkItem:
     suggested_paths: tuple[str, ...]
     test_focus: tuple[str, ...]
     test_commands: tuple[str, ...] = ()
+    required_observables: tuple[str, ...] = ()
+    writable_paths: tuple[str, ...] = ()
+    readonly_evidence_paths: tuple[str, ...] = ()
+    api_profile: tuple[str, ...] = ()
+    max_rounds: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)

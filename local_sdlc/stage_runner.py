@@ -29,17 +29,7 @@ def command_stage_plan(args: argparse.Namespace) -> int:
         raise RunnerError("SPEC.md is required before planning stages; pass --spec-file or create SPEC.md")
     stages = synthesize_stage_queue(spec, listed_project_files(project))
     if args.format == "json":
-        payload = [
-            {
-                "stage_id": stage.stage_id,
-                "title": stage.title,
-                "goal": stage.goal,
-                "suggested_paths": list(stage.suggested_paths),
-                "test_focus": list(stage.test_focus),
-                "test_commands": auto_stage_test_commands(stage),
-            }
-            for stage in stages
-        ]
+        payload = [stage_work_item_manifest(stage) for stage in stages]
         print(json.dumps({"stages": payload}, ensure_ascii=False, indent=2))
     else:
         print(stage_queue_document(stages), end="")
