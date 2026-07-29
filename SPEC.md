@@ -339,6 +339,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | cancel 済み `run-stages` が stage agent call を開始しない | `test_run_stages_refuses_cancelled_run_before_stage_agent_call` | PASS |
 | command action の SafetyDecision を実行前に記録し、approval-required / blocked command を停止する | `test_run_checked_command_records_allowed_safety_decision`, `test_run_checked_command_records_approval_required_safety_decision`, `test_run_checked_command_records_blocked_safety_decision`, `test_run_checked_command_requires_approval_for_risky_class_without_legacy_block_reason`, `test_agent_applies_patch_and_runs_test_command` | PASS |
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
+| S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 
 ### テスト環境
 

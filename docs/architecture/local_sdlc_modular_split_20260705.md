@@ -60,3 +60,33 @@ Verification:
 - `python3 -m py_compile local_sdlc.py local_sdlc/*.py`
 - artifact extraction/apply focused tests
 - `python3 -m unittest tests.test_local_sdlc`
+
+## 2026-07-29 Refactor Slice S07b
+
+`tests/test_local_sdlc.py` had grown past 10,000 lines. The second
+behavior-preserving split moved common test fixtures and the most clearly bounded
+test groups into focused modules.
+
+Test module map:
+
+- `tests/helpers.py`: shared module loader, project fixture, and LLM env scrubber.
+- `tests/test_safety.py`: command safety decision and command blocking tests.
+- `tests/test_cancel_control.py`: cancel token and cancelled-resume guard tests.
+- `tests/test_artifact_ops.py`: artifact extraction and application primitive tests.
+- `tests/test_local_sdlc.py`: remaining integration, routing, agent loop, profile,
+  web, stage, and higher-level artifact behavior tests.
+
+Compatibility rule:
+
+- Tests continue to load the public compatibility surface via `local_sdlc.cli`.
+- Test discovery must work through both direct module execution and
+  `python3 -m unittest discover -s tests`.
+- This slice changes test organization only; production behavior is unchanged.
+
+Verification:
+
+- `python3 -m unittest tests.test_safety tests.test_cancel_control tests.test_artifact_ops`
+- `python3 -m unittest tests.test_local_sdlc`
+- `python3 -m unittest discover -s tests`
+- `python3 -m py_compile local_sdlc.py local_sdlc/*.py tests/*.py`
+- `git diff --check`
