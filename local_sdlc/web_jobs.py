@@ -211,6 +211,26 @@ def ensure_web_bootstrap_spec(project: Path, payload: dict[str, object], mode: s
     return True
 
 
+def normalize_web_job_payload(payload: dict[str, object], project: Path, job_id: str) -> dict[str, object]:
+    """Normalize browser input before mapping it to the strict CLI contract."""
+    normalized = dict(payload)
+    mode = _optional_text(normalized, "mode") or "agent"
+    brief = _optional_text(normalized, "brief")
+    if mode in {"agent", "run-stages", "supervisor"} and not _optional_text(normalized, "run_dir"):
+        normalized["run_dir"] = str(project / GENERATED_DIR / "runs" / job_id)
+    if mode == "agent":
+        includes = _string_list(normalized.get("include"))
+        new_files = _string_list(normalized.get("new_file"))
+        allow_no_context = _as_bool(normalized.get("allow_no_context"), False)
+        if not includes and not new_files and not allow_no_context and looks_like_creation_request(brief):
+            suggested = suggest_new_files_from_brief(brief)
+            if suggested:
+                normalized["new_file"] = suggested
+                if not _string_list(normalized.get("require_path")):
+                    normalized["require_path"] = suggested
+    return normalized
+
+
 def _artifact_entry(project: Path, raw_path: str, source: str) -> dict[str, object] | None:
     try:
         path, relative = resolve_project_path(project, raw_path)
@@ -605,9 +625,7 @@ class JobRegistry:
         job_id = time.strftime("%Y%m%d-%H%M%S", time.localtime()) + "-" + uuid.uuid4().hex[:8]
         project_text = _optional_text(payload, "project")
         project = Path(project_text).expanduser().resolve() if project_text else self.config.project
-        command_payload = dict(payload)
-        if mode in {"agent", "run-stages", "supervisor"} and not _optional_text(command_payload, "run_dir"):
-            command_payload["run_dir"] = str(project / GENERATED_DIR / "runs" / job_id)
+        command_payload = normalize_web_job_payload(payload, project, job_id)
         built = build_cli_command(command_payload, self.config)
         created_project = ensure_project_directory(built.cwd, self.config.project.parent)
         created_spec = ensure_web_bootstrap_spec(built.cwd, command_payload, mode)

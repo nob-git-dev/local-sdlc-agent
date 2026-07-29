@@ -101,6 +101,8 @@ Web UI は完全ローカルで動作し、Flask / FastAPI / npm / CDN は使い
 `.sdlc-runner/web/jobs/` に保存されます。
 初回の `agent` 新規作成ジョブでは、対象プロジェクトに `SPEC.md` が無い場合、Web UI が最小SPECを
 自動生成してから既存CLIを起動します。既存の `SPEC.md` や明示した `--spec-file` は上書きしません。
+明確な作成依頼では `new_file` / `require_path` を安全に補完します。曖昧な依頼は自動補完せず、
+CLI と同じ strict validation で止めます。
 
 パッケージ形式の起動にも対応しています。
 
