@@ -99,6 +99,8 @@ Web UI は完全ローカルで動作し、Flask / FastAPI / npm / CDN は使い
 軽量HTTPサーバーが、既存の `agent` / `run-stages` / `spec` / `doctor` / `health` コマンドを
 ローカル子プロセスとして起動します。各ジョブのログは
 `.sdlc-runner/web/jobs/` に保存されます。
+初回の `agent` 新規作成ジョブでは、対象プロジェクトに `SPEC.md` が無い場合、Web UI が最小SPECを
+自動生成してから既存CLIを起動します。既存の `SPEC.md` や明示した `--spec-file` は上書きしません。
 
 パッケージ形式の起動にも対応しています。
 

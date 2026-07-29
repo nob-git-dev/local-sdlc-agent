@@ -332,6 +332,54 @@ class LocalSDLCTest(LocalSDLCTestCase):
             with self.assertRaisesRegex(self.local_sdlc.RunnerError, "not a directory"):
                 ensure_project_directory(file_path, workspace)
 
+    def test_web_bootstrap_spec_creates_minimal_spec_for_first_agent_run(self):
+        from local_sdlc.web_jobs import ensure_web_bootstrap_spec
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+
+            created = ensure_web_bootstrap_spec(
+                project,
+                {
+                    "mode": "agent",
+                    "brief": "ブラウザで動く小さなゲームを作って",
+                    "new_file": ["game.html"],
+                    "require_path": ["game.html"],
+                    "test_command": ["python3 -m unittest"],
+                },
+                "agent",
+            )
+
+            self.assertTrue(created)
+            spec = (project / "SPEC.md").read_text(encoding="utf-8")
+            self.assertIn("ブラウザで動く小さなゲームを作って", spec)
+            self.assertIn("`game.html`", spec)
+            self.assertIn("game.html exists and is non-empty", spec)
+            self.assertIn("python3 -m unittest", spec)
+
+    def test_web_bootstrap_spec_preserves_existing_or_explicit_spec(self):
+        from local_sdlc.web_jobs import ensure_web_bootstrap_spec
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            spec_path = project / "SPEC.md"
+            spec_path.write_text("# Existing SPEC\n", encoding="utf-8")
+
+            created_existing = ensure_web_bootstrap_spec(
+                project,
+                {"brief": "作って", "new_file": ["app.py"]},
+                "agent",
+            )
+            created_explicit = ensure_web_bootstrap_spec(
+                project,
+                {"brief": "作って", "new_file": ["app.py"], "spec_file": "custom.md"},
+                "agent",
+            )
+
+            self.assertFalse(created_existing)
+            self.assertFalse(created_explicit)
+            self.assertEqual(spec_path.read_text(encoding="utf-8"), "# Existing SPEC\n")
+
     def test_web_build_cli_command_rejects_agent_without_target_with_helpful_message(self):
         from local_sdlc import web_server
 

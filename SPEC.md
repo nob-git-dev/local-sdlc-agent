@@ -122,6 +122,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] Web UI は外部 Python パッケージ、npm、CDNを使わず、既存CLIを安全な argv 子プロセスとして起動する
 - [x] Web UI から開始したジョブの状態、コマンド、ログ保存先、標準出力をブラウザで確認できる
 - [x] Web UI のプロジェクト欄で作業ルート配下の新規ディレクトリを指定した場合、ジョブ開始前に自動作成し、範囲外の新規ディレクトリ作成は拒否できる
+- [x] Web UI の初回 `agent` 新規作成ジョブは、対象プロジェクトに `SPEC.md` が無い場合でも最小SPECを自動生成し、CLI本体のSPEC必須ルールを満たしてから実行できる
 - [x] Web UI から別プロジェクトを対象にしても、スキルディレクトリはエージェント本体側の絶対パスを使い、対象プロジェクト側に `sdlc-skills/skills` が無くても起動できる
 - [x] `python3 -m local_sdlc web --help` で package entrypoint 経由の起動ヘルプを表示できる
 - [x] `local_sdlc.json` / `local_sdlc.yaml` / `local_sdlc.yml` に `llm.base_url`, `llm.api_key_env`, `llm.model`, `llm.model_profile`, `llm.api_profile` を保存し、CLI引数なしで読み込める
@@ -334,6 +335,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | 受け入れ条件ごとの証拠不足を gate として扱い、未証明のまま承認しない | `test_acceptance_criteria_parse_plain_bullets_and_gate_unverified`, `test_agent_manifest_records_acceptance_matrix_and_failure_classifier` | PASS |
 | browser-tetris-smoke が Start 後の可視 active piece 不在を失敗として扱う | `test_browser_tetris_smoke_requires_visible_active_piece` | PASS |
 | acceptance gate blocker を次ラウンドの repair advice へ変換できる | `test_repair_advice_converts_acceptance_gate_blockers_to_actions` | PASS |
+| Web 初回 `agent` 新規作成時に最小SPECをbootstrapし、Webジョブから成果物生成・プレビューまで到達できる | `test_web_bootstrap_spec_creates_minimal_spec_for_first_agent_run`, `test_web_bootstrap_spec_preserves_existing_or_explicit_spec`, fake LLM Web fullsite smoke | PASS |
 | cancel token を永続化し、cancel 済み resume を API call 前に拒否する | `test_request_cancel_writes_cancel_json`, `test_agent_refuses_cancelled_resume_before_llm_call` | PASS |
 | work-start progress event を記録し、cancel 後の work-start を検出できる | `test_work_start_progress_is_blocked_after_cancel` | PASS |
 | cancel 済み `run-stages` が stage agent call を開始しない | `test_run_stages_refuses_cancelled_run_before_stage_agent_call` | PASS |
