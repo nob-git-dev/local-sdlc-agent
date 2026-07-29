@@ -23,6 +23,7 @@
 | `local_sdlc/agent_runner.py` | application-level coding agent loop |
 | `local_sdlc/harnesses/base.py` | harness plugin evidence contract |
 | `local_sdlc/harnesses/html_browser.py` | HTML static smoke and browser/Tetris DOM behavior smoke |
+| `local_sdlc/harnesses/python_cli.py` | safety-preserving Python/CLI command checks |
 | `local_sdlc/run_state.py` | run directories, resume context, worktree copy-back |
 | `local_sdlc/workspace.py` | project file discovery, context collection, safe path resolution |
 | `local_sdlc/utils.py` | small pure helpers shared across layers |
@@ -151,3 +152,31 @@ Verification:
 - browser/Tetris smoke regression test when Chromium is available
 - `python3 -m unittest discover -s tests`
 - `python3 -m py_compile local_sdlc.py local_sdlc/*.py local_sdlc/harnesses/*.py tests/*.py`
+
+## 2026-07-29 Implementation Slice S03a
+
+Python/CLI command checks now have a harness boundary.
+
+Implementation:
+
+- `local_sdlc/harnesses/base.py` provides `evidence_from_command_result()`, a
+  shared conversion from command result documents to `HarnessEvidence`.
+- `local_sdlc/harnesses/html_browser.py` reuses that conversion so HTML/browser
+  and CLI checks report evidence consistently.
+- `local_sdlc/harnesses/python_cli.py` wraps `run_checked_command()` and keeps
+  existing command safety decisions, blocked-command behavior, and legacy
+  `(document, ok)` projection.
+- Convenience helpers cover generic commands, `py_compile`, and `unittest
+  discover`.
+
+Boundary rule:
+
+- This slice does not replace every application-layer call site yet. It creates
+  the harness contract for safe command evidence first. The next S03 slice can
+  swap runner call sites from direct command execution to harness execution with
+  smaller regression risk.
+
+Verification:
+
+- `python3 -m unittest tests.test_harnesses`
+- `python3 -m py_compile local_sdlc/harnesses/base.py local_sdlc/harnesses/html_browser.py local_sdlc/harnesses/python_cli.py tests/test_harnesses.py`

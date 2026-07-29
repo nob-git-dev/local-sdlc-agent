@@ -15,48 +15,13 @@ from pathlib import Path
 from typing import Sequence
 from urllib.parse import quote
 
-from ..verification import classify_failure, command_result_document, parse_command_result_document
+from ..verification import command_result_document
 from ..workspace import resolve_project_path
-from .base import HarnessEvidence
+from .base import HarnessEvidence, evidence_from_command_result
 
 
 def evidence_from_document(kind: str, name: str, document: str, ok: bool) -> HarnessEvidence:
-    parsed = parse_command_result_document(document)
-    try:
-        exit_code = int(parsed.get("exit_code", "0" if ok else "1"))
-    except ValueError:
-        exit_code = 0 if ok else 1
-    try:
-        duration = float(parsed.get("duration_seconds", "0") or 0.0)
-    except ValueError:
-        duration = 0.0
-    stdout_payload: dict[str, object] = {}
-    stdout = parsed.get("stdout", "").strip()
-    if stdout.startswith("{"):
-        try:
-            loaded = json.loads(stdout)
-            if isinstance(loaded, dict):
-                stdout_payload = loaded
-        except json.JSONDecodeError:
-            stdout_payload = {}
-    covers = tuple(str(item) for item in stdout_payload.get("covers", []) if isinstance(item, str))
-    observations = stdout_payload.get("observations", {})
-    if not isinstance(observations, dict):
-        observations = {}
-    return HarnessEvidence(
-        kind=kind,
-        name=name,
-        status="pass" if ok else "fail",
-        command=parsed.get("command", name),
-        exit_code=exit_code,
-        duration_seconds=duration,
-        document=document,
-        failure_type=None
-        if ok
-        else classify_failure(exit_code, parsed.get("stdout", ""), parsed.get("stderr", ""), parsed.get("blocked_reason")),
-        covers=covers,
-        observations={str(key): value for key, value in observations.items()},
-    )
+    return evidence_from_command_result(kind, name, document, ok)
 
 
 def has_tetris_initial_render_sequence(text: str) -> bool:
