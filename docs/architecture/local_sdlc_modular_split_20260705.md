@@ -13,7 +13,11 @@
 | `local_sdlc/llm_client.py` | OpenAI-compatible HTTP client, health checks, streaming, role/function API profiles |
 | `local_sdlc/skills.py` | skill loading and system-prompt construction |
 | `local_sdlc/artifact_ops.py` | artifact extraction and artifact application primitives |
-| `local_sdlc/artifacts.py` | compatibility facade, linting, stream guards, semantic probes, repair advice |
+| `local_sdlc/artifact_protocol.py` | artifact failure transitions, semantic contracts, proposition and observation documents |
+| `local_sdlc/artifact_lint.py` | artifact lint, stage-scope lint, stream guards, and protocol repair checks |
+| `local_sdlc/repair_advice.py` | repair advice and deterministic repair artifact helpers |
+| `local_sdlc/python_project_analysis.py` | Python project symbol, class-owner, and test-focus inference helpers |
+| `local_sdlc/artifacts.py` | backward-compatible facade for artifact-related public functions |
 | `local_sdlc/verification.py` | command execution, command result documents, smoke checks, evidence helpers |
 | `local_sdlc/stages.py` | deterministic stage queue, stage-specific paths/tests, acceptance summaries |
 | `local_sdlc/stage_runner.py` | `stage-plan` and `run-stages` command execution |
@@ -24,6 +28,7 @@
 | `local_sdlc/harnesses/base.py` | harness plugin evidence contract |
 | `local_sdlc/harnesses/html_browser.py` | HTML static smoke and browser/Tetris DOM behavior smoke |
 | `local_sdlc/harnesses/python_cli.py` | safety-preserving Python/CLI command checks |
+| `local_sdlc/harnesses/python_probes.py` | deterministic Python/API/CLI/storage mechanical probes |
 | `local_sdlc/run_state.py` | run directories, resume context, worktree copy-back |
 | `local_sdlc/workspace.py` | project file discovery, context collection, safe path resolution |
 | `local_sdlc/utils.py` | small pure helpers shared across layers |
@@ -180,3 +185,45 @@ Verification:
 
 - `python3 -m unittest tests.test_harnesses`
 - `python3 -m py_compile local_sdlc/harnesses/base.py local_sdlc/harnesses/html_browser.py local_sdlc/harnesses/python_cli.py tests/test_harnesses.py`
+
+## 2026-07-29 Refactor Slice S07d
+
+`local_sdlc/artifacts.py` is now a compatibility facade. The former mixed
+artifact module was split by responsibility without changing public import
+paths.
+
+Implementation:
+
+- `local_sdlc/artifact_protocol.py` owns artifact failure transitions, semantic
+  contracts, proposition ledgers, and command observation summaries.
+- `local_sdlc/artifact_lint.py` owns artifact lint, stage-scope lint, semantic
+  and format repair checks, stream guards, and project-policy probe rejection.
+- `local_sdlc/repair_advice.py` owns repair advice rendering and deterministic
+  repair artifact helpers.
+- `local_sdlc/python_project_analysis.py` owns Python project symbol, class
+  owner, import alias, and test-focus inference helpers.
+- `local_sdlc/harnesses/python_probes.py` owns deterministic Python struct/API,
+  precondition, CLI, CLI-state, and storage-state probes.
+- `local_sdlc/artifacts.py` re-exports these modules for compatibility with the
+  CLI and existing tests.
+
+Boundary rule:
+
+- `agent_runner.py` remains the application orchestration loop for now. Its
+  nested helpers share run-local state heavily, so splitting it before the
+  Requirement/Evidence/RepairAction models are fully extracted would create
+  more risk than benefit.
+
+Line-count outcome:
+
+- `local_sdlc/artifacts.py`: 5,643 lines -> 10-line facade.
+- Largest artifact-related implementation file: `repair_advice.py`, 1,884
+  lines.
+- Remaining large file: `agent_runner.py`, 3,429 lines, retained as
+  orchestration until a safer domain-model split is ready.
+
+Verification:
+
+- `python3 -m py_compile local_sdlc.py local_sdlc/*.py local_sdlc/harnesses/*.py tests/*.py`
+- `python3 -m unittest tests.test_artifact_ops tests.test_harnesses`
+- `python3 -m unittest discover -s tests`

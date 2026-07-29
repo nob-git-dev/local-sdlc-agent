@@ -349,6 +349,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |
 | S02: HTML/browser smoke は harness plugin として Evidence を返し、既存 `run_html_smoke_checks()` / `run_browser_tetris_check()` の互換挙動を維持する | `tests.test_harnesses`, `test_html_smoke_flags_broken_tetris_file`, `test_browser_tetris_smoke_requires_visible_active_piece`, full suite | PASS |
 | S03a: Python/CLI command checks は安全判定を維持したまま harness Evidence を返し、legacy `(document, ok)` へ射影できる | `tests.test_harnesses.HarnessPluginTests` | PASS |
+| S07d: `artifacts.py` を互換facade化し、artifact protocol / lint-stream / repair advice / Python analysis / mechanical probes を責務別モジュールへ分割する | `tests.test_artifact_ops`, `tests.test_harnesses`, full suite | PASS |
 
 ### テスト環境
 
@@ -539,7 +540,13 @@ local_sdlc/
   llm_client.py                # OpenAI 互換 API、health、streaming
   skills.py                    # SKILL.md 読み込みと prompt assembly
   artifact_ops.py              # JSON/BEGIN_FILE/diff/search_replace parser と artifact apply
-  artifacts.py                 # artifact facade、stream guard、semantic lint、repair advice
+  artifact_protocol.py         # artifact failure transition、semantic contract、observation summary
+  artifact_lint.py             # artifact lint、stream guard、format/semantic repair checks
+  repair_advice.py             # repair advice と deterministic repair artifact helpers
+  python_project_analysis.py   # Python project structure / symbol / test-focus inference
+  artifacts.py                 # backward-compatible facade
+  harnesses/
+    python_probes.py           # deterministic Python/API/CLI/storage mechanical probes
   protocol.py                  # failure classification と repair policy
   supervisor.py                # PM/Coder/Judge と router
   agent_loop.py                # apply/test/judge repair loop
@@ -909,6 +916,7 @@ local_sdlc/
 - `verification.py` の browser / HTML / command smoke は `harnesses/` へ分割する。
 - `artifacts.py` の repair advice logic は `repair/` へ分割する。
 - `agent_runner.py` の loop 内に直書きされた gate / evidence / repair 接続は Application 層の orchestrator に残し、domain logic は新モジュールへ委譲する。
+- `agent_runner.py` は現時点では application orchestration の実行ループとして残す。内部状態を大量に共有する nested helper を無理に外出しすると挙動変更リスクが高いため、Requirement / Evidence / RepairAction の型分離がさらに進んだ後に薄くする。
 
 ### 実行フロー
 
@@ -1036,6 +1044,7 @@ local_sdlc/
 - [ ] Tetris active piece false positive は regression test として残る
 - [ ] Mini SQLite stage resume regression が残る
 - [ ] Redis/KVS benchmark regression が残る
+- [x] S07d: `artifacts.py` は互換facade化され、artifact protocol / lint-stream / repair advice / Python analysis / mechanical probes は責務別モジュールへ分離される
 - [ ] `python3 -m unittest discover -s tests` が全段階で成功する
 - [ ] `artifacts.py` と `agent_runner.py` は責務分割され、各ファイルの責務が SPEC.md のモジュール構成と一致する
 
