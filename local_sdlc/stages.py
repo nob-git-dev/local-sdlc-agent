@@ -535,6 +535,53 @@ def build_integration_repair_args(
         run_dir=run_dir / "s99-final-integration-repair",
     )
 
+def stage_failure_recovery_plan(
+    failed_stage: StageWorkItem,
+    failed_summary: StageRunSummary,
+    stages: Sequence[StageWorkItem],
+    completed: Sequence[StageRunSummary],
+) -> dict[str, object]:
+    stage_ids = [stage.stage_id for stage in stages]
+    try:
+        failed_index = stage_ids.index(failed_stage.stage_id)
+    except ValueError:
+        failed_index = 0
+    remaining_stages = list(stages[failed_index:])
+    failure_summary_data = failed_summary.failure_summary or {}
+    failure_type = str(failure_summary_data.get("failure_type") or "unknown")
+    return {
+        "status": "stage_failed",
+        "failed_stage_id": failed_stage.stage_id,
+        "failed_stage_title": failed_stage.title,
+        "failed_stage_run_dir": failed_summary.run_dir,
+        "failure_type": failure_type,
+        "failure_summary": failure_summary_data,
+        "completed_ok_stage_ids": [item.stage_id for item in completed if item.exit_code == 0],
+        "remaining_stage_ids": [stage.stage_id for stage in remaining_stages],
+        "recommended_resume": {
+            "command": "run-stages",
+            "from_stage": failed_stage.stage_id,
+            "to_stage": remaining_stages[-1].stage_id if remaining_stages else failed_stage.stage_id,
+            "reason": "the failed stage has not proven its required observables",
+        },
+        "next_required_action": {
+            "kind": "repair_failed_stage",
+            "stage_id": failed_stage.stage_id,
+            "required_observables": list(stage_required_observables(failed_stage)),
+            "writable_paths": list(stage_writable_paths(failed_stage)),
+            "readonly_evidence_paths": list(stage_readonly_evidence_paths(failed_stage)),
+            "required_paths": list(stage_required_paths(failed_stage)),
+            "test_commands": auto_stage_test_commands(failed_stage),
+        },
+        "retry_policy": {
+            "do_not_skip_failed_stage": True,
+            "retry_same_stage_after": [
+                "repair or regenerate artifacts inside writable_paths",
+                "produce passing evidence for every required_observable",
+            ],
+        },
+    }
+
 def stage_run_manifest(
     brief: str,
     stages: Sequence[StageWorkItem],
@@ -542,8 +589,9 @@ def stage_run_manifest(
     final_status: str,
     test_commands: Sequence[str],
     base: Path,
+    recovery_plan: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    return {
+    manifest = {
         "brief": brief,
         "command": "run-stages",
         "status": final_status,
@@ -569,6 +617,9 @@ def stage_run_manifest(
         ],
         "documents": [],
     }
+    if recovery_plan is not None:
+        manifest["stage_recovery_plan"] = recovery_plan
+    return manifest
 
 def build_acceptance_matrix(
     criteria: Sequence[dict[str, str]],

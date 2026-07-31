@@ -59,6 +59,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
     written: list[Path] = []
     completed: list[StageRunSummary] = []
     final_checks: list[dict[str, object]] = []
+    recovery_plan: dict[str, object] | None = None
 
     queue_doc = stage_queue_document(stages)
     path = write_run_document(run_dir, "00-stage-queue.md", queue_doc)
@@ -99,6 +100,14 @@ def command_run_stages(args: argparse.Namespace) -> int:
 
         if exit_code != 0:
             final_status = "stage_failed"
+            if recovery_plan is None:
+                recovery_plan = stage_failure_recovery_plan(stage, summary, stages, completed)
+                recovery_path = write_run_document(
+                    run_dir,
+                    "01-stage-recovery-plan.json",
+                    json.dumps(recovery_plan, ensure_ascii=False, indent=2),
+                )
+                written.append(recovery_path)
             if args.stop_on_failure:
                 break
 
@@ -152,7 +161,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         if exit_code == 0:
             final_status = "approved"
 
-    manifest = stage_run_manifest(args.brief, stages, completed, final_status, args.test_command or [], project)
+    manifest = stage_run_manifest(args.brief, stages, completed, final_status, args.test_command or [], project, recovery_plan)
     manifest["model_profile"] = llm_model_profile_manifest(args)
     manifest["final_checks"] = final_checks
     if integration_repair:

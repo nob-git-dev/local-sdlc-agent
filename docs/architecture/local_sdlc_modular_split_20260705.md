@@ -278,6 +278,34 @@ Verification:
 - `python3 -m unittest tests.test_stage_runner`
 - `python3 -m py_compile local_sdlc/models.py local_sdlc/stages.py local_sdlc/stage_runner.py tests/test_stage_runner.py`
 
+## 2026-07-30 Implementation Slice S05b
+
+Stage failures now leave a deterministic recovery plan for autonomous control.
+
+Implementation:
+
+- `stage_failure_recovery_plan()` projects the failed stage, observed failure
+  summary, completed stages, and remaining queue into a machine-readable plan.
+- `run-stages` writes `01-stage-recovery-plan.json` immediately after the first
+  failed stage and embeds the same object into final `run.json.stage_recovery_plan`.
+- The plan explicitly carries the failed stage ID, resume range, required
+  observables, writable paths, readonly evidence paths, required paths, and test
+  commands.
+
+Boundary rule:
+
+- Recovery planning is deterministic evidence routing, not execution authority.
+  The runner records where to resume and what must be proven, but autonomous
+  retry / split decisions remain later Supervisor Runtime work.
+- A failed stage must not be skipped. Resume begins at the failed stage because
+  its required observables are not yet proven.
+
+Verification:
+
+- `python3 -m unittest tests.test_stage_runner.StageRunnerTests.test_run_stages_writes_recovery_plan_when_stage_fails`
+- `python3 -m unittest tests.test_stage_runner`
+- `python3 -m py_compile local_sdlc/stages.py local_sdlc/stage_runner.py tests/test_stage_runner.py`
+
 ## 2026-07-29 Refactor Slice S07d
 
 `local_sdlc/artifacts.py` is now a compatibility facade. The former mixed

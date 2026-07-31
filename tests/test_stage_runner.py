@@ -336,6 +336,83 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertTrue(s01_manifest_exists)
         self.assertTrue(s02_manifest_exists)
 
+    def test_run_stages_writes_recovery_plan_when_stage_fails(self):
+        calls = []
+
+        def fake_command_agent(stage_args):
+            calls.append(stage_args)
+            stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "api_calls": 1,
+                "final_verdict": "rejected",
+                "changed_paths": ["minisqlite/result.py"],
+                "required_paths": [
+                    "minisqlite/errors.py",
+                    "minisqlite/result.py",
+                    "tests/test_core.py",
+                ],
+                "failure_summary": {
+                    "failure_type": "command_failed",
+                    "document": "05-r01-command-01.md",
+                },
+            }
+            (stage_args.run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+            return 1
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Mini SQLite Engine\nSQL parser and B+Tree\n")
+            run_dir = project / "run"
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "build mini sqlite",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--from-stage",
+                    "S01",
+                    "--to-stage",
+                    "S03",
+                    "--apply",
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+
+            original_command_agent = self.local_sdlc.command_agent
+            original_stage_command_agent = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_command_agent
+                self.local_sdlc._stage_runner.command_agent = original_stage_command_agent
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            recovery_doc = json.loads((run_dir / "01-stage-recovery-plan.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(manifest["status"], "stage_failed")
+        self.assertEqual(manifest["stage_recovery_plan"], recovery_doc)
+        self.assertEqual(recovery_doc["failed_stage_id"], "S01")
+        self.assertEqual(recovery_doc["failure_type"], "command_failed")
+        self.assertEqual(recovery_doc["recommended_resume"]["from_stage"], "S01")
+        self.assertEqual(recovery_doc["recommended_resume"]["to_stage"], "S03")
+        self.assertEqual(recovery_doc["completed_ok_stage_ids"], [])
+        self.assertEqual(recovery_doc["remaining_stage_ids"], ["S01", "S02", "S03"])
+        action = recovery_doc["next_required_action"]
+        self.assertEqual(action["kind"], "repair_failed_stage")
+        self.assertIn("minisqlite/result.py", action["writable_paths"])
+        self.assertIn("tests/test_core.py", action["required_paths"])
+        self.assertIn(
+            "command:python3 -m py_compile minisqlite/errors.py minisqlite/result.py tests/test_core.py",
+            action["required_observables"],
+        )
+        self.assertTrue(recovery_doc["retry_policy"]["do_not_skip_failed_stage"])
+
     def test_run_stages_uses_stage_tests_before_final_gate(self):
         calls = []
         outputs = [

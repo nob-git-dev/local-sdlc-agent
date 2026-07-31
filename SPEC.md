@@ -1007,6 +1007,13 @@ local_sdlc/
 - stage brief は Required Observables / Writable Paths / Readonly Evidence Paths を明示し、Coder が現在stageの証明対象を読めるようにする。
 - stageごとの細分化判断や自動resume戦略は後続S05b以降に残す。
 
+2026-07-30 S05b:
+
+- stage 失敗時に `01-stage-recovery-plan.json` を生成し、同じ内容を最終 `run.json.stage_recovery_plan` に保存する。
+- recovery plan は `failed_stage_id`, `recommended_resume.from_stage/to_stage`, `next_required_action.required_observables`, `writable_paths`, `readonly_evidence_paths`, `test_commands` を持つ。
+- 再開は失敗stageを飛ばさず、失敗stageの required observables が証明されるまで同stageから再実行する命題として固定する。
+- このsliceは再開計画の機械的記録までを対象とし、実際の自律 retry / split 実行は Supervisor Runtime 側の後続実装とする。
+
 #### S06: Regression Memory
 
 - failure history を `history.py` で正規化する。
@@ -1056,6 +1063,7 @@ local_sdlc/
 - [ ] repair advice は generic rules と domain rules に分離される
 - [x] S04a: acceptance blocker から Repair Action が生成され、次 Coder call と run manifest に渡る
 - [x] S05a: stage planner は stage ごとに required observables と writable/readonly paths を保存する
+- [x] S05b: stage 失敗時に recovery plan を run manifest と専用 JSON へ保存する
 - [ ] failure history は機械利用可能な regression memory として保存される
 - [ ] Tetris active piece false positive は regression test として残る
 - [ ] Mini SQLite stage resume regression が残る
