@@ -24,6 +24,16 @@ from .stages import *
 from .history import *
 from .requirements import requirements_from_spec, observables_for_requirements
 from .evidence import verdict_to_manifest, verdicts_from_acceptance_matrix
+from .agent_prompts import *
+from .artifact_transaction import *
+from .domain_modeling import domain_modeling_decision
+from .policy_triage import (
+    apply_project_policy_triage_to_advice as apply_triage_to_advice,
+    authorized_test_edit_paths,
+    project_policy_triage_enabled as triage_is_enabled,
+    triage_allows_test_harness_edit,
+    triage_string_list,
+)
 
 
 def attach_regression_memory(
@@ -44,76 +54,6 @@ def attach_regression_memory(
         "store_record_count": store_record_count,
     }
     manifest["documents"] = [display_path(path, project) for path in written]
-
-
-def snapshot_artifact_targets(project: Path, paths: Sequence[str]) -> dict[str, bytes | None]:
-    """Capture target bytes before a multi-artifact apply transaction.
-
-    Invariant: a round that applies multiple artifacts must be atomic.  If any
-    artifact in the round fails, every touched target is restored to this
-    snapshot, including deleting files that did not exist before the round.
-    """
-    snapshots: dict[str, bytes | None] = {}
-    for path in unique_ordered(paths):
-        target = resolve_project_path(project, path)
-        snapshots[path] = target.read_bytes() if target.exists() else None
-    return snapshots
-
-
-def restore_artifact_targets(project: Path, snapshots: dict[str, bytes | None]) -> list[str]:
-    restored: list[str] = []
-    for path, content in snapshots.items():
-        target = resolve_project_path(project, path)
-        if content is None:
-            if target.exists():
-                target.unlink()
-                restored.append(path)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-        restored.append(path)
-    return restored
-
-
-def domain_modeling_decision(
-    args: argparse.Namespace,
-    skills: dict[str, Skill],
-    spec: str,
-    resume_documents: Sequence[tuple[str, str]] = (),
-) -> dict[str, object]:
-    mode = str(getattr(args, "domain_modeling", "auto") or "auto")
-    skill_name = str(getattr(args, "domain_skill", "ddd") or "ddd")
-    if mode not in {"auto", "always", "never"}:
-        raise RunnerError("--domain-modeling must be auto, always, or never")
-    if mode == "never":
-        return {"mode": mode, "skill": skill_name, "run": False, "reason": "disabled"}
-    if any(title == "Domain contract document" for title, _ in resume_documents) and mode != "always":
-        return {"mode": mode, "skill": skill_name, "run": False, "reason": "resume_already_has_domain_contract"}
-    if skill_name not in skills:
-        if mode == "always":
-            raise RunnerError(f"domain skill not found: {skill_name}")
-        return {"mode": mode, "skill": skill_name, "run": False, "reason": "domain_skill_missing"}
-
-    task_type = classify_task_type(args.brief)
-    danger_signals = detect_danger_signals(args.brief)
-    needed = needs_domain_modeling(args.brief, spec, task_type, danger_signals)
-    if mode == "always" or needed:
-        return {
-            "mode": mode,
-            "skill": skill_name,
-            "run": True,
-            "reason": "forced" if mode == "always" else "domain_modeling_needed",
-            "task_type": task_type,
-            "danger_signals": danger_signals,
-        }
-    return {
-        "mode": mode,
-        "skill": skill_name,
-        "run": False,
-        "reason": "domain_modeling_not_needed",
-        "task_type": task_type,
-        "danger_signals": danger_signals,
-    }
 
 
 def command_agent(args: argparse.Namespace) -> int:
@@ -512,94 +452,15 @@ def command_agent(args: argparse.Namespace) -> int:
     ) -> str:
         nonlocal api_calls
         evidence_text = "\n\n".join(document for _name, document in command_docs)
-        prior_analyses = json.dumps(failure_analyses[-5:], ensure_ascii=False, indent=2)
-        transition_text = json.dumps(state_transitions[-8:], ensure_ascii=False, indent=2)
-        analysis_instruction = textwrap.dedent(
-            f"""
-            Act as the failure-analysis role for this coding-agent run.
-
-            Request:
-            {args.brief}
-
-            Trigger:
-            A failed executable check was observed. Your job is to convert the
-            failure history into machine-readable propositions for the
-            supervisor. Do not write code and do not propose an artifact.
-
-            Current failure:
-            - round: {round_index}
-            - failure_type: {failure_type}
-            - failure_signature: {failure_signature or "(unknown)"}
-            - repeated_same_failure_count: {repeated_same_failure_count}
-
-            Recent state transitions:
-            {transition_text}
-
-            Prior failure analyses:
-            {prior_analyses}
-
-            Latest command evidence:
-            {evidence_text}
-
-            Mechanical evidence rule:
-            If a Mechanical Probe document is present, its observations are
-            authoritative runtime facts. Do not infer contradictory values for
-            page IDs, method names, byte headers, parsed symbols, or persisted
-            state. If prior analyses contradict a probe, mark the prior
-            hypothesis rejected and base next_required_action on the probe.
-
-            Mathematical model:
-            - F_t is the current failure signature.
-            - A_i is an attempted action or patch.
-            - H_i is the hypothesis that justified A_i.
-            - R_i is executable evidence after A_i.
-            - If same(F_i, F_t) and applied(A_i), then reject H_i unless
-              new evidence strictly refines H_i.
-            - The next action must satisfy:
-              changes_behavior(A) and not touches_tests(A) and
-              not based_on(rejected_hypothesis).
-
-            Return exactly one JSON object with this schema:
-            {{
-              "failure_id": "Sxx-Ryy-Fzz or short stable id",
-              "round": {round_index},
-              "failure_type": "{failure_type}",
-              "failure_signature": "{failure_signature or ''}",
-              "observed_facts": ["1-6 facts grounded in command or Mechanical Probe evidence"],
-              "attempted_actions": [
-                {{"round": 1, "action": "what changed or failed", "result": "same/improved/worse/unknown"}}
-              ],
-              "rejected_hypotheses": [
-                {{"hypothesis": "1-3 precise hypotheses", "reason": "why evidence rejects it"}}
-              ],
-              "active_constraints": [
-                "1-5 constraints the next role must obey"
-              ],
-              "next_required_action": {{
-                "role": "root_cause_analysis|format_repair|repair_artifact",
-                "goal": "one sentence",
-                "required_paths": ["project-relative writable product path required for the next patch"],
-                "readonly_paths": ["project-relative evidence/context path that must not be edited"],
-                "forbidden_paths": ["project-relative path that must not be edited"],
-                "next_patch_type": "search_replace|unified_diff|missing_context",
-                "minimal_patch_goal": "one smallest behavior change the next patch must implement",
-                "forbidden_focus": ["hypothesis or edit that must not be repeated"],
-                "required_focus": ["file/function/invariant to inspect next"]
-              }},
-              "formal_constraints": [
-                "same(F_i,F_t) && applied(A_i) => reject(H_i)"
-              ]
-            }}
-            """
-        ).strip()
-        analysis_contract = (
-            "Return ONLY one compact JSON object matching the requested failure-analysis schema. "
-            "observed_facts <= 6, attempted_actions <= 4, rejected_hypotheses <= 3, "
-            "active_constraints <= 5, formal_constraints <= 4. "
-            "next_required_action.required_paths, readonly_paths, forbidden_paths, next_patch_type, "
-            "and minimal_patch_goal are mandatory. "
-            "Mechanical Probe observations override inferred facts. "
-            "No markdown fences. No prose. No code artifacts."
+        analysis_instruction = failure_analysis_instruction(
+            args.brief,
+            round_index,
+            failure_type,
+            failure_signature,
+            repeated_same_failure_count,
+            state_transitions,
+            failure_analyses,
+            evidence_text,
         )
         analysis_partial_path = run_dir / f"05-r{round_index:02d}-failure-analysis.partial.json"
         if args.stream:
@@ -620,7 +481,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 project_manifest_text=manifest_text,
                 file_context=file_context,
                 documents=documents[-args.document_window :],
-                output_contract=analysis_contract,
+                output_contract=FAILURE_ANALYSIS_OUTPUT_CONTRACT,
                 stream_output_path=analysis_partial_path if args.stream else None,
                 stream_callback=update_analysis_stream_status if args.stream else None,
                 stream_guard=root_cause_stream_guard if args.stream else None,
@@ -731,42 +592,7 @@ def command_agent(args: argparse.Namespace) -> int:
     ) -> str:
         """Ask a judge-level planner for one minimal patch proposition."""
         nonlocal api_calls
-        planner_instruction = textwrap.dedent(
-            f"""
-            Act as the patch-planner role for this coding-agent run.
-
-            Request:
-            {args.brief}
-
-            Current repair role:
-            {role_label}
-
-            Structured/root-cause analysis input:
-            {analysis_doc}
-
-            Your job is to select exactly one minimal next patch proposition.
-            Do not write code. Do not emit artifacts. Do not edit tests.
-
-            Return exactly this schema:
-            PATCH_PLAN
-            - proposition: one sentence of the form "If P, change A so C"
-            - required_path: one project-relative writable product file
-            - readonly_paths: comma-separated evidence paths or "(none)"
-            - forbidden_paths: comma-separated paths that must not be edited
-            - patch_type: search_replace|unified_diff|missing_context
-            - minimal_patch_goal: one smallest behavior change
-            - stop_rule: when the artifact writer must stop instead of guessing
-
-            Validity rule:
-            The plan is valid only if required_path is not under tests/ and the
-            minimal_patch_goal can be implemented as one atomic product-code edit.
-            If that is impossible, use patch_type=missing_context.
-            """
-        ).strip()
-        planner_contract = (
-            "Return ONLY PATCH_PLAN in the requested schema. No markdown fences. "
-            "No code. No artifacts. No prose outside the schema."
-        )
+        planner_instruction = patch_planner_instruction(args.brief, role_label, analysis_doc)
         planner_partial_path = run_dir / f"02-r{round_index:02d}-patch-plan.partial.md"
         if args.stream:
             written.append(planner_partial_path)
@@ -786,7 +612,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 project_manifest_text=manifest_text,
                 file_context=file_context,
                 documents=documents[-args.document_window :],
-                output_contract=planner_contract,
+                output_contract=PATCH_PLANNER_OUTPUT_CONTRACT,
                 stream_output_path=planner_partial_path if args.stream else None,
                 stream_callback=update_planner_stream_status if args.stream else None,
                 stream_guard=root_cause_stream_guard if args.stream else None,
@@ -841,16 +667,7 @@ def command_agent(args: argparse.Namespace) -> int:
 
     def project_policy_triage_enabled(trigger: str) -> bool:
         mode = str(getattr(args, "project_policy_triage", "auto") or "auto")
-        if mode == "never":
-            return False
-        if mode == "always":
-            return True
-        return trigger in {
-            "test_harness_ownership",
-            "test_edit_attempt",
-            "artifact_policy_boundary",
-            "generated_test_oracle_conflict",
-        }
+        return triage_is_enabled(mode, trigger)
 
     def project_policy_triage_record(
         triage_doc: str,
@@ -879,70 +696,13 @@ def command_agent(args: argparse.Namespace) -> int:
         nonlocal api_calls
         if not project_policy_triage_enabled(trigger):
             return None
-        prior_triages = json.dumps(project_policy_triages[-5:], ensure_ascii=False, indent=2)
-        transition_text = json.dumps(state_transitions[-8:], ensure_ascii=False, indent=2)
-        analysis_instruction = textwrap.dedent(
-            f"""
-            Act as the project-policy triage role for this coding-agent run.
-
-            Request:
-            {args.brief}
-
-            Trigger:
-            {trigger}
-
-            Candidate action under consideration:
-            {candidate_action}
-
-            Your job is to classify a context-dependent ownership or policy
-            question. Do not write code. Do not emit artifacts. Do not approve
-            an edit directly; the runner will validate your classification
-            against path policy and artifact grammar.
-
-            Project policy sources:
-            - SPEC.md is the primary project policy.
-            - PM/Judge documents and command evidence may clarify whether a
-              generated test harness is mutable or whether tests are external
-              acceptance evidence.
-            - Universal safety constraints remain binding even if project
-              policy is permissive: no path traversal, no project-root escape,
-              no conflict-marker patch application, no ambiguous artifact
-              application.
-
-            Recent state transitions:
-            {transition_text}
-
-            Prior project-policy triages:
-            {prior_triages}
-
-            Evidence to classify:
-            {evidence_doc}
-
-            Formal model:
-            - U = universal safety invariant. U is always machine-enforced.
-            - P = project policy from SPEC.md and run documents.
-            - E = executable/document evidence.
-            - T = your triage classification.
-            - T may select a next role/action, but T cannot directly apply an edit.
-            - valid(T) requires basis(T) subset of P union E and no violation of U.
-
-            Return exactly one JSON object:
-            {{
-              "trigger": "{trigger}",
-              "case_type": "artifact_format|test_harness|product_bug|spec_conflict|insufficient_context|reject",
-              "confidence": "high|medium|low",
-              "project_policy_basis": ["SPEC.md or document evidence line"],
-              "safe_next_action": "format_repair|root_cause_analysis|repair_artifact|edit_test_harness|reject|ask_user",
-              "editable_paths": ["project-relative paths that may be writable"],
-              "readonly_paths": ["project-relative paths that must remain context/evidence only"],
-              "forbidden_actions": ["actions the next role must not take"],
-              "rationale": "one concise sentence"
-            }}
-            """
-        ).strip()
-        analysis_contract = (
-            "Return ONLY one JSON object matching the project-policy triage schema. "
-            "No markdown fences. No prose. No code artifacts."
+        analysis_instruction = project_policy_triage_instruction(
+            args.brief,
+            trigger,
+            candidate_action,
+            state_transitions,
+            project_policy_triages,
+            evidence_doc,
         )
         deterministic_triage = deterministic_project_policy_triage_from_evidence(
             trigger,
@@ -971,7 +731,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 project_manifest_text=manifest_text,
                 file_context=file_context,
                 documents=documents[-args.document_window :],
-                output_contract=analysis_contract,
+                output_contract=PROJECT_POLICY_TRIAGE_OUTPUT_CONTRACT,
                 call_function="project_policy_triage",
             )
         except LLMStreamAbortError:
@@ -989,92 +749,18 @@ def command_agent(args: argparse.Namespace) -> int:
         write_partial_manifest("project_policy_triage_written", {"current_round": round_index})
         return record
 
-    def triage_string_list(record: dict[str, object] | None, key: str) -> list[str]:
-        if not record:
-            return []
-        raw = record.get(key, [])
-        if not isinstance(raw, list):
-            return []
-        return normalize_new_files(str(item) for item in raw if isinstance(item, str))
-
-    def triage_allows_test_harness_edit(record: dict[str, object] | None) -> bool:
-        if not record:
-            return False
-        return (
-            str(record.get("case_type", "")).strip() == "test_harness"
-            and str(record.get("safe_next_action", "")).strip() == "edit_test_harness"
-            and str(record.get("confidence", "")).strip() != "low"
-        )
-
     def authorized_test_edit_paths_from_triages() -> list[str]:
-        paths: list[str] = []
-        for record in project_policy_triages:
-            if triage_allows_test_harness_edit(record):
-                paths.extend(triage_string_list(record, "editable_paths"))
-        return unique_ordered(path for path in paths if path.startswith("tests/"))
+        return authorized_test_edit_paths(project_policy_triages)
 
     def apply_project_policy_triage_to_advice(
         advice: RepairAdvice,
         triage: dict[str, object] | None,
     ) -> RepairAdvice:
-        if advice.strategy not in TEST_HARNESS_WRITE_STRATEGIES:
-            return advice
-        if not triage:
-            return advice
-        editable_paths = triage_string_list(triage, "editable_paths")
-        readonly_paths = triage_string_list(triage, "readonly_paths")
-        forbidden_actions = [
-            str(item)
-            for item in triage.get("forbidden_actions", [])
-            if isinstance(item, str)
-        ] if isinstance(triage.get("forbidden_actions", []), list) else []
-        if triage_allows_test_harness_edit(triage):
-            return RepairAdvice(
-                strategy=advice.strategy,
-                focus_files=tuple(unique_ordered([*editable_paths, *advice.focus_files, *readonly_paths])),
-                instructions=tuple(
-                    unique_ordered(
-                        [
-                            *advice.instructions,
-                            "Project-policy triage classified the relevant generated test harness as writable for this repair.",
-                            *[f"Forbidden by project-policy triage: {item}" for item in forbidden_actions],
-                        ]
-                    )
-                ),
-                evidence=tuple(
-                    unique_ordered(
-                        [
-                            *advice.evidence,
-                            f"project_policy_triage={triage.get('case_type')}:{triage.get('safe_next_action')}",
-                        ]
-                    )
-                ),
-            )
-        product_focus = [
-            path
-            for path in [*advice.focus_files, *readonly_paths]
-            if path in existing_project_paths and not path.startswith("tests/")
-        ]
-        return RepairAdvice(
-            strategy="root_cause_patch",
-            focus_files=tuple(unique_ordered(product_focus)),
-            instructions=tuple(
-                unique_ordered(
-                    [
-                        "Project-policy triage did not authorize editing tests; treat tests as read-only evidence.",
-                        "Repair product code or request missing context instead of changing the test harness.",
-                        *[f"Forbidden by project-policy triage: {item}" for item in forbidden_actions],
-                    ]
-                )
-            ),
-            evidence=tuple(
-                unique_ordered(
-                    [
-                        *advice.evidence,
-                        f"project_policy_triage={triage.get('case_type')}:{triage.get('safe_next_action')}",
-                    ]
-                )
-            ),
+        return apply_triage_to_advice(
+            advice,
+            triage,
+            existing_project_paths,
+            TEST_HARNESS_WRITE_STRATEGIES,
         )
 
     write_partial_manifest("initialized")
@@ -1085,57 +771,25 @@ def command_agent(args: argparse.Namespace) -> int:
     if resume_manifest and read_text_if_exists(run_dir / "01-pm-control.md"):
         pm_doc = read_text_if_exists(run_dir / "01-pm-control.md")
     elif args.skip_pm or resume_manifest:
-        pm_doc = textwrap.dedent(
-            f"""
-            ## Deterministic PM Control
-
-            Request:
-            {args.brief}
-
-            ## Proposition Ledger
-            - P1: The user request is the visible task definition for this run.
-            - C1: SPEC.md fixed requirements must be preserved.
-            - C2: Only writable targets and safe allowed new files may be changed.
-            - G1: Produce implementation artifacts that satisfy executable evidence.
-            - E1: Command results and smoke checks are the only completion evidence.
-            - V1: Approval is allowed only when required artifacts and checks pass.
-
-            Explicit change targets:
-            {", ".join([*args.include, *new_files]) if [*args.include, *new_files] else "(none)"}
-
-            Additional new files:
-            {"allowed when they are project-relative, safe, and did not exist before this run" if not args.no_extra_files else "disabled"}
-
-            Read-only context files:
-            {", ".join(list(dict.fromkeys([*context_files, *[path for path in slice_context_files if path not in args.include and path not in new_files]]))) or "(none)"}
-
-            Acceptance checks:
-            - Apply only changes needed for the request.
-            - Preserve SPEC.md fixed requirements.
-            - Use command results and smoke checks as objective evidence.
-            - Do not weaken meaningful tests to hide implementation failures.
-            """
-        ).strip()
+        pm_doc = deterministic_pm_control(
+            args.brief,
+            [*args.include, *new_files],
+            not args.no_extra_files,
+            list(
+                dict.fromkeys(
+                    [
+                        *context_files,
+                        *[
+                            path
+                            for path in slice_context_files
+                            if path not in args.include and path not in new_files
+                        ],
+                    ]
+                )
+            ),
+        )
     else:
-        pm_instruction = textwrap.dedent(
-            f"""
-            Act as the PM-level controller for this coding-agent run.
-
-            Request:
-            {args.brief}
-
-            Produce a compact control document for the coder and judge. Include:
-            - Proposition Ledger with short P/C/G/E/A/V items
-            - Graph Edges with supports/constrains/satisfies/verifies/blocks
-            - intended outcome
-            - fixed requirements
-            - files that may be changed
-            - acceptance checks
-            - hallucination traps
-
-            Do not write implementation code.
-            """
-        ).strip()
+        pm_instruction = pm_control_instruction(args.brief)
         pm_partial_path = run_dir / "01-pm-control.partial.md"
         if args.stream:
             written.append(pm_partial_path)
@@ -3291,29 +2945,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 break
             continue
 
-        judge_instruction = textwrap.dedent(
-            f"""
-            Act as the judge-level agent for this coding-agent run.
-
-            Request:
-            {args.brief}
-
-            Round:
-            {round_index} of {final_round}
-
-            Review the applied patch, command results, SPEC.md, and PM control
-            document. Treat coder output as a claim. Use included current file
-            contents as evidence; do not claim file content is missing when it
-            is present in Included file contents. If command evidence and file
-            contents disagree for a static/proxy check, identify the mismatch
-            owner instead of blindly repeating the same product-code diagnosis.
-            If the result is acceptable
-            and command evidence passes, start with "判定: 承認". If not, start
-            with "判定: 修正依頼" and list concrete required fixes.
-            Express major review points as short P/C/E/A/V propositions and
-            Graph Edges before Required fixes.
-            """
-        ).strip()
+        judge_instruction = judge_review_instruction(args.brief, round_index, final_round)
         judge_partial_path = run_dir / f"06-r{round_index:02d}-judge-review.partial.md"
         if args.stream:
             written.append(judge_partial_path)
@@ -3336,7 +2968,7 @@ def command_agent(args: argparse.Namespace) -> int:
             project_manifest_text=manifest_text,
             file_context=collect_file_context(project, current_context_paths(), args.max_context_chars, context_slices),
             documents=documents[-max(8, args.document_window) :],
-            output_contract="Return Markdown with Verdict, Proposition Ledger, Graph Edges, Findings, Required fixes, and Evidence gaps.",
+            output_contract=JUDGE_REVIEW_OUTPUT_CONTRACT,
             stream_output_path=judge_partial_path if args.stream else None,
             stream_callback=make_stream_callback(
                 f"judge round {round_index}",

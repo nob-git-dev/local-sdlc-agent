@@ -90,3 +90,29 @@ class DomainModelTests(LocalSDLCTestCase):
 
         self.assertEqual(first.memory_id, second.memory_id)
         self.assertEqual(second.regression_tests, ("browser-tetris-smoke",))
+
+    def test_stage_id_does_not_override_more_specific_memory_path_scope(self):
+        memory = self.local_sdlc.RegressionMemory(
+            failure_family="stage:command_failed",
+            trigger={
+                "stage_id": "S01",
+                "stage_title": "Old stage",
+                "required_paths": ["old.py"],
+            },
+            false_positive_pattern="old failure",
+            required_future_observables=("command:python3 old.py",),
+            fixed_by="repair old.py",
+            regression_tests=(),
+            scope={"kind": "project_stage", "stage_id": "S01"},
+        )
+        replacement = self.local_sdlc.StageWorkItem(
+            stage_id="S01",
+            title="New stage",
+            goal="A replanned first stage.",
+            suggested_paths=("new.py",),
+            test_focus=("new smoke",),
+        )
+
+        updated = self.local_sdlc.apply_regression_memories_to_stages([replacement], [memory])
+
+        self.assertEqual(updated[0].required_observables, ())

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "checks": [
+    {
+      "name": "mini_sqlite",
+      "status": "pass",
+      "returncode": 0,
+      "test_count": 84,
+      "duration_seconds": 39.928,
+      "tail": "....................................................................................\n----------------------------------------------------------------------\nRan 84 tests in 39.878s\n\nOK"
+    },
+    {
+      "name": "redis_kvs",
+      "status": "pass",
+      "returncode": 0,
+      "test_count": 63,
+      "duration_seconds": 0.865,
+      "tail": "............\n----------------------------------------------------------------------\nRan 63 tests in 0.822s\n\nOK"
+    },
+    {
+      "name": "tetris_false_positive_guard",
+      "status": "pass",
+      "expected_outcome": "known nonfunctional artifact is rejected",
+      "harness_results": [
+        "fail",
+        "fail"
+      ],
+      "observed_active_piece_motion_failure": true,
+      "observed_board_count_failure": true,
+      "duration_seconds": 0.995
+    },
+    {
+      "name": "unknown_domain_scope_guard",
+      "status": "pass",
+      "domain_rule_leaked": false,
+      "required_observables": []
+    }
+  ]
+}

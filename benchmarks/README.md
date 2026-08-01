@@ -10,6 +10,7 @@
 | `runs/<domain>/<run-id>/` | 現在の整理方針に沿った実行成果物 |
 | `mini-sqlite-engine/` | Mini SQLite の基準ベンチマーク/仕様断片 |
 | `process-redis-kvs/`, `redis-kvs/` | Redis KVS 系のベンチマーク成果物 |
+| `run_regressions.py` | Mini SQLite / Redis-KVS / Tetris誤承認 / 未知課題scopeをまとめて検証する入口 |
 | ルート直下の日時付きディレクトリ | 既存の legacy 実験。今後は新規追加を `runs/` に寄せる |
 
 ## Rules
@@ -19,3 +20,11 @@
 - 生成された benchmark code は Agent の能力検証用 evidence として扱い、`local_sdlc/` の製品コードと混同しない。
 - 新規実験は `benchmarks/runs/<domain>/<model-or-purpose>-<date>/` に作る。
 
+## Cross-domain regression
+
+```bash
+python3 benchmarks/run_regressions.py \
+  --output benchmarks/runs/regression/harness-regression-YYYYMMDD.json
+```
+
+Tetris項目は、既知の非機能成果物を「成功させる」試験ではありません。静的HTML/APIの存在だけで誤承認せず、盤面セル数と可視ピース移動の不足を検出して拒否できた場合に回帰試験が成功します。

@@ -201,6 +201,63 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertIn("writable_paths", manifest["stages"][0])
         self.assertTrue(queue_exists)
 
+    def test_mini_sqlite_can_resume_from_s03_with_prior_stage_context(self):
+        calls = []
+
+        def fake_command_agent(stage_args):
+            calls.append(stage_args)
+            stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+            (stage_args.run_dir / "run.json").write_text(
+                json.dumps({"api_calls": 0, "final_verdict": "approved"}),
+                encoding="utf-8",
+            )
+            return 0
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Mini SQLite Engine\nSQL parser and B+Tree\n")
+            for relative in (
+                "minisqlite/errors.py",
+                "minisqlite/result.py",
+                "minisqlite/sql/lexer.py",
+                "tests/test_core.py",
+                "tests/test_lexer.py",
+            ):
+                path = project / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# prior stage output\n", encoding="utf-8")
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "resume mini sqlite",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--from-stage",
+                    "S03",
+                    "--to-stage",
+                    "S03",
+                    "--run-dir",
+                    str(project / "run"),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("minisqlite/sql/ast.py", calls[0].new_file)
+        self.assertIn("minisqlite/errors.py", calls[0].context)
+        self.assertIn("minisqlite/sql/lexer.py", calls[0].context)
+
     def test_run_stages_refuses_cancelled_run_before_stage_agent_call(self):
         calls = []
 

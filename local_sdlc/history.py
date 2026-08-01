@@ -287,15 +287,15 @@ def persist_regression_memories_for_manifest(
 
 def memory_applies_to_stage(memory: RegressionMemory, stage: StageWorkItem) -> bool:
     trigger = memory.trigger
-    stage_id = str(trigger.get("stage_id") or "")
-    if stage_id and stage_id == stage.stage_id:
-        return True
-    stage_title = str(trigger.get("stage_title") or "").strip().lower()
-    if stage_title and stage_title == stage.title.strip().lower():
-        return True
     memory_paths = set(_string_list(trigger.get("required_paths")))
     stage_paths = set(stage.suggested_paths) | set(stage.writable_paths) | set(stage.readonly_evidence_paths)
-    return bool(memory_paths and memory_paths.intersection(stage_paths))
+    if memory_paths:
+        return bool(memory_paths.intersection(stage_paths))
+    stage_title = str(trigger.get("stage_title") or "").strip().lower()
+    if stage_title:
+        return stage_title == stage.title.strip().lower()
+    stage_id = str(trigger.get("stage_id") or "")
+    return bool(stage_id and stage_id == stage.stage_id)
 
 
 def apply_regression_memories_to_stages(

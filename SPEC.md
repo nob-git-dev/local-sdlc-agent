@@ -901,13 +901,15 @@ local_sdlc/
     python_package.py         # py_compile/import/unittest/API probe
     cli.py                    # CLI command sequence and stdout assertions
     storage.py                # persistence/state probes
-  repair/
+  repair_rules/
     __init__.py
-    advice.py                 # RepairAction model and rendering
-    generic_rules.py          # acceptance gap, syntax error, missing artifact
-    html_rules.py             # browser/DOM behavior advice
-    python_rules.py           # import/API/exception advice
-    policy_triage.py          # LLM triage adapter
+    generic.py                # acceptance blocker と汎用 RepairAction 変換
+    domain.py                 # HTML/Python/storage 等の domain-aware advice
+  repair_advice.py            # repair orchestration と互換公開面
+  policy_triage.py            # LLM triage の機械検証 adapter
+  agent_prompts.py            # role/function 別 prompt builder
+  artifact_transaction.py    # 複数成果物 apply の atomic rollback
+  domain_modeling.py          # DDD skill 呼び出し判定
   history.py                  # failure history and regression memory
   stage_planner.py            # strengthened stage queue synthesis
 ```
@@ -916,7 +918,7 @@ local_sdlc/
 
 - `stages.py` の acceptance parsing / matrix logic は `requirements.py` と `evidence.py` へ移す。
 - `verification.py` の browser / HTML / command smoke は `harnesses/` へ分割する。
-- `artifacts.py` の repair advice logic は `repair/` へ分割する。
+- `artifacts.py` の repair advice logic は `repair_advice.py` と `repair_rules/` へ分割する。
 - `agent_runner.py` の loop 内に直書きされた gate / evidence / repair 接続は Application 層の orchestrator に残し、domain logic は新モジュールへ委譲する。
 - `agent_runner.py` は現時点では application orchestration の実行ループとして残す。内部状態を大量に共有する nested helper を無理に外出しすると挙動変更リスクが高いため、Requirement / Evidence / RepairAction の型分離がさらに進んだ後に薄くする。
 
@@ -1034,6 +1036,22 @@ local_sdlc/
 - 次回 `run-stages` は共有memoryのscope/triggerが一致したstageだけへ `required_future_observables` を追加する。
 - Tetris active-piece false positive は追跡済みfixtureとして保存し、該当artifact pathにだけ発火し、未知課題には発火しないことを回帰テストで固定する。
 
+2026-08-01 S07e:
+
+- `agent_prompts.py` に Failure Analysis / Patch Planner / Project Policy Triage / PM / Judge の prompt builder と出力契約を移した。
+- `artifact_transaction.py` に複数成果物の snapshot / rollback、`domain_modeling.py` に DDD skill 呼び出し判定、`policy_triage.py` に LLM triage 結果の決定論的検証を移した。
+- `repair_rules/generic.py` は acceptance blocker からの汎用 RepairAction 変換だけを持ち、`repair_rules/domain.py` は HTML/Python/storage 等の観測に基づく domain-aware repair advice を持つ。
+- `repair_advice.py` は上記ルールを再公開し、残る repair orchestration を担当する。`agent_runner.py` は API call、round state、evidence gate を接続する application orchestration に限定した。
+- prompt の文言と機械契約は変更せず、分割前後の公開関数同一性と主要出力契約を単体テストで固定した。
+
+2026-08-01 S08a:
+
+- `benchmarks/run_regressions.py` を追加し、Mini SQLite、Redis/KVS、既知の非機能Tetris、未知parser課題を同じ決定論的回帰入口から検証できるようにした。
+- Mini SQLite は84 tests、Redis/KVSは63 testsが成功した。
+- 既知の非機能Tetrisは board count と ArrowLeft後の可視移動を証明できず、期待どおり拒否された。
+- 未知parser課題には Tetris 固有の required observable が注入されず、stage ID の一致だけでdomain memoryを誤適用しないscope規則を固定した。
+- 実測結果は `benchmarks/runs/regression/harness-regression-20260801.json` に保存する。
+
 #### S07: 巨大モジュール分割
 
 - `artifacts.py` と `agent_runner.py` の責務を上記モジュールへ移す。
@@ -1069,17 +1087,17 @@ local_sdlc/
 - [x] HTML/browser smoke は harness plugin として実装され、core runner に Tetris 固有判定が直書きされない
 - [x] S03a: Python/CLI command check は harness plugin として Evidence 化される
 - [x] S03b: Python/API/CLI/storage probe は harness plugin として Evidence 化され、agent run manifest に記録される
-- [ ] repair advice は generic rules と domain rules に分離される
+- [x] repair advice は generic rules と domain rules に分離される
 - [x] S04a: acceptance blocker から Repair Action が生成され、次 Coder call と run manifest に渡る
 - [x] S05a: stage planner は stage ごとに required observables と writable/readonly paths を保存する
 - [x] S05b: stage 失敗時に recovery plan を run manifest と専用 JSON へ保存する
 - [x] failure history は機械利用可能な regression memory として保存される
 - [x] Tetris active piece false positive は regression test として残る
-- [ ] Mini SQLite stage resume regression が残る
-- [ ] Redis/KVS benchmark regression が残る
+- [x] Mini SQLite stage resume regression が残る
+- [x] Redis/KVS benchmark regression が残る
 - [x] S07d: `artifacts.py` は互換facade化され、artifact protocol / lint-stream / repair advice / Python analysis / mechanical probes は責務別モジュールへ分離される
-- [ ] `python3 -m unittest discover -s tests` が全段階で成功する
-- [ ] `artifacts.py` と `agent_runner.py` は責務分割され、各ファイルの責務が SPEC.md のモジュール構成と一致する
+- [x] `python3 -m unittest discover -s tests` が全段階で成功する
+- [x] `artifacts.py` と `agent_runner.py` は責務分割され、各ファイルの責務が SPEC.md のモジュール構成と一致する
 
 ### テスト計画
 

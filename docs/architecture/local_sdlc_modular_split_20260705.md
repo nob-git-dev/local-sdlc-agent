@@ -379,3 +379,59 @@ Verification:
 
 - `python3 -m unittest tests.test_domain_models tests.test_stage_runner tests.test_harnesses`
 - `python3 -m unittest discover -s tests` (374 tests)
+
+## 2026-08-01 Refactor Slice S07e
+
+The remaining high-change orchestration helpers were extracted without
+changing CLI behavior or role prompt contracts.
+
+Implementation:
+
+- `agent_prompts.py` owns Failure Analysis, Patch Planner, Project Policy
+  Triage, PM, and Judge prompt builders and their output contracts.
+- `artifact_transaction.py` owns atomic snapshot/rollback for multi-artifact
+  rounds.
+- `domain_modeling.py` owns the optional DDD-skill invocation decision.
+- `policy_triage.py` owns deterministic interpretation of LLM policy-triage
+  output. The LLM may classify evidence but cannot directly authorize an edit.
+- `repair_rules/generic.py` owns acceptance-blocker to `RepairAction`
+  conversion. `repair_rules/domain.py` owns domain-aware repair heuristics.
+- `repair_advice.py` remains the compatibility/orchestration surface for
+  repair planning, while `agent_runner.py` connects API calls, round state,
+  artifact application, executable evidence, and verdict gates.
+
+Line-count outcome:
+
+- `agent_runner.py`: about 3,400 lines -> 3,097 lines.
+- `repair_advice.py`: 1,976 lines -> 1,102 lines.
+- Generic and domain repair rules are independently importable and tested.
+
+Boundary rule:
+
+- The runner retains stateful application orchestration. Splitting one round's
+  state machine across smaller files purely to reduce line count would weaken
+  traceability, so further extraction requires a stable typed boundary.
+- Domain rules produce advice only. Path policy, safety checks, artifact lint,
+  executable checks, and the acceptance gate remain independent authorities.
+
+Verification:
+
+- `python3 -m unittest tests.test_agent_components tests.test_artifact_ops tests.test_stage_runner tests.test_domain_models tests.test_benchmark_regressions`
+- `python3 -m unittest discover -s tests`
+
+## 2026-08-01 Benchmark Slice S08a
+
+`benchmarks/run_regressions.py` provides one deterministic cross-domain entry
+point for Mini SQLite, Redis/KVS, a known nonfunctional Tetris artifact, and an
+unknown parser task.
+
+Observed result:
+
+- Mini SQLite: 84 tests passed.
+- Redis/KVS: 63 tests passed.
+- The known Tetris false positive was rejected because board-count and visible
+  active-piece movement evidence were missing.
+- Tetris regression memory did not leak into the unknown parser stage.
+
+The machine-readable report is stored at
+`benchmarks/runs/regression/harness-regression-20260801.json`.
