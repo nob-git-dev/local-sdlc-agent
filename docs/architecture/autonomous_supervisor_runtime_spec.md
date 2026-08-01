@@ -331,3 +331,36 @@ Still open for full P02:
 - approval-token model for explicit human approval
 - safety decisions for artifact apply, copy-back, service control, Docker control, git operations, and network exposure
 - Web UI display for `APPROVAL_REQUIRED` and `SAFETY_BLOCKED`
+
+### 2026-08-01 P01/P02 Complete Action Gate
+
+Implemented:
+
+- one `begin_action()` boundary with the invariant `cancel check -> persisted SafetyDecision -> work_start -> execution`
+- file-lock serialization between cancellation and work-start so their order is mechanically decidable under races
+- parent control scopes for staged runs; a parent cancellation blocks every later child-stage action
+- action guards for API calls, commands, resume/retry/stage boundaries, artifact/patch apply, worktree creation, and copy-back
+- queued Web stop persists cancellation before a child process exists; a running Web process is terminated after cancellation is recorded
+- `action_gate_audit()` detects both post-cancel work and work without an authorizing prior SafetyDecision
+- explicit one-time human approvals in `safety_approvals.jsonl`; approval is fingerprint-bound and consumed atomically by one matching retry
+- `block` decisions cannot be approved, and `llm` is not an accepted approval source
+- CLI `cancel`, `safety-status`, and `approve` commands
+- Web states for `APPROVAL_REQUIRED` / `SAFETY_BLOCKED` and an explicit one-time approval button
+- child-stage approval requirements propagate to the parent run manifest and Web result without entering coder retry loops
+- `block` is a terminal `SAFETY_BLOCKED` state, not an ordinary test failure or coder-retry trigger; child blocks propagate to parent, CLI, and Web
+- unregistered future risk classes fail closed to `require_approval` instead of silently defaulting to `allow`
+- Web approval targets are restricted to the job run directory and its child stages
+
+Verified:
+
+- cancellation is absorbing across every declared autonomous action class
+- cancellation/work-start race tests preserve the absorbing invariant
+- cancellation between coder output and artifact apply prevents mutation
+- cancellation after isolated verification prevents copy-back
+- risky commands do not start before approval; one approval authorizes exactly one matching retry
+- parent and child stage manifests preserve approval-required state and the exact approval target
+- blocked commands terminate before coder retry, and parent/child manifests preserve the blocking decision
+- focused P01/P02 suite passes, including CLI and Web control paths
+
+P01 and P02 are complete. Later propositions must call `begin_action()` rather
+than adding an independent execution preflight.

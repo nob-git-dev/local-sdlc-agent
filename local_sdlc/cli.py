@@ -46,6 +46,7 @@ from .requirements import *
 from .evidence import *
 from .history import *
 from .stages import *
+from .action_gate import *
 from . import agent_runner as _agent_runner
 from . import phase_runner as _phase_runner
 from . import stage_runner as _stage_runner
@@ -224,6 +225,78 @@ def command_check_command(args: argparse.Namespace) -> int:
         print(f"BLOCKED: {reason}")
         return 2
     print("allowed")
+    return 0
+
+
+def command_cancel(args: argparse.Namespace) -> int:
+    run_dir = args.run_dir.expanduser().resolve()
+    state = request_cancel(run_dir, source="cli", reason=args.reason)
+    print(json.dumps(state, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_safety_status(args: argparse.Namespace) -> int:
+    run_dir = args.run_dir.expanduser().resolve()
+    pending = [
+        {**item, "run_dir": str(run_dir)}
+        for item in pending_safety_decisions(run_dir)
+    ]
+    blocked = [
+        {**item, "run_dir": str(run_dir)}
+        for item in blocked_safety_decisions(run_dir)
+    ]
+    for manifest_name in ("run.json", "run.partial.json"):
+        manifest_path = run_dir / manifest_name
+        if not manifest_path.exists():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, dict):
+            break
+        for field, target in (
+            ("pending_safety_decisions", pending),
+            ("blocked_safety_decisions", blocked),
+        ):
+            manifest_items = manifest.get(field)
+            if not isinstance(manifest_items, list):
+                continue
+            known = {
+                (str(item.get("run_dir") or ""), str(item.get("decision_id") or ""))
+                for item in target
+            }
+            for item in manifest_items:
+                if not isinstance(item, dict):
+                    continue
+                candidate = dict(item)
+                candidate.setdefault("run_dir", str(run_dir))
+                key = (str(candidate.get("run_dir") or ""), str(candidate.get("decision_id") or ""))
+                if key not in known:
+                    target.append(candidate)
+                    known.add(key)
+        break
+    payload = {
+        "run_dir": str(run_dir),
+        "pending": pending,
+        "blocked": blocked,
+        "decision_count": len(read_safety_decisions(run_dir)),
+        "approval_events": len(read_safety_approvals(run_dir)),
+        "action_gate_audit": action_gate_audit(run_dir),
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_approve(args: argparse.Namespace) -> int:
+    run_dir = args.run_dir.expanduser().resolve()
+    approval = request_safety_approval(
+        run_dir,
+        args.decision_id,
+        source="cli",
+        note=args.note,
+    )
+    print(json.dumps(approval, ensure_ascii=False, indent=2))
     return 0
 
 def _run_json_from_path(path: Path) -> Path:
@@ -609,7 +682,23 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--adaptive-rounds", type=int, default=2, help="extra functional rounds allowed when executable failure counts shrink")
     agent.add_argument("--root-cause-patch-rounds", type=int, default=1, help="extra root-cause patch rounds after repeated same functional failures")
     agent.add_argument("--run-dir", type=Path, default=None, help="directory for run documents")
+    agent.add_argument("--control-dir", action="append", type=Path, default=[], help=argparse.SUPPRESS)
     agent.set_defaults(func=command_agent)
+
+    cancel = sub.add_parser("cancel", help="persist cancellation for a run directory")
+    cancel.add_argument("--run-dir", type=Path, required=True)
+    cancel.add_argument("--reason", default="user_cancelled")
+    cancel.set_defaults(func=command_cancel)
+
+    safety_status = sub.add_parser("safety-status", help="show pending approvals and action-gate audit")
+    safety_status.add_argument("--run-dir", type=Path, required=True)
+    safety_status.set_defaults(func=command_safety_status)
+
+    approve = sub.add_parser("approve", help="approve one existing require_approval safety decision")
+    approve.add_argument("--run-dir", type=Path, required=True)
+    approve.add_argument("--decision-id", required=True)
+    approve.add_argument("--note", default="")
+    approve.set_defaults(func=command_approve)
 
     check = sub.add_parser("check-command", help="evaluate a shell command against local safety rules")
     check.add_argument("command")

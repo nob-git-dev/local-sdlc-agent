@@ -173,6 +173,20 @@ class AgentWebHandler(BaseHTTPRequestHandler):
                 stopped = self.registry.stop(job_id)
                 self._send_json({"stopped": stopped})
                 return
+            if path.startswith("/api/jobs/") and path.endswith("/approve"):
+                job_id = path.removeprefix("/api/jobs/").removesuffix("/approve").strip("/")
+                payload = self._read_json()
+                decision_id = str(payload.get("decision_id") or "").strip()
+                if not decision_id:
+                    raise RunnerError("decision_id is required")
+                approval = self.registry.approve(
+                    job_id,
+                    decision_id,
+                    str(payload.get("note") or ""),
+                    str(payload.get("run_dir") or ""),
+                )
+                self._send_json({"approval": approval})
+                return
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except RunnerError as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

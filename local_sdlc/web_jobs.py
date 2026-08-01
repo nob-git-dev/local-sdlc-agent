@@ -18,6 +18,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .control import request_cancel
+from .action_gate import begin_action
+from .safety import pending_safety_decisions, read_safety_decisions, request_safety_approval
 from .models import DEFAULT_BASE_URL, DEFAULT_MODEL, GENERATED_DIR, RunnerError
 
 
@@ -384,6 +386,47 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
         )
 
     streaming = manifest.get("streaming") if isinstance(manifest.get("streaming"), dict) else {}
+    pending_approvals: list[dict[str, object]] = []
+    if run_dir is not None:
+        pending_approvals.extend(
+            {**item, "run_dir": str(run_dir)}
+            for item in pending_safety_decisions(run_dir)
+        )
+    manifest_pending = manifest.get("pending_safety_decisions")
+    if isinstance(manifest_pending, list):
+        for item in manifest_pending:
+            if not isinstance(item, dict):
+                continue
+            candidate = dict(item)
+            candidate.setdefault("run_dir", str(run_dir) if run_dir is not None else "")
+            key = (str(candidate.get("run_dir") or ""), str(candidate.get("decision_id") or ""))
+            existing_keys = {
+                (str(existing.get("run_dir") or ""), str(existing.get("decision_id") or ""))
+                for existing in pending_approvals
+            }
+            if key not in existing_keys:
+                pending_approvals.append(candidate)
+    safety_decisions = read_safety_decisions(run_dir) if run_dir is not None else []
+    blocked_decisions = [item for item in safety_decisions if item.get("decision") == "block"]
+    manifest_blocked = manifest.get("blocked_safety_decisions")
+    if isinstance(manifest_blocked, list):
+        for item in manifest_blocked:
+            if not isinstance(item, dict):
+                continue
+            candidate = dict(item)
+            candidate.setdefault("run_dir", str(run_dir) if run_dir is not None else "")
+            key = (str(candidate.get("run_dir") or ""), str(candidate.get("decision_id") or ""))
+            existing_keys = {
+                (str(existing.get("run_dir") or ""), str(existing.get("decision_id") or ""))
+                for existing in blocked_decisions
+            }
+            if key not in existing_keys:
+                blocked_decisions.append(candidate)
+    safety_state = ""
+    if blocked_decisions:
+        safety_state = "SAFETY_BLOCKED"
+    elif pending_approvals:
+        safety_state = "APPROVAL_REQUIRED"
     return {
         "run_dir": str(run_dir) if run_dir is not None else "",
         "run_manifest": str(manifest_path) if manifest_path is not None else "",
@@ -395,6 +438,9 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
         "completed_rounds": manifest.get("completed_rounds"),
         "api_calls": manifest.get("api_calls"),
         "streaming_label": streaming.get("label", "") if isinstance(streaming, dict) else "",
+        "safety_state": safety_state,
+        "pending_safety_decisions": pending_approvals,
+        "blocked_safety_decisions": blocked_decisions[-5:],
         "artifacts": artifacts,
         "next_actions": next_actions,
         "output_log": str(output_log),
@@ -627,11 +673,26 @@ class JobRegistry:
         project = Path(project_text).expanduser().resolve() if project_text else self.config.project
         command_payload = normalize_web_job_payload(payload, project, job_id)
         built = build_cli_command(command_payload, self.config)
-        created_project = ensure_project_directory(built.cwd, self.config.project.parent)
-        created_spec = ensure_web_bootstrap_spec(built.cwd, command_payload, mode)
         log_dir = self.jobs_root / job_id
         log_dir.mkdir(parents=True, exist_ok=True)
         job = AgentJob(job_id, built, brief, mode, log_dir)
+        if not built.cwd.exists():
+            begin_action(
+                log_dir,
+                "web_project_directory_create",
+                action_type="project_create",
+                risk_class="project_write",
+            )
+        created_project = ensure_project_directory(built.cwd, self.config.project.parent)
+        spec_path = built.cwd / "SPEC.md"
+        if not spec_path.exists() and mode in {"agent", "run-stages"}:
+            begin_action(
+                log_dir,
+                "web_bootstrap_spec_write",
+                action_type="document_write",
+                risk_class="project_write",
+            )
+        created_spec = ensure_web_bootstrap_spec(built.cwd, command_payload, mode)
         if created_project:
             job.append_output(f"created_project_dir: {built.cwd}\n")
         if created_spec:
@@ -644,8 +705,16 @@ class JobRegistry:
         return job
 
     def _run_job(self, job: AgentJob) -> None:
-        job.mark("running")
         try:
+            run_dir = _infer_run_dir_from_job_id(job.command.cwd, job.log_dir)
+            begin_action(
+                job.log_dir,
+                "web_job_process_start",
+                action_type="process_start",
+                risk_class="generated_code_execution",
+                control_dirs=(run_dir,) if run_dir is not None else (),
+            )
+            job.mark("running")
             process = subprocess.Popen(
                 list(job.command.argv),
                 cwd=job.command.cwd,
@@ -668,8 +737,11 @@ class JobRegistry:
             else:
                 job.mark("failed", returncode)
         except Exception as exc:  # pragma: no cover - defensive process boundary
-            job.append_output(f"web runner error: {exc}\n")
-            job.mark("failed", 1)
+            if job.status == "stopped":
+                job.mark("stopped", job.returncode)
+            else:
+                job.append_output(f"web runner error: {exc}\n")
+                job.mark("failed", 1)
 
     def list_jobs(self) -> list[dict[str, object]]:
         with self._lock:
@@ -700,7 +772,7 @@ class JobRegistry:
 
     def stop(self, job_id: str) -> bool:
         job = self.get(job_id)
-        if not isinstance(job, AgentJob) or job.process is None or job.process.poll() is not None:
+        if not isinstance(job, AgentJob) or job.status in {"completed", "failed", "stopped"}:
             return False
         metadata = {"job_id": job.id, "mode": job.mode}
         request_cancel(job.log_dir, source="web", reason="user_stop", metadata=metadata)
@@ -711,8 +783,44 @@ class JobRegistry:
         if run_dir is not None:
             request_cancel(run_dir, source="web", reason="user_stop", metadata=metadata)
         job.mark("stopped")
-        if os.name == "posix":
-            os.killpg(os.getpgid(job.process.pid), signal.SIGTERM)
-        else:  # pragma: no cover - Windows fallback
-            job.process.terminate()
+        if job.process is not None and job.process.poll() is None:
+            if os.name == "posix":
+                os.killpg(os.getpgid(job.process.pid), signal.SIGTERM)
+            else:  # pragma: no cover - Windows fallback
+                job.process.terminate()
         return True
+
+    def approve(
+        self,
+        job_id: str,
+        decision_id: str,
+        note: str = "",
+        decision_run_dir: str = "",
+    ) -> dict[str, object]:
+        job = self.get(job_id)
+        if job is None:
+            raise RunnerError("job not found")
+        result = job.to_dict().get("result")
+        pending = result.get("pending_safety_decisions") if isinstance(result, dict) else None
+        candidates = [
+            item
+            for item in (pending if isinstance(pending, list) else [])
+            if isinstance(item, dict)
+            and item.get("decision_id") == decision_id
+            and (not decision_run_dir or item.get("run_dir") == decision_run_dir)
+        ]
+        if len(candidates) != 1:
+            raise RunnerError("approval target must match exactly one pending safety decision")
+        run_dir = Path(str(candidates[0].get("run_dir") or "")).expanduser().resolve()
+        root_text = str(result.get("run_dir") or "") if isinstance(result, dict) else ""
+        if not root_text:
+            raise RunnerError("job run directory is unavailable for approval")
+        job_run_dir = Path(root_text).expanduser().resolve()
+        if run_dir != job_run_dir and job_run_dir not in run_dir.parents:
+            raise RunnerError("approval target is outside the job run directory")
+        return request_safety_approval(
+            run_dir,
+            decision_id,
+            source="web",
+            note=note,
+        )

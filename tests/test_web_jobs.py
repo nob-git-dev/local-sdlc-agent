@@ -362,6 +362,205 @@ class WebJobsTest(LocalSDLCTestCase):
             self.assertEqual(result["artifacts"][0]["preview_url"], "/files?path=game.html")
             self.assertIn("continue_with_files", {action["type"] for action in result["next_actions"]})
 
+    def test_web_job_exposes_and_records_explicit_safety_approval(self):
+        from local_sdlc import web_server
+        from local_sdlc.web_jobs import JobRegistry
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            run_dir = project / ".sdlc-runner" / "runs" / "20260101-010203"
+            run_dir.mkdir(parents=True)
+            self.local_sdlc.run_checked_command(project, "docker ps", 5, run_dir)
+            decision_id = self.local_sdlc.read_safety_decisions(run_dir)[0]["decision_id"]
+            job_id = "20260101-010203-deadbeef"
+            job_dir = project / ".sdlc-runner" / "web" / "jobs" / job_id
+            job_dir.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "id": job_id,
+                        "mode": "agent",
+                        "brief": "risky check",
+                        "status": "failed",
+                        "returncode": 1,
+                        "started_at": "2026-01-01T01:02:03Z",
+                        "ended_at": "2026-01-01T01:02:04Z",
+                        "cwd": str(project),
+                        "command": "python3 local_sdlc.py agent check",
+                        "log_dir": str(job_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job_dir / "output.log").write_text(f"run_dir: {run_dir}\n", encoding="utf-8")
+            registry = JobRegistry(
+                web_server.WebConfig(
+                    host="127.0.0.1",
+                    port=0,
+                    project=project,
+                    entrypoint=ENTRYPOINT_PATH,
+                )
+            )
+
+            before = registry.get(job_id).to_dict()["result"]
+            approval = registry.approve(job_id, decision_id)
+            after = registry.get(job_id).to_dict()["result"]
+
+        self.assertEqual(before["safety_state"], "APPROVAL_REQUIRED")
+        self.assertEqual(before["pending_safety_decisions"][0]["decision_id"], decision_id)
+        self.assertEqual(approval["source"], "web")
+        self.assertEqual(after["pending_safety_decisions"], [])
+
+    def test_web_approval_rejects_decision_outside_job_run_directory(self):
+        from local_sdlc import web_server
+        from local_sdlc.web_jobs import JobRegistry
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            run_dir = project / ".sdlc-runner" / "runs" / "parent-run"
+            outside = project / "outside-run"
+            run_dir.mkdir(parents=True)
+            decision = self.local_sdlc.action_safety_decision(
+                "service_restart",
+                action_type="service_control",
+                risk_class="service_control",
+            )
+            persisted = self.local_sdlc.authorize_safety_decision(outside, decision)
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "pending_safety_decisions": [
+                            {**persisted, "run_dir": str(outside.resolve())}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            job_id = "20260101-010203-outside1"
+            job_dir = project / ".sdlc-runner" / "web" / "jobs" / job_id
+            job_dir.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "id": job_id,
+                        "mode": "run-stages",
+                        "status": "failed",
+                        "cwd": str(project),
+                        "command": "python3 local_sdlc.py run-stages test",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job_dir / "output.log").write_text(f"run_dir: {run_dir}\n", encoding="utf-8")
+            registry = JobRegistry(
+                web_server.WebConfig(
+                    host="127.0.0.1",
+                    port=0,
+                    project=project,
+                    entrypoint=ENTRYPOINT_PATH,
+                )
+            )
+
+            with self.assertRaises(self.local_sdlc.RunnerError):
+                registry.approve(
+                    job_id,
+                    str(persisted["decision_id"]),
+                    decision_run_dir=str(outside.resolve()),
+                )
+
+    def test_web_job_exposes_child_safety_blocked_state(self):
+        from local_sdlc import web_server
+        from local_sdlc.web_jobs import JobRegistry
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            run_dir = project / ".sdlc-runner" / "runs" / "parent-run"
+            child_dir = run_dir / "s01-child"
+            decision = self.local_sdlc.action_safety_decision(
+                "history_rewrite",
+                action_type="command",
+                risk_class="git_history_rewrite",
+                command="git reset --hard",
+            )
+            persisted = self.local_sdlc.authorize_safety_decision(child_dir, decision)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "blocked_safety_decisions": [
+                            {**persisted, "run_dir": str(child_dir.resolve()), "stage_id": "S01"}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            job_id = "20260101-010203-blocked1"
+            job_dir = project / ".sdlc-runner" / "web" / "jobs" / job_id
+            job_dir.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "id": job_id,
+                        "mode": "run-stages",
+                        "status": "failed",
+                        "cwd": str(project),
+                        "command": "python3 local_sdlc.py run-stages test",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job_dir / "output.log").write_text(f"run_dir: {run_dir}\n", encoding="utf-8")
+            registry = JobRegistry(
+                web_server.WebConfig(
+                    host="127.0.0.1",
+                    port=0,
+                    project=project,
+                    entrypoint=ENTRYPOINT_PATH,
+                )
+            )
+
+            result = registry.get(job_id).to_dict()["result"]
+
+        self.assertEqual(result["safety_state"], "SAFETY_BLOCKED")
+        self.assertEqual(result["blocked_safety_decisions"][0]["stage_id"], "S01")
+
+    def test_web_stop_before_process_start_is_absorbing(self):
+        from local_sdlc import web_server
+        from local_sdlc.web_jobs import AgentJob, BuiltCommand, JobRegistry
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            job_id = "20260101-010203-aabbccdd"
+            run_dir = project / ".sdlc-runner" / "runs" / job_id
+            run_dir.mkdir(parents=True)
+            registry = JobRegistry(
+                web_server.WebConfig(
+                    host="127.0.0.1",
+                    port=0,
+                    project=project,
+                    entrypoint=ENTRYPOINT_PATH,
+                )
+            )
+            log_dir = registry.jobs_root / job_id
+            log_dir.mkdir(parents=True)
+            job = AgentJob(
+                job_id,
+                BuiltCommand((sys.executable, "-c", "print('must not run')"), project, "hidden"),
+                "queued",
+                "agent",
+                log_dir,
+            )
+            registry.jobs[job_id] = job
+
+            stopped = registry.stop(job_id)
+            log_cancelled = self.local_sdlc.cancel_requested(log_dir)
+            run_cancelled = self.local_sdlc.cancel_requested(run_dir)
+
+        self.assertTrue(stopped)
+        self.assertEqual(job.status, "stopped")
+        self.assertTrue(log_cancelled)
+        self.assertTrue(run_cancelled)
+
     def test_web_running_job_summary_reads_partial_run_progress_without_stdout(self):
         from local_sdlc.web_jobs import summarize_job_result
 

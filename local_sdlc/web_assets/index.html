@@ -859,12 +859,66 @@
       if (job.result.progress) resultBits.push(job.result.progress);
       if (job.result.final_verdict) resultBits.push("verdict: " + job.result.final_verdict);
       if (job.result.failure_type) resultBits.push("failure: " + job.result.failure_type);
+      if (job.result.safety_state) resultBits.push("safety: " + job.result.safety_state);
       if (job.result.current_round) resultBits.push("round: " + job.result.current_round);
       if (job.result.api_calls !== null && job.result.api_calls !== undefined) resultBits.push("api_calls: " + job.result.api_calls);
       if (job.result.partial_manifest) resultBits.push("partial: 実行中の途中結果です");
       if (job.result.run_dir) resultBits.push("run_dir: " + job.result.run_dir);
       meta.textContent = resultBits.length ? resultBits.join("\n") : "まだ実行準備中です。成果物が作られるとここに表示します。";
       panel.appendChild(meta);
+
+      const pendingSafety = job.result.pending_safety_decisions || [];
+      if (pendingSafety.length) {
+        const safetyList = document.createElement("div");
+        safetyList.className = "artifact-list";
+        for (const decision of pendingSafety) {
+          const row = document.createElement("div");
+          row.className = "artifact-row";
+          const main = document.createElement("div");
+          main.className = "artifact-main";
+          const name = document.createElement("strong");
+          name.textContent = `${decision.decision_id}: 人間の承認が必要`;
+          const detail = document.createElement("small");
+          detail.textContent = `${decision.risk_class} / ${decision.reason}`;
+          main.append(name, detail);
+          const approve = document.createElement("button");
+          approve.className = "mini-button";
+          approve.type = "button";
+          approve.textContent = "1回だけ承認";
+          approve.onclick = async () => {
+            await api(`/api/jobs/${job.id}/approve`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ decision_id: decision.decision_id, run_dir: decision.run_dir || "" })
+            });
+            el("status").textContent = "承認を記録しました。再実行時に1回だけ有効です。";
+            await pollJob();
+          };
+          row.append(main, approve);
+          safetyList.appendChild(row);
+        }
+        panel.appendChild(safetyList);
+      }
+
+      const blockedSafety = job.result.blocked_safety_decisions || [];
+      if (blockedSafety.length) {
+        const safetyList = document.createElement("div");
+        safetyList.className = "artifact-list";
+        for (const decision of blockedSafety) {
+          const row = document.createElement("div");
+          row.className = "artifact-row";
+          const main = document.createElement("div");
+          main.className = "artifact-main";
+          const name = document.createElement("strong");
+          name.textContent = `${decision.decision_id}: 安全制御により停止`;
+          const detail = document.createElement("small");
+          detail.textContent = `${decision.risk_class} / ${decision.reason}`;
+          main.append(name, detail);
+          row.appendChild(main);
+          safetyList.appendChild(row);
+        }
+        panel.appendChild(safetyList);
+      }
 
       const artifacts = job.result.artifacts || [];
       if (artifacts.length) {

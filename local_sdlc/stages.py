@@ -362,6 +362,8 @@ def build_stage_agent_args(
 
 def read_stage_agent_manifest(stage: StageWorkItem, run_dir: Path, exit_code: int, base: Path) -> StageRunSummary:
     manifest_path = run_dir / "run.json"
+    if not manifest_path.exists():
+        manifest_path = run_dir / "run.partial.json"
     manifest: dict[str, object] = {}
     if manifest_path.exists():
         try:

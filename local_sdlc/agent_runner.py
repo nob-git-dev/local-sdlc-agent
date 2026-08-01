@@ -7,7 +7,7 @@ import json
 import re
 import textwrap
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .models import *
 from .utils import *
@@ -34,6 +34,7 @@ from .policy_triage import (
     triage_allows_test_harness_edit,
     triage_string_list,
 )
+from .action_gate import *
 
 
 def attach_regression_memory(
@@ -99,7 +100,17 @@ def command_agent(args: argparse.Namespace) -> int:
     else:
         run_dir = make_run_dir(original_project, args.run_dir)
 
-    record_work_start(run_dir, "agent_setup")
+    control_dirs = tuple(
+        Path(raw).resolve()
+        for raw in (getattr(args, "control_dir", []) or [])
+    )
+    begin_action(
+        run_dir,
+        "agent_setup",
+        action_type="orchestration",
+        risk_class="read_only",
+        control_dirs=control_dirs,
+    )
 
     resume_worktree_source: Path | None = None
     if args.resume_worktree_path:
@@ -118,6 +129,14 @@ def command_agent(args: argparse.Namespace) -> int:
 
     worktree_path: Path | None = None
     if args.worktree_mode == "copy":
+        begin_action(
+            run_dir,
+            "worktree_create",
+            action_type="worktree_create",
+            risk_class="project_write",
+            metadata={"isolated": True},
+            control_dirs=control_dirs,
+        )
         worktree_path = create_copy_worktree(resume_worktree_source or original_project)
         project = worktree_path
 
@@ -200,8 +219,21 @@ def command_agent(args: argparse.Namespace) -> int:
                 )
             )
 
-    def guard_action(action: str) -> None:
-        record_work_start(run_dir, action)
+    def guard_action(
+        action: str,
+        *,
+        action_type: str = "orchestration",
+        risk_class: str = "read_only",
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        begin_action(
+            run_dir,
+            action,
+            action_type=action_type,
+            risk_class=risk_class,
+            metadata=metadata,
+            control_dirs=control_dirs,
+        )
 
     def write_partial_manifest(status: str, extra: dict[str, object] | None = None) -> None:
         acceptance_matrix = build_acceptance_matrix(acceptance_criteria, evidence_records)
@@ -273,6 +305,11 @@ def command_agent(args: argparse.Namespace) -> int:
             "progress_event_count": len(read_progress_events(run_dir)),
             "safety_decisions_log": display_path(safety_decisions_file_path(run_dir), original_project),
             "safety_decision_count": len(read_safety_decisions(run_dir)),
+            "safety_approvals_log": display_path(safety_approvals_file_path(run_dir), original_project),
+            "safety_approval_event_count": len(read_safety_approvals(run_dir)),
+            "pending_safety_decisions": pending_safety_decisions(run_dir),
+            "blocked_safety_decisions": blocked_safety_decisions(run_dir),
+            "action_gate_audit": action_gate_audit(run_dir),
             "documents": [display_path(path, original_project) for path in written],
         }
         if latest_stream_status:
@@ -284,6 +321,27 @@ def command_agent(args: argparse.Namespace) -> int:
         if extra:
             partial_doc.update(extra)
         write_run_document(run_dir, "run.partial.json", json.dumps(partial_doc, ensure_ascii=False, indent=2))
+
+    def stop_for_command_safety_decision(current_round: int | None = None) -> None:
+        pending = pending_safety_decisions(run_dir)
+        blocked = blocked_safety_decisions(run_dir)
+        if not pending and not blocked:
+            return
+        status = "safety_blocked" if blocked else "approval_required"
+        extra: dict[str, object] = {
+            "final_verdict": status,
+            "final_failure_type": status,
+            "pending_safety_decisions": pending,
+            "blocked_safety_decisions": blocked,
+        }
+        if current_round is not None:
+            extra["current_round"] = current_round
+        write_partial_manifest(status, extra)
+        decision = (blocked or pending)[-1]
+        raise RunnerError(
+            f"{status} before command execution: "
+            + str(decision.get("decision_id") or "unknown")
+        )
 
     def record_transition(failure_type: str, round_index: int, evidence: str = "") -> FailureTransition:
         transition = transition_for_failure(failure_type)
@@ -471,7 +529,7 @@ def command_agent(args: argparse.Namespace) -> int:
             current_round=round_index,
         )
         try:
-            guard_action("failure_analysis_api_call")
+            guard_action("failure_analysis_api_call", action_type="api_call", risk_class="read_only")
             analysis_doc = run_skill_call(
                 client=client,
                 skill=judge_skill,
@@ -602,7 +660,7 @@ def command_agent(args: argparse.Namespace) -> int:
             current_round=round_index,
         )
         try:
-            guard_action("patch_planner_api_call")
+            guard_action("patch_planner_api_call", action_type="api_call", risk_class="read_only")
             planner_doc = run_skill_call(
                 client=client,
                 skill=judge_skill,
@@ -721,7 +779,7 @@ def command_agent(args: argparse.Namespace) -> int:
             write_partial_manifest("project_policy_triage_written", {"current_round": round_index})
             return record
         try:
-            guard_action("project_policy_triage_api_call")
+            guard_action("project_policy_triage_api_call", action_type="api_call", risk_class="read_only")
             triage_doc = run_skill_call(
                 client=client,
                 skill=judge_skill,
@@ -802,7 +860,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 }
             )
             write_partial_manifest("pm_streaming")
-        guard_action("pm_api_call")
+        guard_action("pm_api_call", action_type="api_call", risk_class="read_only")
         pm_doc = run_skill_call(
             client=client,
             skill=pm_skill,
@@ -827,7 +885,7 @@ def command_agent(args: argparse.Namespace) -> int:
     if domain_modeling_state.get("run"):
         route = recommended_sdlc_phases(args.brief, spec)
         domain_skill = required_skill(skills, str(domain_modeling_state["skill"]))
-        guard_action("domain_modeling_api_call")
+        guard_action("domain_modeling_api_call", action_type="api_call", risk_class="read_only")
         domain_doc = run_skill_call(
             client=client,
             skill=domain_skill,
@@ -879,7 +937,7 @@ def command_agent(args: argparse.Namespace) -> int:
     initial_checks: list[tuple[str, str, bool]] = []
     initial_command_docs: list[tuple[str, str]] = []
     if args.apply and html_targets:
-        guard_action("initial_html_smoke")
+        guard_action("initial_html_smoke", action_type="harness", risk_class="generated_code_execution")
         for index, (doc, ok) in enumerate(
             run_html_smoke_checks(project, html_targets, run_dir, args.command_timeout, tetris_checks=tetris_checks),
             start=1,
@@ -961,7 +1019,7 @@ def command_agent(args: argparse.Namespace) -> int:
 
     if args.apply and args.precheck:
         if redis_checks:
-            guard_action("initial_redis_smoke")
+            guard_action("initial_redis_smoke", action_type="harness", risk_class="generated_code_execution")
             doc, ok = run_redis_smoke_check(project, run_dir, args.command_timeout)
             path = write_run_document(run_dir, "00-initial-redis-smoke.md", doc)
             written.append(path)
@@ -973,8 +1031,14 @@ def command_agent(args: argparse.Namespace) -> int:
             evidence_records.append(evidence)
 
         for index, command in enumerate(test_commands, start=1):
-            guard_action(f"initial_test_command_{index}")
-            doc, ok = run_checked_command(project, command, args.command_timeout, run_dir)
+            doc, ok = run_checked_command(
+                project,
+                command,
+                args.command_timeout,
+                run_dir,
+                action=f"initial_test_command_{index}",
+                control_dirs=control_dirs,
+            )
             path = write_run_document(run_dir, f"00-initial-command-{index:02d}.md", doc)
             written.append(path)
             documents.append((f"Initial command {index}", doc))
@@ -983,6 +1047,7 @@ def command_agent(args: argparse.Namespace) -> int:
             evidence = evidence_from_command_document("command", f"Initial command {index}", ok, path, original_project, doc)
             evidence["id"] = f"E{len(evidence_records) + 1:02d}"
             evidence_records.append(evidence)
+            stop_for_command_safety_decision()
 
         if initial_command_docs and not all(ok for _name, _doc, ok in initial_checks):
             summary_doc = observation_summary_document(0, initial_command_docs)
@@ -1105,6 +1170,11 @@ def command_agent(args: argparse.Namespace) -> int:
             "progress_event_count": len(read_progress_events(run_dir)),
             "safety_decisions_log": display_path(safety_decisions_file_path(run_dir), original_project),
             "safety_decision_count": len(read_safety_decisions(run_dir)),
+            "safety_approvals_log": display_path(safety_approvals_file_path(run_dir), original_project),
+            "safety_approval_event_count": len(read_safety_approvals(run_dir)),
+            "pending_safety_decisions": pending_safety_decisions(run_dir),
+            "blocked_safety_decisions": blocked_safety_decisions(run_dir),
+            "action_gate_audit": action_gate_audit(run_dir),
             "documents": [display_path(path, original_project) for path in written],
         }
         attach_regression_memory(manifest_doc, run_dir, original_project, written)
@@ -1760,7 +1830,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 current_round=round_index,
             )
             try:
-                guard_action("root_cause_analysis_api_call")
+                guard_action("root_cause_analysis_api_call", action_type="api_call", risk_class="read_only")
                 analysis_doc = run_skill_call(
                     client=client,
                     skill=judge_skill,
@@ -2108,7 +2178,7 @@ def command_agent(args: argparse.Namespace) -> int:
             write_partial_manifest("deterministic_repair_selected", {"current_round": round_index})
         else:
             try:
-                guard_action("coder_api_call")
+                guard_action("coder_api_call", action_type="api_call", risk_class="read_only")
                 coder_doc = run_skill_call(
                     client=client,
                     skill=coder_skill,
@@ -2460,7 +2530,12 @@ def command_agent(args: argparse.Namespace) -> int:
                     artifact_summaries.append(f"- path: {artifact.path}; mode: {artifact.mode}; bytes: {len(artifact.content)}")
                 documents.append((f"File artifacts round {round_index}", "\n".join(artifact_summaries)))
             if args.apply:
-                guard_action("artifact_apply")
+                guard_action(
+                    "artifact_apply",
+                    action_type="artifact_apply",
+                    risk_class="project_write",
+                    metadata={"isolated": args.worktree_mode == "copy"},
+                )
                 noop_replacements: list[SearchReplaceArtifact] = []
                 if replacements:
                     replacements, noop_replacements = partition_noop_replacements(replacements)
@@ -2558,7 +2633,12 @@ def command_agent(args: argparse.Namespace) -> int:
             patch_changed_paths = changed_paths_from_unified_diff(patch)
 
             if args.apply:
-                guard_action("patch_apply")
+                guard_action(
+                    "patch_apply",
+                    action_type="artifact_apply",
+                    risk_class="project_write",
+                    metadata={"isolated": args.worktree_mode == "copy"},
+                )
                 try:
                     apply_patch_file(project, patch_path)
                     missing_after_apply = missing_changed_paths_after_patch(project, patch_changed_paths)
@@ -2608,7 +2688,7 @@ def command_agent(args: argparse.Namespace) -> int:
         command_docs: list[tuple[str, str]] = []
         command_ok = True
         if args.apply:
-            guard_action("round_html_smoke")
+            guard_action("round_html_smoke", action_type="harness", risk_class="generated_code_execution")
             for index, (doc, ok) in enumerate(
                 run_html_smoke_checks(project, html_targets, run_dir, args.command_timeout, tetris_checks=tetris_checks),
                 start=1,
@@ -2622,7 +2702,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 command_ok = command_ok and ok
 
             if redis_checks:
-                guard_action("round_redis_smoke")
+                guard_action("round_redis_smoke", action_type="harness", risk_class="generated_code_execution")
                 doc, ok = run_redis_smoke_check(project, run_dir, args.command_timeout)
                 path = write_run_document(run_dir, f"05-r{round_index:02d}-redis-smoke.md", doc)
                 written.append(path)
@@ -2643,8 +2723,14 @@ def command_agent(args: argparse.Namespace) -> int:
                 command_ok = command_ok and ok
 
             for index, command in enumerate(test_commands, start=1):
-                guard_action(f"round_test_command_{index}")
-                doc, ok = run_checked_command(project, command, args.command_timeout, run_dir)
+                doc, ok = run_checked_command(
+                    project,
+                    command,
+                    args.command_timeout,
+                    run_dir,
+                    action=f"round_test_command_{index}",
+                    control_dirs=control_dirs,
+                )
                 path = write_run_document(run_dir, f"05-r{round_index:02d}-command-{index:02d}.md", doc)
                 written.append(path)
                 command_docs.append((f"Command result round {round_index}.{index}", doc))
@@ -2652,6 +2738,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 evidence["id"] = f"E{len(evidence_records) + 1:02d}"
                 evidence_records.append(evidence)
                 command_ok = command_ok and ok
+                stop_for_command_safety_decision(round_index)
 
             acceptance_ok = record_acceptance_gate(
                 f"round {round_index}",
@@ -2958,7 +3045,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 }
             )
             write_partial_manifest("judge_streaming", {"current_round": round_index})
-        guard_action("judge_api_call")
+        guard_action("judge_api_call", action_type="api_call", risk_class="read_only")
         judge_doc = run_skill_call(
             client=client,
             skill=judge_skill,
@@ -3006,7 +3093,12 @@ def command_agent(args: argparse.Namespace) -> int:
             break
 
     if final_verdict == "approved" and args.apply and args.worktree_mode == "copy":
-        guard_action("copy_back")
+        guard_action(
+            "copy_back",
+            action_type="copy_back",
+            risk_class="project_write",
+            metadata={"approved_paths": unique_ordered(changed_paths)},
+        )
         copied_back = copy_allowed_paths_back(project, original_project, unique_ordered(changed_paths))
 
     final_acceptance_matrix = build_acceptance_matrix(acceptance_criteria, evidence_records)
@@ -3079,6 +3171,11 @@ def command_agent(args: argparse.Namespace) -> int:
         "progress_event_count": len(read_progress_events(run_dir)),
         "safety_decisions_log": display_path(safety_decisions_file_path(run_dir), original_project),
         "safety_decision_count": len(read_safety_decisions(run_dir)),
+        "safety_approvals_log": display_path(safety_approvals_file_path(run_dir), original_project),
+        "safety_approval_event_count": len(read_safety_approvals(run_dir)),
+        "pending_safety_decisions": pending_safety_decisions(run_dir),
+        "blocked_safety_decisions": blocked_safety_decisions(run_dir),
+        "action_gate_audit": action_gate_audit(run_dir),
         "documents": [display_path(path, original_project) for path in written],
     }
     attach_regression_memory(manifest_doc, run_dir, original_project, written)

@@ -300,6 +300,182 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertEqual(calls, [])
         self.assertEqual(self.local_sdlc.work_starts_after_cancel(run_dir), [])
 
+    def test_run_stages_cancel_after_stage_prevents_final_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Mini SQLite Engine\n")
+            run_dir = project / "run"
+            marker = project / "must-not-run.txt"
+
+            def fake_command_agent(stage_args):
+                stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+                (stage_args.run_dir / "run.json").write_text(
+                    json.dumps({"api_calls": 0, "final_verdict": "approved"}),
+                    encoding="utf-8",
+                )
+                self.local_sdlc.request_cancel(run_dir, source="test", reason="before_final_command")
+                return 0
+
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "cancel before final",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--from-stage",
+                    "S01",
+                    "--to-stage",
+                    "S01",
+                    "--apply",
+                    "--test-command",
+                    f"{sys.executable} -c \"from pathlib import Path; Path('must-not-run.txt').write_text('bad')\"",
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                with self.assertRaises(self.local_sdlc.RunnerError):
+                    self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.local_sdlc.work_starts_after_cancel(run_dir), [])
+
+    def test_run_stages_propagates_child_approval_required_to_parent_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Mini SQLite Engine\n")
+            run_dir = project / "run"
+
+            def fake_command_agent(stage_args):
+                stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+                decision = self.local_sdlc.action_safety_decision(
+                    action="initial_test_command_1",
+                    action_type="command",
+                    risk_class="docker_control",
+                    command="docker ps",
+                )
+                persisted = self.local_sdlc.authorize_safety_decision(stage_args.run_dir, decision)
+                (stage_args.run_dir / "run.partial.json").write_text(
+                    json.dumps(
+                        {
+                            "api_calls": 0,
+                            "final_verdict": "approval_required",
+                            "final_failure_type": "approval_required",
+                            "pending_safety_decisions": [persisted],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                raise self.local_sdlc.RunnerError("approval required")
+
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "pause for safety approval",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--from-stage",
+                    "S01",
+                    "--to-stage",
+                    "S01",
+                    "--apply",
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 1)
+        self.assertEqual(manifest["status"], "approval_required")
+        self.assertEqual(manifest["completed_stages"][0]["final_verdict"], "approval_required")
+        self.assertEqual(len(manifest["pending_safety_decisions"]), 1)
+        self.assertEqual(manifest["pending_safety_decisions"][0]["stage_id"], "S01")
+        self.assertEqual(
+            manifest["pending_safety_decisions"][0]["run_dir"],
+            str((run_dir / "s01-core-errors-and-result-objects").resolve()),
+        )
+
+    def test_run_stages_propagates_child_safety_blocked_to_parent_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Mini SQLite Engine\n")
+            run_dir = project / "run"
+
+            def fake_command_agent(stage_args):
+                decision = self.local_sdlc.action_safety_decision(
+                    "initial_test_command_1",
+                    action_type="command",
+                    risk_class="git_history_rewrite",
+                    command="git reset --hard",
+                )
+                persisted = self.local_sdlc.authorize_safety_decision(stage_args.run_dir, decision)
+                (stage_args.run_dir / "run.partial.json").write_text(
+                    json.dumps(
+                        {
+                            "api_calls": 0,
+                            "final_verdict": "safety_blocked",
+                            "blocked_safety_decisions": [persisted],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                raise self.local_sdlc.RunnerError("safety blocked")
+
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "stop for safety block",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--from-stage",
+                    "S01",
+                    "--to-stage",
+                    "S01",
+                    "--apply",
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 1)
+        self.assertEqual(manifest["status"], "safety_blocked")
+        self.assertEqual(manifest["completed_stages"][0]["final_verdict"], "safety_blocked")
+        self.assertEqual(manifest["blocked_safety_decisions"][0]["stage_id"], "S01")
+
     def test_run_stages_executes_each_stage_as_agent_run(self):
         calls = []
         outputs = [

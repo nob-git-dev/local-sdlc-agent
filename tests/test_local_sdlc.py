@@ -6776,9 +6776,11 @@ index 0000000..45b983b
         self.assertEqual(len(calls), 3)
         self.assertEqual(hello_text, "hi\n")
         self.assertEqual(manifest["final_verdict"], "approved")
-        self.assertEqual(manifest["safety_decision_count"], 1)
+        self.assertEqual(manifest["safety_decision_count"], len(safety_decisions))
+        self.assertGreater(manifest["safety_decision_count"], 1)
         self.assertTrue(manifest["safety_decisions_log"].endswith("safety_decisions.jsonl"))
-        self.assertEqual(safety_decisions[0]["decision"], "allow")
+        self.assertTrue(all(item["decision"] in {"allow", "allow_in_worktree"} for item in safety_decisions))
+        self.assertEqual(manifest["action_gate_audit"]["status"], "pass")
         self.assertTrue(any(path.endswith("05-r01-command-01.md") for path in manifest["documents"]))
 
     def test_agent_applies_multiple_file_artifacts(self):

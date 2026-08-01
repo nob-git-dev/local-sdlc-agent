@@ -132,11 +132,11 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] `--config-file` で任意の設定ファイルを指定でき、相対パスは `--project` から解決される
 - [x] CLI引数は設定ファイルのAPI設定を上書きできる
 - [x] Web UI は設定ファイルを子プロセスへ引き継ぎ、画面で入力されたAPIキーをコマンド表示やジョブログへ露出しない
-- [ ] P01: cancel 後、新しい API call / command / resume / retry / stage split / copy back が開始されない
+- [x] P01: cancel 後、新しい API call / command / resume / retry / stage split / copy back が開始されない
 - [x] P01a: `cancel.json` を run_dir に永続化でき、cancel 済み run_dir の `agent --resume` は LLM API call を開始せず拒否する
 - [x] P01b: work-start を `progress.jsonl` に append-only 記録し、cancel sequence より後に work-start が存在しないことを機械的に検査できる
 - [x] P01c: cancel 済み `run-stages` は stage agent call を開始せず拒否する
-- [ ] P02: 危険 action は人間承認なしに実行されず、`SafetyDecision` として `require_approval` または `block` が記録される
+- [x] P02: 危険 action は人間承認なしに実行されず、`SafetyDecision` として `require_approval` または `block` が記録される
 - [x] P02a: command action は実行前に `SafetyDecision` を記録し、危険コマンドは `require_approval` または `block` として実行しない
 - [ ] P03: progress vector が一定時間変化しない場合、goal または stage が `STALLED` に遷移する
 - [ ] P04: `STALLED` 後、許可された recovery が存在する場合は `RECOVERY_PLANNED` を記録し、resume / retry / split / profile switch のいずれかへ遷移できる
@@ -344,6 +344,8 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | work-start progress event を記録し、cancel 後の work-start を検出できる | `test_work_start_progress_is_blocked_after_cancel` | PASS |
 | cancel 済み `run-stages` が stage agent call を開始しない | `test_run_stages_refuses_cancelled_run_before_stage_agent_call` | PASS |
 | command action の SafetyDecision を実行前に記録し、approval-required / blocked command を停止する | `test_run_checked_command_records_allowed_safety_decision`, `test_run_checked_command_records_approval_required_safety_decision`, `test_run_checked_command_records_blocked_safety_decision`, `test_run_checked_command_requires_approval_for_risky_class_without_legacy_block_reason`, `test_agent_applies_patch_and_runs_test_command` | PASS |
+| P01: Action Gate が cancel と work-start を直列化し、親 cancel を子 stage に伝播し、API / command / resume / retry / stage split / artifact apply / copy back の開始を拒否する | `test_cancel_is_absorbing_for_every_autonomous_action_kind`, `test_parent_cancel_blocks_child_stage_action_and_mirrors_prior_work`, `test_cancel_and_action_start_are_serialized`, `test_cancel_after_coder_output_prevents_artifact_apply`, `test_cancel_after_isolated_test_prevents_copy_back`, `test_run_stages_cancel_after_stage_prevents_final_command`, `test_web_stop_before_process_start_is_absorbing` | PASS |
+| P02: 全 action の SafetyDecision が work-start より先に永続化され、危険 action は block または一回限りの人間承認待ちとなり、子 stage の承認待ち / block も親 manifest / CLI / Web に伝播する | `test_action_gate_records_safety_before_work_and_audits_cleanly`, `test_human_approval_is_exact_one_time_and_audited`, `test_block_decision_cannot_be_human_approved`, `test_llm_cannot_be_an_approval_source`, `test_unknown_risk_class_fails_closed_to_human_approval`, `test_agent_precheck_stops_at_approval_required_without_coder_retry`, `test_agent_precheck_stops_at_safety_blocked_without_coder_retry`, `test_run_stages_propagates_child_approval_required_to_parent_manifest`, `test_run_stages_propagates_child_safety_blocked_to_parent_manifest`, `test_web_job_exposes_and_records_explicit_safety_approval`, `test_web_job_exposes_child_safety_blocked_state`, `test_web_approval_rejects_decision_outside_job_run_directory` | PASS |
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 | S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |

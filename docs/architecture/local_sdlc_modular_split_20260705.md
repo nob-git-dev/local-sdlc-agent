@@ -19,6 +19,9 @@
 | `local_sdlc/python_project_analysis.py` | Python project symbol, class-owner, and test-focus inference helpers |
 | `local_sdlc/artifacts.py` | backward-compatible facade for artifact-related public functions |
 | `local_sdlc/verification.py` | command execution, command result documents, smoke checks, evidence helpers |
+| `local_sdlc/control.py` | persistent cancellation token, locked progress events, parent/child control scope |
+| `local_sdlc/safety.py` | action risk classification, persisted decisions, one-time human approval |
+| `local_sdlc/action_gate.py` | common cancel/safety/work-start boundary and mechanical audit |
 | `local_sdlc/stages.py` | deterministic stage queue, stage-specific paths/tests, acceptance summaries |
 | `local_sdlc/stage_runner.py` | `stage-plan` and `run-stages` command execution |
 | `local_sdlc/routing.py` | supervisor task classification, phase routing, judge approval parsing |

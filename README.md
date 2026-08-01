@@ -110,6 +110,22 @@ CLI と同じ strict validation で止めます。
 python3 -m local_sdlc web --host 127.0.0.1 --port 8765
 ```
 
+実行中の処理は Web の停止ボタン、または run directory を指定した CLI で停止できます。停止状態は
+`cancel.json` に残るため、同じ実行の resume / retry / stage / API call / command / copy back は再開しません。
+
+```bash
+python3 local_sdlc.py cancel --run-dir .sdlc-runner/runs/<run-id> --reason user_stop
+```
+
+危険な操作は自動実行されず、Web に「人間の承認が必要」と表示されます。CLI では状態を確認し、表示された
+`run_dir` と `decision_id` に対して一回だけ承認できます。承認は同じ操作の次回試行で消費され、LLM は
+承認元になれません。`block` 判定は人間承認でも解除できません。
+
+```bash
+python3 local_sdlc.py safety-status --run-dir .sdlc-runner/runs/<run-id>
+python3 local_sdlc.py approve --run-dir <表示された-run_dir> --decision-id D000001 --note "内容を確認済み"
+```
+
 Qwen / Ornith などのモデル差し替えは、散在する個別 flag ではなく `--model-profile` と
 `--api-profile FUNCTION:key=value` で管理します。
 

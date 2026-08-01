@@ -16,6 +16,9 @@ from .verification import *
 from .artifacts import *
 from .run_state import *
 from .stages import *
+from .control import *
+from .safety import *
+from .action_gate import *
 
 
 def command_supervisor(args: argparse.Namespace) -> int:
@@ -42,6 +45,7 @@ def command_supervisor(args: argparse.Namespace) -> int:
 
     client = LocalLLMClient(build_config(args))
     run_dir = make_run_dir(project, args.run_dir)
+    begin_action(run_dir, "supervisor_setup", action_type="orchestration", risk_class="read_only")
     written: list[Path] = []
     documents: list[tuple[str, str]] = []
     api_calls = 0
@@ -63,6 +67,7 @@ def command_supervisor(args: argparse.Namespace) -> int:
         gate that must block execution.
         """
     ).strip()
+    begin_action(run_dir, "route_task_api_call", action_type="api_call", risk_class="read_only")
     supervisor_doc = run_skill_call(
         client=client,
         skill=supervisor_skill,
@@ -88,6 +93,12 @@ def command_supervisor(args: argparse.Namespace) -> int:
         file_context = collect_file_context(project, args.include, args.max_context_chars) if args.include else ""
         for index, phase in enumerate(selected_phases, start=1):
             skill = required_skill(skills, phase)
+            begin_action(
+                run_dir,
+                f"phase_{phase}_api_call",
+                action_type="api_call",
+                risk_class="read_only",
+            )
             output = run_skill_call(
                 client=client,
                 skill=skill,
@@ -112,8 +123,20 @@ def command_supervisor(args: argparse.Namespace) -> int:
             if phase == "spec":
                 spec = output
                 if args.apply_spec:
+                    begin_action(
+                        run_dir,
+                        "apply_spec",
+                        action_type="document_write",
+                        risk_class="project_write",
+                    )
                     spec_path.write_text(output.rstrip() + "\n", encoding="utf-8")
             elif args.append_phase_output:
+                begin_action(
+                    run_dir,
+                    f"append_{phase}_to_spec",
+                    action_type="document_write",
+                    risk_class="project_write",
+                )
                 append_to_spec(spec_path, phase, output)
 
     manifest_doc = {
@@ -128,6 +151,9 @@ def command_supervisor(args: argparse.Namespace) -> int:
         "api_calls": api_calls,
         "llm_settings": llm_settings_manifest(client),
         "reasoning_records": llm_reasoning_manifest(client),
+        "action_gate_audit": action_gate_audit(run_dir),
+        "pending_safety_decisions": pending_safety_decisions(run_dir),
+        "blocked_safety_decisions": blocked_safety_decisions(run_dir),
         "documents": [display_path(path, project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
@@ -153,6 +179,7 @@ def command_supervise(args: argparse.Namespace) -> int:
 
     client = LocalLLMClient(build_config(args))
     run_dir = make_run_dir(project, args.run_dir)
+    begin_action(run_dir, "supervise_setup", action_type="orchestration", risk_class="read_only")
     manifest = project_manifest(project)
     documents: list[tuple[str, str]] = []
     written: list[Path] = []
@@ -170,6 +197,7 @@ def command_supervise(args: argparse.Namespace) -> int:
             {args.brief}
             """
         ).strip()
+        begin_action(run_dir, "spec_api_call", action_type="api_call", risk_class="read_only")
         spec_draft = run_skill_call(
             client=client,
             skill=skill,
@@ -186,6 +214,12 @@ def command_supervise(args: argparse.Namespace) -> int:
         documents.append(("SPEC draft", spec_draft))
         spec = spec_draft
         if args.apply_spec:
+            begin_action(
+                run_dir,
+                "apply_spec",
+                action_type="document_write",
+                risk_class="project_write",
+            )
             spec_path.write_text(spec_draft.rstrip() + "\n", encoding="utf-8")
 
     if "pm" in steps:
@@ -210,6 +244,7 @@ def command_supervise(args: argparse.Namespace) -> int:
             Do not write implementation code.
             """
         ).strip()
+        begin_action(run_dir, "pm_api_call", action_type="api_call", risk_class="read_only")
         pm_doc = run_skill_call(
             client=client,
             skill=skill,
@@ -287,6 +322,12 @@ def command_supervise(args: argparse.Namespace) -> int:
                 patch-only artifact.
                 """
             ).strip()
+            begin_action(
+                run_dir,
+                f"coder_round_{round_index}_api_call",
+                action_type="api_call",
+                risk_class="read_only",
+            )
             coder_doc = run_skill_call(
                 client=client,
                 skill=coder_skill,
@@ -328,6 +369,12 @@ def command_supervise(args: argparse.Namespace) -> int:
                 and list concrete required fixes.
                 """
             ).strip()
+            begin_action(
+                run_dir,
+                f"judge_round_{round_index}_api_call",
+                action_type="api_call",
+                risk_class="read_only",
+            )
             judge_doc = run_skill_call(
                 client=client,
                 skill=judge_skill,
@@ -362,6 +409,9 @@ def command_supervise(args: argparse.Namespace) -> int:
         "api_calls": call_count,
         "llm_settings": llm_settings_manifest(client),
         "reasoning_records": llm_reasoning_manifest(client),
+        "action_gate_audit": action_gate_audit(run_dir),
+        "pending_safety_decisions": pending_safety_decisions(run_dir),
+        "blocked_safety_decisions": blocked_safety_decisions(run_dir),
         "documents": [display_path(path, project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))

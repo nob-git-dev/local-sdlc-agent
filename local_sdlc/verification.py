@@ -17,6 +17,7 @@ from typing import Sequence
 
 from .models import RunnerError
 from .safety import *
+from .action_gate import SafetyGateDenied, begin_action
 from .utils import display_path, truncate_text, unique_ordered
 from .workspace import resolve_project_path
 
@@ -259,13 +260,40 @@ def evidence_from_command_document(kind: str, name: str, ok: bool, path: Path, b
         evidence["covers"] = unique_ordered(covers)
     return evidence
 
-def run_checked_command(project: Path, command: str, timeout: float, run_dir: Path | None = None) -> tuple[str, bool]:
+def run_checked_command(
+    project: Path,
+    command: str,
+    timeout: float,
+    run_dir: Path | None = None,
+    *,
+    action: str = "command",
+    control_dirs: Sequence[Path] = (),
+) -> tuple[str, bool]:
     reason = dangerous_command_reason(command)
     shell_reason = unsupported_shell_command_reason(command)
-    decision = command_safety_decision(command, danger_reason=reason, shell_reason=shell_reason)
+    decision = command_safety_decision(
+        command,
+        danger_reason=reason,
+        shell_reason=shell_reason,
+        action=action,
+    )
     if run_dir:
-        record_safety_decision(run_dir, decision)
-    blocked_reason = blocked_reason_from_safety_decision(decision)
+        try:
+            persisted = begin_action(
+                run_dir,
+                action,
+                action_type="command",
+                risk_class=decision.risk_class,
+                command=command,
+                control_dirs=control_dirs,
+                decision=decision,
+            )
+        except SafetyGateDenied as exc:
+            blocked_reason = blocked_reason_from_safety_decision(exc.decision)
+            return command_result_document(command, 2, "", "", 0.0, blocked_reason), False
+        blocked_reason = blocked_reason_from_safety_decision(persisted)
+    else:
+        blocked_reason = blocked_reason_from_safety_decision(decision)
     if blocked_reason:
         return command_result_document(command, 2, "", "", 0.0, blocked_reason), False
 
