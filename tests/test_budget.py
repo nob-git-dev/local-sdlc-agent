@@ -212,13 +212,13 @@ class RuntimeBudgetTests(LocalSDLCTestCase):
             command_run = project / "command"
             self.local_sdlc.initialize_budget(
                 command_run,
-                self.limits(max_wall_seconds=0.01),
+                self.limits(max_wall_seconds=0.1),
                 scope_kind="goal_stage",
             )
 
             def timeout_command(*_args, **_kwargs):
-                time.sleep(0.02)
-                raise subprocess.TimeoutExpired("slow", 0.01)
+                time.sleep(0.12)
+                raise subprocess.TimeoutExpired("slow", 0.1)
 
             with mock.patch("local_sdlc.verification.subprocess.run", side_effect=timeout_command):
                 with self.assertRaises(self.local_sdlc.BudgetExceeded):

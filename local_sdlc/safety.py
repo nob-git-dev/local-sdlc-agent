@@ -14,6 +14,7 @@ from typing import Iterator, Mapping
 import fcntl
 
 from .models import RunnerError
+from .runtime_events import record_approval_payload, record_safety_payload
 
 
 SAFETY_DECISIONS_FILENAME = "safety_decisions.jsonl"
@@ -168,6 +169,7 @@ def _record_safety_decision_unlocked(run_dir: Path, decision: SafetyDecision) ->
     payload = asdict(persisted)
     if payload.get("metadata") is None:
         payload.pop("metadata", None)
+    record_safety_payload(run_dir, payload)
     with safety_decisions_file_path(run_dir).open("a", encoding="utf-8") as file:
         file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
     return payload
@@ -182,6 +184,7 @@ def _append_approval_event_unlocked(run_dir: Path, payload: dict[str, object]) -
     event = dict(payload)
     event["sequence"] = len(read_safety_approvals(run_dir)) + 1
     event["timestamp"] = safety_timestamp()
+    record_approval_payload(run_dir, event)
     with safety_approvals_file_path(run_dir).open("a", encoding="utf-8") as file:
         file.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
     return event

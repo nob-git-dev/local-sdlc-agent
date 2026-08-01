@@ -11,6 +11,7 @@ from typing import Iterator, Mapping, Sequence
 import fcntl
 
 from .models import RunnerError
+from .runtime_events import cancellation_state_from_ledger, record_progress_payload
 
 
 CANCEL_FILENAME = "cancel.json"
@@ -92,6 +93,7 @@ def _append_progress_event_unlocked(
     }
     if metadata:
         payload["metadata"] = dict(metadata)
+    record_progress_payload(run_dir, payload)
     with progress_file_path(run_dir).open("a", encoding="utf-8") as file:
         file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
     return payload
@@ -118,7 +120,7 @@ def append_progress_event(
 def load_cancel_state(run_dir: Path) -> dict[str, object]:
     path = cancel_file_path(run_dir)
     if not path.exists():
-        return {}
+        return cancellation_state_from_ledger(run_dir)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -162,7 +164,6 @@ def request_cancel(
         }
         if metadata:
             payload["metadata"] = dict(metadata)
-        cancel_file_path(run_dir).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         _append_progress_event_unlocked(
             run_dir,
             "cancel_requested",
@@ -170,6 +171,7 @@ def request_cancel(
             starts_work=False,
             metadata={"source": source, "reason": reason},
         )
+        cancel_file_path(run_dir).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
 
 

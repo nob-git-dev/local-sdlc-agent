@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .models import StageWorkItem
+from .runtime_events import record_regression_memory_document
 from .utils import unique_ordered
 
 
@@ -129,6 +130,27 @@ def _memory_from_failure_analysis(analysis: dict[str, object]) -> RegressionMemo
     observables = unique_ordered(
         [*(f"required_path:{path}" for path in required_paths), *(f"inspect:{item}" for item in required_focus)]
     )
+    rejected = analysis.get("rejected_hypotheses")
+    rejected_text: list[str] = []
+    if isinstance(rejected, list):
+        for item in rejected:
+            if isinstance(item, dict) and item.get("hypothesis"):
+                rejected_text.append(str(item["hypothesis"]))
+    pattern = "; ".join(rejected_text) or signature or failure_type
+    family = signature or f"analysis:{failure_type}"
+    return RegressionMemory(
+        failure_family=family,
+        trigger={
+            "failure_type": failure_type,
+            "failure_signature": signature,
+            "required_paths": required_paths,
+        },
+        false_positive_pattern=pattern,
+        required_future_observables=tuple(observables),
+        fixed_by=str(action.get("minimal_patch_goal") or action.get("goal") or "root_cause_repair"),
+        regression_tests=(),
+        scope={"kind": "failure_family", "failure_type": failure_type},
+    )
 
 
 def _memory_from_run_failure(manifest: dict[str, object]) -> RegressionMemory | None:
@@ -167,27 +189,6 @@ def _memory_from_run_failure(manifest: dict[str, object]) -> RegressionMemory | 
         fixed_by="produce passing evidence for the failed run before approval",
         regression_tests=tuple(_string_list(manifest.get("test_commands"))),
         scope={"kind": "project_run", "failure_type": failure_type},
-    )
-    rejected = analysis.get("rejected_hypotheses")
-    rejected_text: list[str] = []
-    if isinstance(rejected, list):
-        for item in rejected:
-            if isinstance(item, dict) and item.get("hypothesis"):
-                rejected_text.append(str(item["hypothesis"]))
-    pattern = "; ".join(rejected_text) or signature or failure_type
-    family = signature or f"analysis:{failure_type}"
-    return RegressionMemory(
-        failure_family=family,
-        trigger={
-            "failure_type": failure_type,
-            "failure_signature": signature,
-            "required_paths": required_paths,
-        },
-        false_positive_pattern=pattern,
-        required_future_observables=tuple(observables),
-        fixed_by=str(action.get("minimal_patch_goal") or action.get("goal") or "root_cause_repair"),
-        regression_tests=(),
-        scope={"kind": "failure_family", "failure_type": failure_type},
     )
 
 
@@ -276,10 +277,11 @@ def persist_regression_memories_for_manifest(
         return None
     run_path = run_dir / filename
     run_path.parent.mkdir(parents=True, exist_ok=True)
-    run_path.write_text(
-        json.dumps(regression_memory_document(new_memories), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    run_content = (
+        json.dumps(regression_memory_document(new_memories), ensure_ascii=False, indent=2) + "\n"
     )
+    record_regression_memory_document(run_dir, filename, run_content)
+    run_path.write_text(run_content, encoding="utf-8")
     stored = merge_regression_memories(load_regression_memories(project), new_memories)
     store_path = save_regression_memories(project, stored)
     return run_path, store_path, len(new_memories), len(stored)

@@ -152,7 +152,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [ ] P10: 自律 mode のファイル変更は既定で隔離 worktree 上で行われ、承認済み成果物だけが元 project へ copy back される
 - [ ] P11: 発見命題は evidence、scope、counterexamples、generalization_rationale、regression_tests を持たない限り中核規則へ昇格されない
 - [ ] P12: Tetris、Mini SQLite、Redis など既存 benchmark 固有の失敗規則は、未知小課題に対する regression で過剰発火しないことを確認する
-- [ ] EL-GA: `learning-runtime/SPEC.md` の L01〜L04（EL01〜EL06）が完了し、共通イベント契約、transactional outbox、完全性監査、既存 P01/P02/P03/P09 証拠の移行互換性を満たす
+- [x] EL-GA: `learning-runtime/SPEC.md` の L01〜L04（EL01〜EL06）が完了し、共通イベント契約、transactional outbox、完全性監査、既存 P01/P02/P03/P09 証拠の移行互換性を満たす
 
 ## スコープ（やらないこと）
 

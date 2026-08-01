@@ -16,9 +16,10 @@ dependencies = []
 
 [project.scripts]
 local-sdlc-agent = "local_sdlc.cli:main"
+local-sdlc-learning = "learning_runtime.cli:main"
 
 [tool.setuptools]
-packages = ["local_sdlc"]
+packages = ["local_sdlc", "sdlc_events", "learning_runtime"]
 include-package-data = true
 
 [tool.setuptools.package-data]

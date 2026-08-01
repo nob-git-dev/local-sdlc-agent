@@ -12,6 +12,7 @@ from typing import Iterator, Mapping, Sequence
 import fcntl
 
 from .models import RunnerError
+from .runtime_events import record_budget_payload
 
 
 BUDGET_POLICY_FILENAME = "budget.json"
@@ -253,6 +254,7 @@ def _append_budget_event_unlocked(run_dir: Path, payload: Mapping[str, object]) 
         "timestamp": budget_timestamp(),
         **dict(payload),
     }
+    record_budget_payload(run_dir, event)
     with budget_events_file_path(run_dir).open("a", encoding="utf-8") as file:
         file.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
     return event

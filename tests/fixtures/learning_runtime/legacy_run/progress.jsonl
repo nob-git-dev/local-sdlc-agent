@@ -1,0 +1,3 @@
+{"action":"coder","event":"work_start","metadata":{"action_id":"action-001","risk_class":"project_write"},"sequence":1,"starts_work":true,"timestamp":"2026-08-01T00:00:01Z"}
+{"action":"coder","event":"progress_observed","metadata":{"vector":{"current_function":"coder","round":1},"vector_hash":"abc"},"sequence":2,"starts_work":false,"timestamp":"2026-08-01T00:00:02Z"}
+{"action":"retry","event":"stalled","metadata":{"idle_seconds":900,"max_idle_seconds":900,"reason":"progress vector unchanged"},"sequence":3,"starts_work":false,"timestamp":"2026-08-01T00:15:02Z"}

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "record_count": 1,
+  "records": [
+    {
+      "id": "RM-fixture-persistence",
+      "failure_family": "family:persistence-loss-after-reopen",
+      "trigger": {
+        "required_paths": [
+          "src/storage.py"
+        ],
+        "failure_type": "persistence_loss"
+      },
+      "false_positive_pattern": "in-memory success did not prove persistence after reopen",
+      "required_future_observables": [
+        "required_path:src/storage.py",
+        "state_survives_reopen"
+      ],
+      "fixed_by": "verify the persistence boundary",
+      "regression_tests": [
+        "python3 -m unittest tests.test_storage"
+      ],
+      "scope": {
+        "kind": "failure_family",
+        "failure_family": "family:persistence-loss-after-reopen"
+      }
+    }
+  ]
+}

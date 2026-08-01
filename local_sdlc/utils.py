@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Sequence
 
+from .runtime_events import record_manifest_transitions
+
 def compact_preview(value: object, limit: int = 80) -> str:
     text = "" if value is None else str(value)
     text = re.sub(r"\s+", " ", text).strip()
@@ -39,6 +41,7 @@ def unique_ordered(values: Sequence[str]) -> list[str]:
 
 def write_run_document(run_dir: Path, filename: str, content: str) -> Path:
     path = run_dir / filename
+    record_manifest_transitions(run_dir, filename, content)
     path.write_text(content.rstrip() + "\n", encoding="utf-8")
     return path
 

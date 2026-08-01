@@ -450,7 +450,7 @@ class ProgressMonitorTests(LocalSDLCTestCase):
 
             def complete(self, _messages, **kwargs):
                 calls.append(kwargs)
-                time.sleep(0.02)
+                time.sleep(0.12)
                 if self.timeout_callback:
                     self.timeout_callback()
                 return "BEGIN_FILE: app.py\nprint('late')\nEND_FILE"
@@ -474,7 +474,7 @@ class ProgressMonitorTests(LocalSDLCTestCase):
                     "--max-rounds",
                     "1",
                     "--max-idle-seconds",
-                    "0.01",
+                    "0.1",
                     "--run-dir",
                     str(run_dir),
                 ]

@@ -1,0 +1,30 @@
+{
+  "final_verdict": "test_failed",
+  "api_calls": 2,
+  "completed_rounds": 1,
+  "test_commands": [
+    "python3 -m unittest discover -s tests"
+  ],
+  "failure_analyses": [
+    {
+      "analysis_status": "complete",
+      "failure_type": "persistence_loss",
+      "failure_family_signature": "family:persistence-loss-after-reopen",
+      "rejected_hypotheses": [
+        {
+          "hypothesis": "presentation-only defect",
+          "reason": "state is already absent below the presentation layer"
+        }
+      ],
+      "next_required_action": {
+        "required_paths": [
+          "src/storage.py"
+        ],
+        "required_focus": [
+          "persistence boundary"
+        ],
+        "minimal_patch_goal": "preserve state after reopen"
+      }
+    }
+  ]
+}

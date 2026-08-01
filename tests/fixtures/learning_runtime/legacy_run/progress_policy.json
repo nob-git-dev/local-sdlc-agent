@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "scope_kind": "goal",
+  "initialized_at": "2026-08-01T00:00:00Z",
+  "policy": {
+    "max_idle_seconds": 900
+  }
+}

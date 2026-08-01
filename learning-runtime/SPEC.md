@@ -2,12 +2,13 @@
 
 ## Status
 
-- Status: specification ready for implementation
+- Status: capture foundation implemented; Integration Gate A passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
   the repository root `SPEC.md` remains authoritative for the execution plane
-- First implementation proposition: `EL01`
+- Implemented propositions: `EL01` through `EL06`
+- Deferred propositions: `EL07` through `EL12`
 
 ## Decision and Development Order
 
@@ -28,6 +29,29 @@ create a synthetic-data overfitting risk. Running P04/P05 before the capture
 foundation would permanently lose learning evidence. Therefore the project uses
 foundation-first, then alternating integration rather than either pure parallel
 development or a complete sequential rewrite.
+
+### Integration Gate A Result
+
+Completed on 2026-08-01:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| L00 | PASS | Executable mutation inventory covers progress, safety, approval, budget, stall, manifest, and failure-analysis persistence paths. |
+| L01 | PASS | The transition enum and contract registry are exhaustively checked; missing registrations fail the test suite. |
+| L02 | PASS | Run-local SQLite commits transition, immutable event, and outbox atomically; fault-before and fault-after-commit cases are covered. |
+| L03 | PASS | Collector replay is idempotent, closure/integrity auditing is explicit, and the learning CLI operates independently. |
+| L04 | PASS | Frozen P01/P02/P03/P09-style evidence imports with provenance; malformed legacy records become findings rather than disappearing. |
+
+Verification evidence:
+
+- `tests.test_learning_runtime`: 22 tests passed;
+- execution-plane integration selection: 88 tests passed;
+- `python3 -m unittest discover -s tests`: 459 tests passed;
+- a copied legacy fixture produced 15 canonical events, passed audit, delivered
+  15 events idempotently, and left zero pending outbox records.
+
+This result authorizes resuming P04/P05 while collecting real recovery events.
+It does not mark L05-L11 or `EL07`-`EL12` complete.
 
 ## Purpose
 

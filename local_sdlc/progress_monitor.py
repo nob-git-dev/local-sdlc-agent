@@ -14,6 +14,7 @@ from typing import Callable, Iterator, Mapping, Sequence
 
 from .control import append_progress_event, read_progress_events
 from .models import RunnerError
+from .runtime_events import record_scope_started
 
 
 PROGRESS_POLICY_FILENAME = "progress_policy.json"
@@ -173,7 +174,6 @@ def initialize_progress_monitor(
     policy.validate()
     if scope_kind not in VALID_SCOPE_KINDS:
         raise RunnerError(f"invalid progress scope kind: {scope_kind}")
-    current_time = time.time() if now is None else float(now)
     with _locked_progress_scope((run_dir,)):
         existing = read_progress_policy(run_dir)
         if existing:
@@ -192,6 +192,10 @@ def initialize_progress_monitor(
                     f"existing={existing_idle:g} requested={policy.max_idle_seconds:g}"
                 )
             return existing
+        record_scope_started(run_dir, scope_kind)
+        # Initialization work is not evidence of a stalled run. Start the idle
+        # clock only after the durable scope-start event has been committed.
+        current_time = time.time() if now is None else float(now)
         document: dict[str, object] = {
             "schema_version": PROGRESS_SCHEMA_VERSION,
             "scope_kind": scope_kind,
@@ -393,25 +397,12 @@ def _write_observation_unlocked(
     source: str,
     source_run_dir: Path,
     current_time: float,
+    refresh_clock: bool = False,
 ) -> tuple[dict[str, object], bool]:
     normalized = normalize_progress_vector(vector)
     vector_hash = progress_vector_hash(normalized)
     prior = read_progress_state(scope)
     changed = vector_hash != str(prior.get("vector_hash") or "")
-    last_epoch = current_time if changed else _last_progress_epoch(scope)
-    state = {
-        "schema_version": PROGRESS_SCHEMA_VERSION,
-        "runtime_state": "PROGRESSING" if changed else "RUNNING",
-        "last_progress_at": progress_timestamp(last_epoch),
-        "last_progress_at_epoch": last_epoch,
-        "observed_at": progress_timestamp(current_time),
-        "observed_at_epoch": current_time,
-        "vector": normalized,
-        "vector_hash": vector_hash,
-        "source": source,
-        "source_run_dir": str(source_run_dir.resolve()),
-    }
-    _atomic_write_json(progress_state_file_path(scope), state)
     if changed:
         append_progress_event(
             scope,
@@ -424,6 +415,21 @@ def _write_observation_unlocked(
                 "source_run_dir": str(source_run_dir.resolve()),
             },
         )
+    observed_at = time.time() if refresh_clock else current_time
+    last_epoch = observed_at if changed else _last_progress_epoch(scope)
+    state = {
+        "schema_version": PROGRESS_SCHEMA_VERSION,
+        "runtime_state": "PROGRESSING" if changed else "RUNNING",
+        "last_progress_at": progress_timestamp(last_epoch),
+        "last_progress_at_epoch": last_epoch,
+        "observed_at": progress_timestamp(observed_at),
+        "observed_at_epoch": observed_at,
+        "vector": normalized,
+        "vector_hash": vector_hash,
+        "source": source,
+        "source_run_dir": str(source_run_dir.resolve()),
+    }
+    _atomic_write_json(progress_state_file_path(scope), state)
     return state, changed
 
 
@@ -456,6 +462,7 @@ def observe_progress(
                 source=source,
                 source_run_dir=run_dir,
                 current_time=current_time,
+                refresh_clock=now is None,
             )
             if scope == run_dir.resolve():
                 local_state = state
@@ -501,6 +508,7 @@ def start_progress_action(
                 source=f"action:{action_type}",
                 source_run_dir=run_dir,
                 current_time=current_time,
+                refresh_clock=now is None,
             )
         return work_event
 
