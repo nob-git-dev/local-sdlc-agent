@@ -21,6 +21,29 @@ from .control import *
 from .safety import *
 from .run_state import *
 from .stages import *
+from .history import *
+from .requirements import requirements_from_spec, observables_for_requirements
+from .evidence import verdict_to_manifest, verdicts_from_acceptance_matrix
+
+
+def attach_regression_memory(
+    manifest: dict[str, object],
+    run_dir: Path,
+    project: Path,
+    written: list[Path],
+) -> None:
+    persisted = persist_regression_memories_for_manifest(project, run_dir, manifest)
+    if persisted is None:
+        return
+    run_path, store_path, record_count, store_record_count = persisted
+    written.append(run_path)
+    manifest["regression_memory"] = {
+        "document": display_path(run_path, project),
+        "record_count": record_count,
+        "store": display_path(store_path, project),
+        "store_record_count": store_record_count,
+    }
+    manifest["documents"] = [display_path(path, project) for path in written]
 
 
 def snapshot_artifact_targets(project: Path, paths: Sequence[str]) -> dict[str, bytes | None]:
@@ -175,7 +198,12 @@ def command_agent(args: argparse.Namespace) -> int:
     final_verdict = "not_judged"
     previous_completed_rounds = int(resume_manifest.get("completed_rounds", 0)) if resume_manifest else 0
     completed_rounds = previous_completed_rounds
-    acceptance_criteria = parse_acceptance_criteria(spec)
+    requirement_records = requirements_from_spec(spec, display_path(spec_path, original_project))
+    observable_records = observables_for_requirements(requirement_records)
+    acceptance_criteria = [
+        {"id": item.requirement_id, "text": item.text}
+        for item in requirement_records
+    ]
     evidence_records: list[dict[str, object]] = list(resume_manifest.get("evidence", [])) if resume_manifest else []
     final_failure_type: str | None = None
     protocol_rounds_used = int(resume_manifest.get("protocol_rounds_used", 0)) if resume_manifest else 0
@@ -236,6 +264,7 @@ def command_agent(args: argparse.Namespace) -> int:
         record_work_start(run_dir, action)
 
     def write_partial_manifest(status: str, extra: dict[str, object] | None = None) -> None:
+        acceptance_matrix = build_acceptance_matrix(acceptance_criteria, evidence_records)
         partial_doc: dict[str, object] = {
             "brief": args.brief,
             "command": "agent",
@@ -283,11 +312,17 @@ def command_agent(args: argparse.Namespace) -> int:
             "stage_scope_test_paths": stage_scope_test_paths,
             "stage_generated_test_paths": stage_generated_test_paths,
             "acceptance_criteria": acceptance_criteria,
+            "requirements": [item.to_manifest() for item in requirement_records],
+            "observables": [item.to_manifest() for item in observable_records],
             "propositions": proposition_manifest_from_documents(documents),
             "semantic_contracts": [semantic_contract_to_dict(contract) for contract in semantic_contracts],
             "evidence": evidence_records,
-            "acceptance_matrix": build_acceptance_matrix(acceptance_criteria, evidence_records),
-            "acceptance_blockers": acceptance_blockers(build_acceptance_matrix(acceptance_criteria, evidence_records)),
+            "acceptance_matrix": acceptance_matrix,
+            "verdicts": [
+                verdict_to_manifest(item)
+                for item in verdicts_from_acceptance_matrix(acceptance_matrix)
+            ],
+            "acceptance_blockers": acceptance_blockers(acceptance_matrix),
             "failure_summary": failure_summary(final_verdict, evidence_records, final_failure_type),
             "failure_analyses": failure_analyses,
             "project_policy_triages": project_policy_triages,
@@ -1395,10 +1430,18 @@ def command_agent(args: argparse.Namespace) -> int:
             "auto_required_paths": auto_required_paths,
             "stage_generated_test_paths": stage_generated_test_paths,
             "acceptance_criteria": acceptance_criteria,
+            "requirements": [item.to_manifest() for item in requirement_records],
+            "observables": [item.to_manifest() for item in observable_records],
             "propositions": proposition_manifest_from_documents(documents),
             "semantic_contracts": [semantic_contract_to_dict(contract) for contract in semantic_contracts],
             "evidence": evidence_records,
             "acceptance_matrix": build_acceptance_matrix(acceptance_criteria, evidence_records),
+            "verdicts": [
+                verdict_to_manifest(item)
+                for item in verdicts_from_acceptance_matrix(
+                    build_acceptance_matrix(acceptance_criteria, evidence_records)
+                )
+            ],
             "failure_summary": failure_summary(final_verdict, evidence_records, final_failure_type),
             "project_policy_triages": project_policy_triages,
             "state_transitions": state_transitions,
@@ -1410,6 +1453,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "safety_decision_count": len(read_safety_decisions(run_dir)),
             "documents": [display_path(path, original_project) for path in written],
         }
+        attach_regression_memory(manifest_doc, run_dir, original_project, written)
         manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
         written.append(manifest_path)
 
@@ -3333,6 +3377,7 @@ def command_agent(args: argparse.Namespace) -> int:
         guard_action("copy_back")
         copied_back = copy_allowed_paths_back(project, original_project, unique_ordered(changed_paths))
 
+    final_acceptance_matrix = build_acceptance_matrix(acceptance_criteria, evidence_records)
     manifest_doc = {
         "brief": args.brief,
         "command": "agent",
@@ -3381,11 +3426,17 @@ def command_agent(args: argparse.Namespace) -> int:
         "stage_scope_test_paths": stage_scope_test_paths,
         "stage_generated_test_paths": stage_generated_test_paths,
         "acceptance_criteria": acceptance_criteria,
+        "requirements": [item.to_manifest() for item in requirement_records],
+        "observables": [item.to_manifest() for item in observable_records],
         "propositions": proposition_manifest_from_documents(documents),
         "semantic_contracts": [semantic_contract_to_dict(contract) for contract in semantic_contracts],
         "evidence": evidence_records,
-        "acceptance_matrix": build_acceptance_matrix(acceptance_criteria, evidence_records),
-        "acceptance_blockers": acceptance_blockers(build_acceptance_matrix(acceptance_criteria, evidence_records)),
+        "acceptance_matrix": final_acceptance_matrix,
+        "verdicts": [
+            verdict_to_manifest(item)
+            for item in verdicts_from_acceptance_matrix(final_acceptance_matrix)
+        ],
+        "acceptance_blockers": acceptance_blockers(final_acceptance_matrix),
         "failure_summary": failure_summary(final_verdict, evidence_records, final_failure_type),
         "failure_analyses": failure_analyses,
         "project_policy_triages": project_policy_triages,
@@ -3398,6 +3449,7 @@ def command_agent(args: argparse.Namespace) -> int:
         "safety_decision_count": len(read_safety_decisions(run_dir)),
         "documents": [display_path(path, original_project) for path in written],
     }
+    attach_regression_memory(manifest_doc, run_dir, original_project, written)
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
     written.append(manifest_path)
 

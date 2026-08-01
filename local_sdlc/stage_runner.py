@@ -18,6 +18,7 @@ from .control import *
 from .safety import *
 from .run_state import *
 from .stages import *
+from .history import *
 from .agent_runner import command_agent
 
 
@@ -46,7 +47,11 @@ def command_run_stages(args: argparse.Namespace) -> int:
     if args.protocol_repair_rounds < 0:
         raise RunnerError("--protocol-repair-rounds must be zero or greater")
 
-    planned = synthesize_stage_queue(spec, listed_project_files(project))
+    stored_regression_memories = load_regression_memories(project)
+    planned = apply_regression_memories_to_stages(
+        synthesize_stage_queue(spec, listed_project_files(project)),
+        stored_regression_memories,
+    )
     stages = selected_stage_queue(planned, args.from_stage, args.to_stage)
     selected_ids = {stage.stage_id for stage in stages}
     prior_context_paths: list[str] = []
@@ -178,6 +183,25 @@ def command_run_stages(args: argparse.Namespace) -> int:
             "failure_summary": integration_repair.failure_summary,
         }
         manifest["api_calls"] = int(manifest.get("api_calls", 0)) + integration_repair.api_calls
+    new_regression_memories = regression_memories_from_manifest(manifest)
+    if new_regression_memories:
+        memory_path = write_run_document(
+            run_dir,
+            "02-regression-memory.json",
+            json.dumps(regression_memory_document(new_regression_memories), ensure_ascii=False, indent=2),
+        )
+        written.append(memory_path)
+        stored_regression_memories = merge_regression_memories(
+            stored_regression_memories,
+            new_regression_memories,
+        )
+        store_path = save_regression_memories(project, stored_regression_memories)
+        manifest["regression_memory"] = {
+            "document": display_path(memory_path, project),
+            "record_count": len(new_regression_memories),
+            "store": display_path(store_path, project),
+            "store_record_count": len(stored_regression_memories),
+        }
     manifest["documents"] = [display_path(path, project) for path in written]
     manifest["safety_decisions_log"] = display_path(safety_decisions_file_path(run_dir), project)
     manifest["safety_decision_count"] = len(read_safety_decisions(run_dir))

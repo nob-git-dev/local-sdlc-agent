@@ -4,41 +4,29 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shlex
 import textwrap
 from pathlib import Path
 from typing import Sequence
 
 from .artifacts import final_failure_focus_from_command_docs, repair_advice_document
+from .evidence import (
+    acceptance_blockers as _acceptance_blockers,
+    build_acceptance_matrix as _build_acceptance_matrix,
+    evidence_covers as _evidence_covers,
+    evidence_matches_acceptance_text as _evidence_matches_acceptance_text,
+)
 from .models import RunnerError, StageRunSummary, StageWorkItem
+from .requirements import (
+    acceptance_required_covers as _acceptance_required_covers,
+    parse_acceptance_criteria as _parse_acceptance_criteria,
+)
 from .utils import display_path, unique_ordered
 from .workspace import listed_project_files, normalize_new_files, read_text_if_exists, resolve_spec_path
 
 
 def parse_acceptance_criteria(spec: str) -> list[dict[str, str]]:
-    criteria: list[dict[str, str]] = []
-    seen: set[str] = set()
-    in_acceptance_section = False
-    for line in spec.splitlines():
-        heading = re.match(r"^(#{1,3})\s+(.+?)\s*$", line)
-        if heading:
-            title = heading.group(2).lower()
-            in_acceptance_section = any(
-                token in title
-                for token in ("受け入れ", "受入", "acceptance", "検証", "完了条件")
-            )
-        match = re.match(r"^\s*[-*]\s+(?:\[[ xX]\]\s+)?(.+?)\s*$", line)
-        if not match:
-            continue
-        text = match.group(1).strip()
-        if not in_acceptance_section and not re.search(r"pass|ok|確認|検証|テスト|smoke|command|agent|runner", text, re.IGNORECASE):
-            continue
-        if text in seen:
-            continue
-        seen.add(text)
-        criteria.append({"id": f"A{len(criteria) + 1:02d}", "text": text})
-    return criteria
+    return _parse_acceptance_criteria(spec)
 
 def synthesize_stage_queue(spec: str, project_files: Sequence[str] = ()) -> list[StageWorkItem]:
     text = spec.lower()
@@ -85,9 +73,7 @@ def synthesize_stage_queue(spec: str, project_files: Sequence[str] = ()) -> list
 
 
 def stage_required_observables(stage: StageWorkItem) -> tuple[str, ...]:
-    if stage.required_observables:
-        return stage.required_observables
-    observables: list[str] = []
+    observables: list[str] = list(stage.required_observables)
     observables.extend(f"focus:{item}" for item in stage.test_focus)
     observables.extend(f"command:{command}" for command in auto_stage_test_commands(stage))
     observables.extend(f"required_path:{path}" for path in stage_required_paths(stage))
@@ -625,136 +611,23 @@ def build_acceptance_matrix(
     criteria: Sequence[dict[str, str]],
     evidence: Sequence[dict[str, object]],
 ) -> list[dict[str, object]]:
-    if not criteria:
-        return [
-            {
-                "id": f"A{index:02d}",
-                "text": f"Executable check: {item.get('name')}",
-                "status": item.get("status"),
-                "evidence_ids": [item.get("id")],
-                "evidence_scope": "direct",
-            }
-            for index, item in enumerate(evidence, start=1)
-        ]
-
-    matrix: list[dict[str, object]] = []
-    for item in criteria:
-        required_covers = acceptance_required_covers(item["text"])
-        relevant: list[dict[str, object]] = []
-        direct_command_match = False
-        for evidence_item in evidence:
-            covers = evidence_covers(evidence_item)
-            if evidence_matches_acceptance_text(evidence_item, item["text"]):
-                relevant.append(evidence_item)
-                direct_command_match = True
-                continue
-            if "external_test_suite" in covers:
-                relevant.append(evidence_item)
-                continue
-            if required_covers and any(cover in covers for cover in required_covers):
-                relevant.append(evidence_item)
-        has_fail = any(record.get("status") == "fail" for record in relevant)
-        has_pass = any(record.get("status") == "pass" for record in relevant)
-        status = "fail" if has_fail else ("pass" if has_pass else "unverified")
-        matrix.append(
-            {
-                "id": item["id"],
-                "text": item["text"],
-                "status": status,
-                "required_covers": required_covers,
-                "evidence_ids": [record.get("id") for record in relevant],
-                "evidence_scope": "direct" if required_covers or direct_command_match else "external_or_unmapped",
-            }
-        )
-    return matrix
+    return _build_acceptance_matrix(criteria, evidence)
 
 
 def evidence_covers(evidence_item: dict[str, object]) -> list[str]:
-    raw = evidence_item.get("covers")
-    if isinstance(raw, list):
-        return [str(item) for item in raw if isinstance(item, str)]
-    return []
+    return _evidence_covers(evidence_item)
 
 
 def evidence_matches_acceptance_text(evidence_item: dict[str, object], text: str) -> bool:
-    command = str(evidence_item.get("command") or evidence_item.get("name") or "").lower()
-    if not command:
-        return False
-    fragments = re.findall(r"`([^`]+)`", text)
-    for fragment in fragments:
-        try:
-            tokens = shlex.split(fragment.lower())
-        except ValueError:
-            tokens = fragment.lower().split()
-        if tokens and all(token in command for token in tokens):
-            return True
-    return False
+    return _evidence_matches_acceptance_text(evidence_item, text)
 
 
 def acceptance_required_covers(text: str) -> list[str]:
-    lowered = text.lower()
-    covers: list[str] = []
-    checks = [
-        ("html smoke", "static_html"),
-        ("browser-tetris-smoke", "browser_smoke"),
-        ("browser smoke", "browser_smoke"),
-        ("opening", "html_visible"),
-        ("open", "html_visible"),
-        ("画面", "html_visible"),
-        ("表示", "html_visible"),
-        ("shows", "html_visible"),
-        ("screen", "html_visible"),
-        ("window.", "required_window_functions"),
-        ("typeof", "required_window_functions"),
-        ("function", "required_window_functions"),
-        ("#game-board", "board_200_cells"),
-        (".cell", "board_200_cells"),
-        ("200", "board_200_cells"),
-        ("start button", "start_button"),
-        ("#start-btn", "start_button"),
-        ("開始", "start_button"),
-        ("キーボード", "keyboard_interaction"),
-        ("keyboard", "keyboard_interaction"),
-        ("arrow", "keyboard_interaction"),
-        ("move", "keyboard_interaction"),
-        ("移動", "keyboard_interaction"),
-        ("rotate", "keyboard_interaction"),
-        ("回転", "keyboard_interaction"),
-        ("drop", "keyboard_interaction"),
-        ("落下", "keyboard_interaction"),
-        ("active piece", "active_piece_visible"),
-        ("現在のピース", "active_piece_visible"),
-        ("score", "score_update"),
-        ("level", "score_update"),
-        ("lines", "score_update"),
-        ("スコア", "score_update"),
-        ("レベル", "score_update"),
-        ("消去行", "score_update"),
-        ("clearlines", "line_clear"),
-        ("line", "line_clear"),
-        ("行", "line_clear"),
-        ("gameover", "game_over"),
-        ("game over", "game_over"),
-        ("ゲームオーバー", "game_over"),
-        ("restart", "restart_after_game_over"),
-        ("再開", "restart_after_game_over"),
-        ("再起動", "restart_after_game_over"),
-    ]
-    for token, cover in checks:
-        if token in lowered:
-            covers.append(cover)
-    return unique_ordered(covers)
+    return _acceptance_required_covers(text)
 
 
 def acceptance_blockers(matrix: Sequence[dict[str, object]]) -> list[dict[str, object]]:
-    blockers: list[dict[str, object]] = []
-    for item in matrix:
-        required = item.get("required_covers")
-        if not required:
-            continue
-        if item.get("status") != "pass":
-            blockers.append(item)
-    return blockers
+    return _acceptance_blockers(matrix)
 
 def failure_summary(final_verdict: str, evidence: Sequence[dict[str, object]], fallback: str | None = None) -> dict[str, object] | None:
     if final_verdict == "approved":

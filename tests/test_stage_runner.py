@@ -392,6 +392,10 @@ class StageRunnerTests(LocalSDLCTestCase):
 
             manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             recovery_doc = json.loads((run_dir / "01-stage-recovery-plan.json").read_text(encoding="utf-8"))
+            memory_doc = json.loads((run_dir / "02-regression-memory.json").read_text(encoding="utf-8"))
+            memory_store = json.loads(
+                (project / ".sdlc-runner" / "regression-memory.json").read_text(encoding="utf-8")
+            )
 
         self.assertEqual(result, 1)
         self.assertEqual(len(calls), 1)
@@ -412,6 +416,13 @@ class StageRunnerTests(LocalSDLCTestCase):
             action["required_observables"],
         )
         self.assertTrue(recovery_doc["retry_policy"]["do_not_skip_failed_stage"])
+        self.assertEqual(memory_doc["record_count"], 1)
+        self.assertEqual(memory_store["record_count"], 1)
+        self.assertEqual(manifest["regression_memory"]["record_count"], 1)
+        self.assertEqual(
+            memory_doc["records"][0]["required_future_observables"],
+            action["required_observables"],
+        )
 
     def test_run_stages_uses_stage_tests_before_final_gate(self):
         calls = []

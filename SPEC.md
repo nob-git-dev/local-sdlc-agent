@@ -1025,6 +1025,15 @@ local_sdlc/
 - 過去 false positive と同種の成果物に対し、事前に必要 Observable が追加される。
 - regression memory は docs だけでなく run manifest または専用 JSON として機械利用できる。
 
+2026-08-01 S06a:
+
+- `requirements.py`, `evidence.py`, `history.py` を追加し、Requirement / Observable / Evidence / Verdict / RegressionMemory を型として分離した。
+- 既存 `parse_acceptance_criteria()` / `build_acceptance_matrix()` は互換関数として残し、新しい domain model へ委譲する。
+- `fail`, `unverified`, `blocked`, `invalid_evidence` を別Verdictとして扱い、`pass` 以外の証拠要求を blocker とする。
+- stage失敗とagent失敗は run固有 `regression-memory.json` とプロジェクト共有 `.sdlc-runner/regression-memory.json` に正規化して保存する。
+- 次回 `run-stages` は共有memoryのscope/triggerが一致したstageだけへ `required_future_observables` を追加する。
+- Tetris active-piece false positive は追跡済みfixtureとして保存し、該当artifact pathにだけ発火し、未知課題には発火しないことを回帰テストで固定する。
+
 #### S07: 巨大モジュール分割
 
 - `artifacts.py` と `agent_runner.py` の責務を上記モジュールへ移す。
@@ -1054,9 +1063,9 @@ local_sdlc/
 
 ### 受け入れ条件
 
-- [ ] `Requirement`, `Observable`, `Evidence`, `Verdict`, `RepairAction`, `RegressionMemory` が型として定義されている
-- [ ] 既存 `acceptance_matrix` は新 domain model から生成され、既存 `run.json` 互換を維持する
-- [ ] `fail`, `unverified`, `blocked`, `invalid_evidence` が区別され、`pass` 以外は approval blocker になる
+- [x] `Requirement`, `Observable`, `Evidence`, `Verdict`, `RepairAction`, `RegressionMemory` が型として定義されている
+- [x] 既存 `acceptance_matrix` は新 domain model から生成され、既存 `run.json` 互換を維持する
+- [x] `fail`, `unverified`, `blocked`, `invalid_evidence` が区別され、`pass` 以外は approval blocker になる
 - [x] HTML/browser smoke は harness plugin として実装され、core runner に Tetris 固有判定が直書きされない
 - [x] S03a: Python/CLI command check は harness plugin として Evidence 化される
 - [x] S03b: Python/API/CLI/storage probe は harness plugin として Evidence 化され、agent run manifest に記録される
@@ -1064,8 +1073,8 @@ local_sdlc/
 - [x] S04a: acceptance blocker から Repair Action が生成され、次 Coder call と run manifest に渡る
 - [x] S05a: stage planner は stage ごとに required observables と writable/readonly paths を保存する
 - [x] S05b: stage 失敗時に recovery plan を run manifest と専用 JSON へ保存する
-- [ ] failure history は機械利用可能な regression memory として保存される
-- [ ] Tetris active piece false positive は regression test として残る
+- [x] failure history は機械利用可能な regression memory として保存される
+- [x] Tetris active piece false positive は regression test として残る
 - [ ] Mini SQLite stage resume regression が残る
 - [ ] Redis/KVS benchmark regression が残る
 - [x] S07d: `artifacts.py` は互換facade化され、artifact protocol / lint-stream / repair advice / Python analysis / mechanical probes は責務別モジュールへ分離される

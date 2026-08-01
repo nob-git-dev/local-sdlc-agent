@@ -1,0 +1,18 @@
+{
+  "failure_family": "html-runtime:false-positive-static-shell",
+  "trigger": {
+    "required_paths": ["tetris.html"],
+    "failure_type": "acceptance_false_positive"
+  },
+  "false_positive_pattern": "DOM and public functions exist but the active falling piece is never rendered after Start",
+  "required_future_observables": [
+    "browser:active_piece_visible_after_start",
+    "browser:active_piece_position_changes_after_arrow_left"
+  ],
+  "fixed_by": "Require runtime browser evidence after start and keyboard input",
+  "regression_tests": ["browser-tetris-smoke"],
+  "scope": {
+    "kind": "artifact_path",
+    "paths": ["tetris.html"]
+  }
+}

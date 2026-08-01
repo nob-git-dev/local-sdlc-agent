@@ -347,3 +347,35 @@ Verification:
 - `python3 -m py_compile local_sdlc.py local_sdlc/*.py local_sdlc/harnesses/*.py tests/*.py`
 - `python3 -m unittest tests.test_artifact_ops tests.test_harnesses`
 - `python3 -m unittest discover -s tests`
+
+## 2026-08-01 Implementation Slice S06a
+
+Failure history is now a reusable control input instead of a document-only
+postmortem.
+
+Implementation:
+
+- `requirements.py` owns Requirement / Observable types and generic SPEC
+  acceptance parsing.
+- `evidence.py` owns Evidence / Verdict types and the backward-compatible
+  acceptance-matrix projection.
+- HTML/browser coverage labels moved to `harnesses/coverage_rules.py`, keeping
+  domain vocabulary outside the application runner.
+- `history.py` normalizes failed stage plans and agent failure analyses into a
+  stable RegressionMemory schema.
+- Failed runs write a run-local memory document and merge it into the project
+  store at `.sdlc-runner/regression-memory.json`.
+- Future stage plans inject stored observables only when stage ID, title, or
+  artifact path matches the memory trigger.
+
+Overfitting control:
+
+- The Tetris active-piece false positive is a test fixture, not a hard-coded
+  runner branch.
+- A paired unknown-project test proves that the same memory does not affect an
+  unrelated parser stage.
+
+Verification:
+
+- `python3 -m unittest tests.test_domain_models tests.test_stage_runner tests.test_harnesses`
+- `python3 -m unittest discover -s tests` (374 tests)
