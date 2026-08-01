@@ -279,7 +279,7 @@ Verified:
 - `test_agent_refuses_cancelled_resume_before_llm_call`
 - full test suite: `python3 -m unittest tests.test_local_sdlc`
 
-Still open for full P01:
+Still open at this slice (completed by the 2026-08-01 P01/P02 slice):
 
 - append-only `progress.jsonl`
 - proof that no progress event after cancellation starts work
@@ -301,7 +301,7 @@ Verified:
 - `test_agent_refuses_cancelled_resume_before_llm_call`
 - `test_run_stages_refuses_cancelled_run_before_stage_agent_call`
 
-Still open for full P01:
+Still open at this slice (completed by the 2026-08-01 P01/P02 slice):
 
 - direct tests for cancelled `run-stages` final command and copy-back boundaries
 - optional Web integration test proving stop writes cancel before a later resume attempt
@@ -326,7 +326,7 @@ Verified:
 - `test_run_checked_command_requires_approval_for_risky_class_without_legacy_block_reason`
 - `test_agent_applies_patch_and_runs_test_command`
 
-Still open for full P02:
+Still open at this slice (completed by the 2026-08-01 P01/P02 slice):
 
 - approval-token model for explicit human approval
 - safety decisions for artifact apply, copy-back, service control, Docker control, git operations, and network exposure
