@@ -7,9 +7,11 @@ import json
 import os
 import re
 import shlex
+import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -19,6 +21,11 @@ from .models import RunnerError
 from .safety import *
 from .action_gate import SafetyGateDenied, begin_action
 from .budget import bounded_action_timeout, enforce_wall_budget
+from .progress_monitor import (
+    enforce_progress_deadline,
+    observe_progress,
+    remaining_progress_seconds,
+)
 from .utils import display_path, truncate_text, unique_ordered
 from .workspace import resolve_project_path
 
@@ -304,36 +311,162 @@ def run_checked_command(
         else timeout
     )
     started = time.monotonic()
-    try:
-        result = subprocess.run(
-            shlex.split(command),
-            cwd=project,
-            text=True,
-            capture_output=True,
-            timeout=effective_timeout,
-            check=False,
-        )
-        duration = time.monotonic() - started
-        return (
-            command_result_document(command, result.returncode, result.stdout, result.stderr, duration),
-            result.returncode == 0,
-        )
-    except subprocess.TimeoutExpired as exc:
-        duration = time.monotonic() - started
-        if run_dir is not None:
-            enforce_wall_budget(
-                run_dir,
-                action,
-                action_type="command",
-                budget_dirs=control_dirs,
+    progress_enabled = (
+        run_dir is not None
+        and remaining_progress_seconds(run_dir, control_dirs) is not None
+    )
+    if not progress_enabled:
+        try:
+            result = subprocess.run(
+                shlex.split(command),
+                cwd=project,
+                text=True,
+                capture_output=True,
+                timeout=effective_timeout,
+                check=False,
             )
-        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
-        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", errors="replace")
-        stderr = stderr + f"\ncommand timed out after {effective_timeout:g}s"
-        diagnostic = unittest_timeout_diagnostic(project, command, effective_timeout)
-        if diagnostic:
-            stderr = stderr + "\n\n" + diagnostic
-        return command_result_document(command, 124, stdout, stderr, duration), False
+            duration = time.monotonic() - started
+            return (
+                command_result_document(
+                    command,
+                    result.returncode,
+                    result.stdout,
+                    result.stderr,
+                    duration,
+                ),
+                result.returncode == 0,
+            )
+        except subprocess.TimeoutExpired as exc:
+            duration = time.monotonic() - started
+            if run_dir is not None:
+                enforce_wall_budget(
+                    run_dir,
+                    action,
+                    action_type="command",
+                    budget_dirs=control_dirs,
+                )
+            stdout = (
+                exc.stdout
+                if isinstance(exc.stdout, str)
+                else (exc.stdout or b"").decode("utf-8", errors="replace")
+            )
+            stderr = (
+                exc.stderr
+                if isinstance(exc.stderr, str)
+                else (exc.stderr or b"").decode("utf-8", errors="replace")
+            )
+            stderr = stderr + f"\ncommand timed out after {effective_timeout:g}s"
+            diagnostic = unittest_timeout_diagnostic(project, command, effective_timeout)
+            if diagnostic:
+                stderr = stderr + "\n\n" + diagnostic
+            return command_result_document(command, 124, stdout, stderr, duration), False
+        except FileNotFoundError as exc:
+            duration = time.monotonic() - started
+            return command_result_document(command, 127, "", str(exc), duration), False
+
+    try:
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            process = subprocess.Popen(
+                shlex.split(command),
+                cwd=project,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=True,
+            )
+
+            def stop_process() -> None:
+                if process.poll() is not None:
+                    return
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=0.5)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    if process.poll() is None:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.wait(timeout=1.0)
+
+            last_output_bytes = 0
+            timed_out = False
+            try:
+                while process.poll() is None:
+                    output_bytes = (
+                        os.fstat(stdout_file.fileno()).st_size
+                        + os.fstat(stderr_file.fileno()).st_size
+                    )
+                    if run_dir is not None and output_bytes > last_output_bytes:
+                        observe_progress(
+                            run_dir,
+                            {
+                                "current_function": action,
+                                "command_output_bytes": output_bytes,
+                            },
+                            source="command_output",
+                            control_dirs=control_dirs,
+                        )
+                        last_output_bytes = output_bytes
+                    elapsed = time.monotonic() - started
+                    hard_remaining = max(0.0, effective_timeout - elapsed)
+                    idle_remaining = (
+                        remaining_progress_seconds(run_dir, control_dirs)
+                        if run_dir is not None
+                        else None
+                    )
+                    if hard_remaining <= 0 or (
+                        idle_remaining is not None and idle_remaining <= 0
+                    ):
+                        timed_out = True
+                        break
+                    waits = [hard_remaining]
+                    if idle_remaining is not None:
+                        waits.append(max(0.01, idle_remaining / 2.0))
+                    wait_for = min(0.2, *waits)
+                    if wait_for <= 0:
+                        timed_out = True
+                        break
+                    try:
+                        process.wait(timeout=wait_for)
+                    except subprocess.TimeoutExpired:
+                        continue
+            except BaseException:
+                stop_process()
+                raise
+
+            if timed_out and process.poll() is None:
+                stop_process()
+            else:
+                process.wait()
+
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read().decode("utf-8", errors="replace")
+            stderr = stderr_file.read().decode("utf-8", errors="replace")
+            duration = time.monotonic() - started
+            if not timed_out:
+                return (
+                    command_result_document(command, process.returncode, stdout, stderr, duration),
+                    process.returncode == 0,
+                )
+
+            if run_dir is not None:
+                enforce_wall_budget(
+                    run_dir,
+                    action,
+                    action_type="command",
+                    budget_dirs=control_dirs,
+                )
+                enforce_progress_deadline(
+                    run_dir,
+                    action,
+                    control_dirs=control_dirs,
+                )
+            stderr = stderr + f"\ncommand timed out after {effective_timeout:g}s"
+            diagnostic = unittest_timeout_diagnostic(project, command, effective_timeout)
+            if diagnostic:
+                stderr = stderr + "\n\n" + diagnostic
+            return command_result_document(command, 124, stdout, stderr, duration), False
     except FileNotFoundError as exc:
         duration = time.monotonic() - started
         return command_result_document(command, 127, "", str(exc), duration), False

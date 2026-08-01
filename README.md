@@ -145,6 +145,24 @@ python3 local_sdlc.py budget-status --run-dir .sdlc-runner/runs/<run-id>
 上限到達は通常のテスト失敗とは区別され、`budget_stop.json` に理由が残ります。同じrunの再開で
 上限を引き上げたり停止を解除したりはできないため、設定を変える場合は新しいrunとして開始します。
 
+進捗監視は、工程、実行中の機能、LLMストリーム量、作成文書・検証証拠・変更ファイルなどの
+機械観測値が変化しているかを確認します。既定では900秒間変化がなければ`STALLED`として停止し、
+`stall.json`へ最後の進捗ベクトルと理由を残します。単なる経過時間や監視ログ自身の更新は進捗に
+数えません。
+
+```bash
+python3 local_sdlc.py agent "修正して" \
+  --include app.py --apply \
+  --max-idle-seconds 900
+
+python3 local_sdlc.py progress-status --run-dir .sdlc-runner/runs/<run-id>
+```
+
+ストリーミング中は受信量の変化で期限が更新されるため、長く考えていても出力が継続している処理を
+時間だけで停止しません。一方、同じ観測値のままAPIやコマンドが止まった場合は、残り停滞時間を
+単一処理のtimeoutにも反映します。`STALLED`からの自動回復はP04の責務であり、現段階では通常の
+resumeで停止状態を解除しません。
+
 Qwen / Ornith などのモデル差し替えは、散在する個別 flag ではなく `--model-profile` と
 `--api-profile FUNCTION:key=value` で管理します。
 

@@ -17,6 +17,7 @@ from .budget import (
     DEFAULT_MAX_STAGE_ACTIONS,
     DEFAULT_MAX_WALL_SECONDS,
 )
+from .progress_monitor import DEFAULT_MAX_IDLE_SECONDS
 from .evidence import (
     acceptance_blockers as _acceptance_blockers,
     build_acceptance_matrix as _build_acceptance_matrix,
@@ -369,6 +370,7 @@ def build_stage_agent_args(
         max_recovery_actions=getattr(args, "max_recovery_actions", DEFAULT_MAX_RECOVERY_ACTIONS),
         max_api_calls=getattr(args, "max_api_calls", DEFAULT_MAX_API_CALLS),
         max_wall_seconds=getattr(args, "max_wall_seconds", DEFAULT_MAX_WALL_SECONDS),
+        max_idle_seconds=getattr(args, "max_idle_seconds", DEFAULT_MAX_IDLE_SECONDS),
         run_dir=run_dir,
     )
 
@@ -537,6 +539,7 @@ def build_integration_repair_args(
         max_recovery_actions=getattr(args, "max_recovery_actions", DEFAULT_MAX_RECOVERY_ACTIONS),
         max_api_calls=getattr(args, "max_api_calls", DEFAULT_MAX_API_CALLS),
         max_wall_seconds=getattr(args, "max_wall_seconds", DEFAULT_MAX_WALL_SECONDS),
+        max_idle_seconds=getattr(args, "max_idle_seconds", DEFAULT_MAX_IDLE_SECONDS),
         run_dir=run_dir / "s99-final-integration-repair",
     )
 

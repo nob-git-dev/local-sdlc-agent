@@ -27,6 +27,7 @@ class LocalLLMClient:
         self.reasoning_records: list[dict[str, object]] = []
         self.runtime_timeout_limit: float | None = None
         self.runtime_timeout_callback: Callable[[], None] | None = None
+        self.runtime_progress_callback: Callable[[LLMStreamStats], None] | None = None
 
     def set_runtime_timeout_limit(
         self,
@@ -44,6 +45,12 @@ class LocalLLMClient:
     def _notify_runtime_timeout(self) -> None:
         if self.runtime_timeout_callback is not None:
             self.runtime_timeout_callback()
+
+    def set_runtime_progress_callback(
+        self,
+        callback: Callable[[LLMStreamStats], None] | None,
+    ) -> None:
+        self.runtime_progress_callback = callback
 
     def _record_reasoning_content(
         self,
@@ -144,6 +151,7 @@ class LocalLLMClient:
             raise RunnerError(f"LLM API HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                self._notify_runtime_timeout()
                 raise LLMTimeoutError(path, request_timeout) from exc
             raise RunnerError(f"LLM API connection failed: {exc.reason}") from exc
         finally:
@@ -239,6 +247,7 @@ class LocalLLMClient:
         start = time.monotonic()
         first_chunk_at: float | None = None
         last_chunk_at: float | None = None
+        last_progress_callback_at: float | None = None
         partial_file = None
         partial_path_text = str(partial_output_path) if partial_output_path else None
         use_wall_clock_alarm = threading.current_thread() is threading.main_thread()
@@ -315,19 +324,40 @@ class LocalLLMClient:
                             saved_part = reasoning_text[:remaining]
                             reasoning_parts.append(saved_part)
                             reasoning_saved_chars += len(saved_part)
-                    if progress_callback and (content_chunks == 1 or chunks_received % 20 == 0):
-                        progress_callback(
-                            LLMStreamStats(
-                                chunks_received=chunks_received,
-                                content_chunks=content_chunks,
-                                reasoning_chunks=reasoning_chunks,
-                                bytes_received=bytes_received,
-                                first_chunk_at=first_chunk_at,
-                                last_chunk_at=last_chunk_at,
-                                duration_seconds=now - start,
-                                partial_output_path=partial_path_text,
-                            )
+                    callback_interval = max(
+                        0.05,
+                        min(5.0, self._effective_timeout(requested_timeout) / 2.0),
+                    )
+                    callback_due = (
+                        last_progress_callback_at is None
+                        or content_chunks == 1
+                        or chunks_received % 20 == 0
+                        or now - last_progress_callback_at >= callback_interval
+                    )
+                    if (progress_callback or self.runtime_progress_callback) and callback_due:
+                        current_stats = LLMStreamStats(
+                            chunks_received=chunks_received,
+                            content_chunks=content_chunks,
+                            reasoning_chunks=reasoning_chunks,
+                            bytes_received=bytes_received,
+                            first_chunk_at=first_chunk_at,
+                            last_chunk_at=last_chunk_at,
+                            duration_seconds=now - start,
+                            partial_output_path=partial_path_text,
                         )
+                        if progress_callback:
+                            progress_callback(current_stats)
+                        elif self.runtime_progress_callback:
+                            self.runtime_progress_callback(current_stats)
+                        last_progress_callback_at = now
+                        # The callback may refresh a persistent no-progress
+                        # deadline. Reset the main-thread alarm without
+                        # extending the independently recomputed wall budget.
+                        if use_wall_clock_alarm:
+                            signal.setitimer(
+                                signal.ITIMER_REAL,
+                                self._effective_timeout(requested_timeout),
+                            )
         except (TimeoutError, socket.timeout) as exc:
             self._notify_runtime_timeout()
             raise LLMTimeoutError("/chat/completions", request_timeout) from exc
@@ -336,6 +366,7 @@ class LocalLLMClient:
             raise RunnerError(f"LLM API HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                self._notify_runtime_timeout()
                 raise LLMTimeoutError("/chat/completions", request_timeout) from exc
             raise RunnerError(f"LLM API connection failed: {exc.reason}") from exc
         finally:
@@ -358,6 +389,8 @@ class LocalLLMClient:
         )
         if progress_callback:
             progress_callback(stats)
+        elif self.runtime_progress_callback:
+            self.runtime_progress_callback(stats)
         content_text = "".join(output_parts).strip()
         if not content_text and reasoning_chunks:
             raise RunnerError(

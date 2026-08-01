@@ -42,6 +42,7 @@ from .artifacts import *
 from .control import *
 from .safety import *
 from .budget import *
+from .progress_monitor import *
 from .run_state import *
 from .requirements import *
 from .evidence import *
@@ -308,6 +309,14 @@ def command_budget_status(args: argparse.Namespace) -> int:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
+
+def command_progress_status(args: argparse.Namespace) -> int:
+    run_dir = args.run_dir.expanduser().resolve()
+    payload = progress_status(run_dir)
+    payload["action_gate_audit"] = action_gate_audit(run_dir)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
 def _run_json_from_path(path: Path) -> Path:
     if path.is_dir():
         return path / "run.json"
@@ -497,6 +506,18 @@ def add_budget_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_progress_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--max-idle-seconds",
+        type=float,
+        default=DEFAULT_MAX_IDLE_SECONDS,
+        help=(
+            "maximum seconds without an observable progress-vector change "
+            f"before STALLED (default {DEFAULT_MAX_IDLE_SECONDS:g})"
+        ),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run SDLC skills with a configurable OpenAI-compatible LLM API."
@@ -535,6 +556,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_stages = sub.add_parser("run-stages", help="execute the synthesized stage queue with isolated agent runs")
     add_common_arguments(run_stages)
     add_budget_arguments(run_stages)
+    add_progress_arguments(run_stages)
     run_stages.add_argument("brief", help="development request")
     run_stages.add_argument("--pm-skill", default="sdlc", help="skill used for PM-level planning")
     run_stages.add_argument("--coder-skill", default="tdd", help="skill used for coder-level implementation")
@@ -625,6 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
     supervisor = sub.add_parser("supervisor", help="route work using the bundled SDLC Supervisor")
     add_common_arguments(supervisor)
     add_budget_arguments(supervisor)
+    add_progress_arguments(supervisor)
     supervisor.add_argument("brief", help="user request to classify and route")
     supervisor.add_argument("--agents-dir", type=Path, default=DEFAULT_AGENTS_DIR, help="directory containing supervisor.md")
     supervisor.add_argument("--phases", default="auto", help="auto or comma-separated SDLC phases")
@@ -640,6 +663,7 @@ def build_parser() -> argparse.ArgumentParser:
     supervise = sub.add_parser("supervise", help="run PM/Coder/Judge as independent documented calls")
     add_common_arguments(supervise)
     add_budget_arguments(supervise)
+    add_progress_arguments(supervise)
     supervise.add_argument("brief", help="development request")
     supervise.add_argument("--steps", default="pm,coder,judge", help="comma-separated: spec,pm,coder,judge or all")
     supervise.add_argument("--pm-skill", default="sdlc", help="skill used for PM-level planning")
@@ -658,6 +682,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent = sub.add_parser("agent", help="run a minimal coding agent loop: code, apply, test, judge")
     add_common_arguments(agent)
     add_budget_arguments(agent)
+    add_progress_arguments(agent)
     agent.add_argument("brief", help="development request")
     agent.add_argument("--pm-skill", default="sdlc", help="skill used for PM-level planning")
     agent.add_argument("--coder-skill", default="tdd", help="skill used for coder-level implementation")
@@ -749,6 +774,13 @@ def build_parser() -> argparse.ArgumentParser:
     budget_status_parser = sub.add_parser("budget-status", help="show persistent budget usage and stop reason")
     budget_status_parser.add_argument("--run-dir", type=Path, required=True)
     budget_status_parser.set_defaults(func=command_budget_status)
+
+    progress_status_parser = sub.add_parser(
+        "progress-status",
+        help="show the current progress vector, idle time, and STALLED reason",
+    )
+    progress_status_parser.add_argument("--run-dir", type=Path, required=True)
+    progress_status_parser.set_defaults(func=command_progress_status)
 
     check = sub.add_parser("check-command", help="evaluate a shell command against local safety rules")
     check.add_argument("command")

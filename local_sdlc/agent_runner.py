@@ -35,6 +35,7 @@ from .policy_triage import (
     triage_string_list,
 )
 from .budget import *
+from .progress_monitor import *
 from .action_gate import *
 
 
@@ -110,13 +111,38 @@ def command_agent(args: argparse.Namespace) -> int:
         budget_limits_from_args(args),
         scope_kind="stage" if control_dirs else "goal_stage",
     )
-    begin_action(
+    initialize_progress_monitor(
         run_dir,
-        "agent_setup",
-        action_type="resume" if args.resume else "orchestration",
-        risk_class="read_only",
-        control_dirs=control_dirs,
+        progress_policy_from_args(args),
+        scope_kind="stage" if control_dirs else "goal_stage",
     )
+    try:
+        begin_action(
+            run_dir,
+            "agent_setup",
+            action_type="resume" if args.resume else "orchestration",
+            risk_class="read_only",
+            control_dirs=control_dirs,
+        )
+    except ProgressStalled as exc:
+        write_run_document(
+            run_dir,
+            "run.partial.json",
+            json.dumps(
+                {
+                    "brief": args.brief,
+                    "command": "agent",
+                    "status": "stalled",
+                    "final_verdict": "stalled",
+                    "stall": dict(exc.stall),
+                    "progress": progress_status(run_dir, evaluate=False),
+                    "budget": budget_status(run_dir),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        raise
 
     resume_worktree_source: Path | None = None
     if args.resume_worktree_path:
@@ -250,9 +276,15 @@ def command_agent(args: argparse.Namespace) -> int:
                 {"budget_stop": dict(exc.stop)},
             )
             raise
+        except ProgressStalled as exc:
+            final_verdict = "stalled"
+            final_failure_type = "stalled"
+            write_partial_manifest(
+                "stalled",
+                {"stall": dict(exc.stall)},
+            )
+            raise
         if action_type == "api_call":
-            remaining = remaining_wall_seconds(run_dir, control_dirs)
-
             def enforce_api_deadline() -> None:
                 nonlocal final_verdict, final_failure_type
                 try:
@@ -270,12 +302,75 @@ def command_agent(args: argparse.Namespace) -> int:
                         {"budget_stop": dict(exc.stop)},
                     )
                     raise
+                try:
+                    enforce_progress_deadline(
+                        run_dir,
+                        action,
+                        control_dirs=control_dirs,
+                    )
+                except ProgressStalled as exc:
+                    final_verdict = "stalled"
+                    final_failure_type = "stalled"
+                    write_partial_manifest(
+                        "stalled",
+                        {"stall": dict(exc.stall)},
+                    )
+                    raise
 
             set_timeout_limit = getattr(client, "set_runtime_timeout_limit", None)
-            if callable(set_timeout_limit):
-                set_timeout_limit(remaining, enforce_api_deadline)
+            set_progress_callback = getattr(client, "set_runtime_progress_callback", None)
+
+            def bind_timeout() -> None:
+                wall_remaining = remaining_wall_seconds(run_dir, control_dirs)
+                progress_remaining = remaining_progress_seconds(run_dir, control_dirs)
+                limits = [
+                    value
+                    for value in (wall_remaining, progress_remaining)
+                    if value is not None
+                ]
+                remaining = min(limits) if limits else None
+                if callable(set_timeout_limit):
+                    set_timeout_limit(remaining, enforce_api_deadline)
+
+            def record_stream_progress(stats: LLMStreamStats) -> None:
+                observe_progress(
+                    run_dir,
+                    {
+                        "current_function": action,
+                        "stream_chunks": stats.chunks_received,
+                        "stream_bytes": stats.bytes_received,
+                        "reasoning_chunks": stats.reasoning_chunks,
+                    },
+                    source="llm_stream",
+                    control_dirs=control_dirs,
+                )
+                bind_timeout()
+
+            if callable(set_progress_callback):
+                set_progress_callback(record_stream_progress)
+            bind_timeout()
 
     def write_partial_manifest(status: str, extra: dict[str, object] | None = None) -> None:
+        if status not in {
+            "stalled",
+            "budget_exhausted",
+            "approval_required",
+            "safety_blocked",
+            "cancelled",
+        }:
+            observe_progress(
+                run_dir,
+                {
+                    "round": completed_rounds,
+                    "documents_count": len(written),
+                    "evidence_count": len(evidence_records),
+                    "changed_paths_hash": progress_vector_hash(
+                        {"changed_paths_hash": "|".join(sorted(set(changed_paths)))}
+                    ),
+                },
+                source=f"manifest:{status}",
+                control_dirs=control_dirs,
+            )
         acceptance_matrix = build_acceptance_matrix(acceptance_criteria, evidence_records)
         partial_doc: dict[str, object] = {
             "brief": args.brief,
@@ -351,6 +446,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "blocked_safety_decisions": blocked_safety_decisions(run_dir),
             "action_gate_audit": action_gate_audit(run_dir),
             "budget": budget_status(run_dir),
+            "progress": progress_status(run_dir, evaluate=False),
             "documents": [display_path(path, original_project) for path in written],
         }
         if latest_stream_status:
@@ -383,6 +479,35 @@ def command_agent(args: argparse.Namespace) -> int:
             f"{status} before command execution: "
             + str(decision.get("decision_id") or "unknown")
         )
+
+    def run_agent_checked_command(
+        command: str,
+        *,
+        action: str,
+    ) -> tuple[str, bool]:
+        nonlocal final_verdict, final_failure_type
+        try:
+            return run_checked_command(
+                project,
+                command,
+                args.command_timeout,
+                run_dir,
+                action=action,
+                control_dirs=control_dirs,
+            )
+        except ProgressStalled as exc:
+            final_verdict = "stalled"
+            final_failure_type = "stalled"
+            write_partial_manifest("stalled", {"stall": dict(exc.stall)})
+            raise
+        except BudgetExceeded as exc:
+            final_verdict = "budget_exhausted"
+            final_failure_type = "budget_exhausted"
+            write_partial_manifest(
+                "budget_exhausted",
+                {"budget_stop": dict(exc.stop)},
+            )
+            raise
 
     def record_transition(failure_type: str, round_index: int, evidence: str = "") -> FailureTransition:
         transition = transition_for_failure(failure_type)
@@ -496,6 +621,18 @@ def command_agent(args: argparse.Namespace) -> int:
         current_round: int | None = None,
     ) -> Callable[[LLMStreamStats], None]:
         def update_stream_status(stats: LLMStreamStats) -> None:
+            observe_progress(
+                run_dir,
+                {
+                    "round": current_round if current_round is not None else completed_rounds,
+                    "current_function": label,
+                    "stream_chunks": stats.chunks_received,
+                    "stream_bytes": stats.bytes_received,
+                    "reasoning_chunks": stats.reasoning_chunks,
+                },
+                source="llm_stream",
+                control_dirs=control_dirs,
+            )
             latest_stream_status.clear()
             latest_stream_status.update(
                 {
@@ -1072,13 +1209,9 @@ def command_agent(args: argparse.Namespace) -> int:
             evidence_records.append(evidence)
 
         for index, command in enumerate(test_commands, start=1):
-            doc, ok = run_checked_command(
-                project,
+            doc, ok = run_agent_checked_command(
                 command,
-                args.command_timeout,
-                run_dir,
                 action=f"initial_test_command_{index}",
-                control_dirs=control_dirs,
             )
             path = write_run_document(run_dir, f"00-initial-command-{index:02d}.md", doc)
             written.append(path)
@@ -1217,6 +1350,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "blocked_safety_decisions": blocked_safety_decisions(run_dir),
             "action_gate_audit": action_gate_audit(run_dir),
             "budget": budget_status(run_dir),
+            "progress": progress_status(run_dir, evaluate=False),
             "documents": [display_path(path, original_project) for path in written],
         }
         attach_regression_memory(manifest_doc, run_dir, original_project, written)
@@ -2768,13 +2902,9 @@ def command_agent(args: argparse.Namespace) -> int:
                 command_ok = command_ok and ok
 
             for index, command in enumerate(test_commands, start=1):
-                doc, ok = run_checked_command(
-                    project,
+                doc, ok = run_agent_checked_command(
                     command,
-                    args.command_timeout,
-                    run_dir,
                     action=f"round_test_command_{index}",
-                    control_dirs=control_dirs,
                 )
                 path = write_run_document(run_dir, f"05-r{round_index:02d}-command-{index:02d}.md", doc)
                 written.append(path)
@@ -3222,6 +3352,7 @@ def command_agent(args: argparse.Namespace) -> int:
         "blocked_safety_decisions": blocked_safety_decisions(run_dir),
         "action_gate_audit": action_gate_audit(run_dir),
         "budget": budget_status(run_dir),
+        "progress": progress_status(run_dir, evaluate=False),
         "documents": [display_path(path, original_project) for path in written],
     }
     attach_regression_memory(manifest_doc, run_dir, original_project, written)

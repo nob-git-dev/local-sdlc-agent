@@ -19,6 +19,7 @@ from .stages import *
 from .control import *
 from .safety import *
 from .budget import *
+from .progress_monitor import *
 from .action_gate import *
 
 
@@ -27,6 +28,25 @@ def _write_supervisor_budget_stop(run_dir: Path, stop: dict[str, object]) -> Non
         "status": "budget_exhausted",
         "final_verdict": "budget_exhausted",
         "budget_stop": stop,
+        "budget": budget_status(run_dir),
+        "progress": progress_status(run_dir, evaluate=False),
+        "action_gate_audit": action_gate_audit(run_dir),
+        "pending_safety_decisions": pending_safety_decisions(run_dir),
+        "blocked_safety_decisions": blocked_safety_decisions(run_dir),
+    }
+    write_run_document(
+        run_dir,
+        "run.partial.json",
+        json.dumps(partial, ensure_ascii=False, indent=2),
+    )
+
+
+def _write_supervisor_stall(run_dir: Path, stall: dict[str, object]) -> None:
+    partial = {
+        "status": "stalled",
+        "final_verdict": "stalled",
+        "stall": stall,
+        "progress": progress_status(run_dir, evaluate=False),
         "budget": budget_status(run_dir),
         "action_gate_audit": action_gate_audit(run_dir),
         "pending_safety_decisions": pending_safety_decisions(run_dir),
@@ -57,22 +77,55 @@ def _begin_supervisor_action(
     except BudgetExceeded as exc:
         _write_supervisor_budget_stop(run_dir, dict(exc.stop))
         raise
+    except ProgressStalled as exc:
+        _write_supervisor_stall(run_dir, dict(exc.stall))
+        raise
     if action_type != "api_call":
         return
-    remaining = remaining_wall_seconds(run_dir)
     set_timeout_limit = getattr(client, "set_runtime_timeout_limit", None)
-    if callable(set_timeout_limit):
-        def enforce_api_deadline() -> None:
-            try:
-                enforce_wall_budget(run_dir, action, action_type=action_type)
-            except BudgetExceeded as exc:
-                _write_supervisor_budget_stop(run_dir, dict(exc.stop))
-                raise
+    set_progress_callback = getattr(client, "set_runtime_progress_callback", None)
 
-        set_timeout_limit(
-            remaining,
-            enforce_api_deadline,
+    def enforce_api_deadline() -> None:
+        try:
+            enforce_wall_budget(run_dir, action, action_type=action_type)
+        except BudgetExceeded as exc:
+            _write_supervisor_budget_stop(run_dir, dict(exc.stop))
+            raise
+        try:
+            enforce_progress_deadline(run_dir, action)
+        except ProgressStalled as exc:
+            _write_supervisor_stall(run_dir, dict(exc.stall))
+            raise
+
+    def bind_timeout() -> None:
+        wall_remaining = remaining_wall_seconds(run_dir)
+        progress_remaining = remaining_progress_seconds(run_dir)
+        limits = [
+            value
+            for value in (wall_remaining, progress_remaining)
+            if value is not None
+        ]
+        remaining = min(limits) if limits else None
+        if callable(set_timeout_limit):
+            set_timeout_limit(remaining, enforce_api_deadline)
+
+    def record_stream_progress(stats: LLMStreamStats) -> None:
+        observe_progress(
+            run_dir,
+            {
+                "current_function": action,
+                "stream_chunks": stats.chunks_received,
+                "stream_bytes": stats.bytes_received,
+                "reasoning_chunks": stats.reasoning_chunks,
+            },
+            source="llm_stream",
         )
+        bind_timeout()
+
+    if callable(set_progress_callback):
+        set_progress_callback(record_stream_progress)
+    if callable(set_timeout_limit):
+        bind_timeout()
 
 
 def command_supervisor(args: argparse.Namespace) -> int:
@@ -100,6 +153,11 @@ def command_supervisor(args: argparse.Namespace) -> int:
     client = LocalLLMClient(build_config(args))
     run_dir = make_run_dir(project, args.run_dir)
     initialize_budget(run_dir, budget_limits_from_args(args), scope_kind="goal_stage")
+    initialize_progress_monitor(
+        run_dir,
+        progress_policy_from_args(args),
+        scope_kind="goal_stage",
+    )
     _begin_supervisor_action(
         client,
         run_dir,
@@ -225,6 +283,7 @@ def command_supervisor(args: argparse.Namespace) -> int:
         "pending_safety_decisions": pending_safety_decisions(run_dir),
         "blocked_safety_decisions": blocked_safety_decisions(run_dir),
         "budget": budget_status(run_dir),
+        "progress": progress_status(run_dir, evaluate=False),
         "documents": [display_path(path, project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
@@ -251,6 +310,11 @@ def command_supervise(args: argparse.Namespace) -> int:
     client = LocalLLMClient(build_config(args))
     run_dir = make_run_dir(project, args.run_dir)
     initialize_budget(run_dir, budget_limits_from_args(args), scope_kind="goal_stage")
+    initialize_progress_monitor(
+        run_dir,
+        progress_policy_from_args(args),
+        scope_kind="goal_stage",
+    )
     _begin_supervisor_action(
         client,
         run_dir,
@@ -513,6 +577,7 @@ def command_supervise(args: argparse.Namespace) -> int:
         "pending_safety_decisions": pending_safety_decisions(run_dir),
         "blocked_safety_decisions": blocked_safety_decisions(run_dir),
         "budget": budget_status(run_dir),
+        "progress": progress_status(run_dir, evaluate=False),
         "documents": [display_path(path, project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))

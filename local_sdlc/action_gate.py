@@ -10,6 +10,12 @@ import uuid
 from .control import ensure_not_cancelled, read_progress_events, record_work_start, work_starts_after_cancel
 from .budget import consume_action_budget, read_budget_events, read_budget_policy, refund_action_budget
 from .models import RunnerError
+from .progress_monitor import (
+    ensure_not_stalled,
+    read_progress_policy,
+    start_progress_action,
+    work_starts_after_stall,
+)
 from .safety import (
     SafetyDecision,
     action_safety_decision,
@@ -43,9 +49,11 @@ def begin_action(
     """Authorize and record one action before any side effect starts.
 
     Ordering invariant:
-    cancel check -> persisted SafetyDecision -> consumed budget -> atomic work_start -> execution.
+    cancel check -> stall check -> persisted SafetyDecision -> consumed budget
+    -> atomic stall recheck/work_start -> execution.
     """
     ensure_not_cancelled(run_dir, action, control_dirs)
+    ensure_not_stalled(run_dir, action, control_dirs)
     action_id = uuid.uuid4().hex
     action_metadata = dict(metadata or {})
     action_metadata["action_id"] = action_id
@@ -82,12 +90,23 @@ def begin_action(
     }
     if budget_event:
         work_metadata["budget_event_id"] = budget_event.get("event_id")
-    try:
-        record_work_start(
+
+    def start_work() -> dict[str, object]:
+        return record_work_start(
             run_dir,
             action,
             metadata=work_metadata,
             control_dirs=control_dirs,
+        )
+
+    try:
+        start_progress_action(
+            run_dir,
+            action,
+            action_type=action_type,
+            metadata=work_metadata,
+            control_dirs=control_dirs,
+            start_work=start_work,
         )
     except RunnerError as exc:
         if budget_event:
@@ -160,12 +179,18 @@ def action_gate_audit(run_dir: Path) -> dict[str, object]:
                     }
                 )
     cancel_violations = work_starts_after_cancel(run_dir)
+    stall_enabled = bool(read_progress_policy(run_dir))
+    stall_violations = work_starts_after_stall(run_dir) if stall_enabled else []
     return {
-        "status": "pass" if not cancel_violations and not safety_violations and not budget_violations else "fail",
+        "status": "pass"
+        if not cancel_violations and not stall_violations and not safety_violations and not budget_violations
+        else "fail",
         "cancel_absorbing": not cancel_violations,
+        "stall_absorbing": not stall_violations,
         "safety_precedes_work": not safety_violations,
         "budget_precedes_work": not budget_violations,
         "cancel_violations": cancel_violations,
+        "stall_violations": stall_violations,
         "safety_violations": safety_violations,
         "budget_violations": budget_violations,
     }

@@ -595,6 +595,10 @@
               <label for="max-wall-seconds">最大実行時間（秒）</label>
               <input id="max-wall-seconds" type="number" min="1" step="1">
             </div>
+            <div>
+              <label for="max-idle-seconds">進捗停止と判断する時間（秒）</label>
+              <input id="max-idle-seconds" type="number" min="1" step="1">
+            </div>
           </div>
         </details>
       </section>
@@ -786,7 +790,8 @@
         max_stage_actions: numberValue("max-stage-actions"),
         max_recovery_actions: numberValue("max-recovery-actions"),
         max_api_calls: numberValue("max-api-calls"),
-        max_wall_seconds: numberValue("max-wall-seconds", false)
+        max_wall_seconds: numberValue("max-wall-seconds", false),
+        max_idle_seconds: numberValue("max-idle-seconds", false)
       };
     }
     function readiness() {
@@ -851,6 +856,8 @@
       el("max-recovery-actions").value = budgetDefaults.max_recovery_actions || 100;
       el("max-api-calls").value = budgetDefaults.max_api_calls || 250;
       el("max-wall-seconds").value = budgetDefaults.max_wall_seconds || 86400;
+      const progressDefaults = config.progress_defaults || {};
+      el("max-idle-seconds").value = progressDefaults.max_idle_seconds || 900;
       for (const profile of config.model_profiles) {
         const option = document.createElement("option");
         option.value = profile;
@@ -926,6 +933,21 @@
           stop.reason ? `停止理由: ${stop.reason}` : ""
         ].filter(Boolean).join("\n");
         panel.appendChild(budgetBox);
+      }
+
+      const progressMonitor = job.result.progress_monitor || {};
+      if (progressMonitor.state && progressMonitor.state !== "not_configured") {
+        const policy = progressMonitor.policy || {};
+        const stall = progressMonitor.stall || {};
+        const progressBox = document.createElement("div");
+        progressBox.className = "result-meta";
+        progressBox.textContent = [
+          `進捗監視: ${progressMonitor.state === "stalled" ? "停止を検出" : "監視中"}`,
+          `無変化 ${Math.round(progressMonitor.idle_seconds || 0)}秒/${policy.max_idle_seconds || "-"}秒`,
+          progressMonitor.source ? `最後の観測: ${progressMonitor.source}` : "",
+          stall.reason ? `停止理由: ${stall.reason}` : ""
+        ].filter(Boolean).join("\n");
+        panel.appendChild(progressBox);
       }
 
       const pendingSafety = job.result.pending_safety_decisions || [];

@@ -20,6 +20,7 @@ from .budget import (
     DEFAULT_MAX_STAGE_ACTIONS,
     DEFAULT_MAX_WALL_SECONDS,
 )
+from .progress_monitor import DEFAULT_MAX_IDLE_SECONDS
 from .models import DEFAULT_API_KEY, MODEL_PROFILE_ALIASES, RunnerError
 from .web_jobs import JobRegistry, WebConfig, _repo_entrypoint, build_cli_command, resolve_project_path
 
@@ -143,6 +144,9 @@ class AgentWebHandler(BaseHTTPRequestHandler):
                         "max_recovery_actions": DEFAULT_MAX_RECOVERY_ACTIONS,
                         "max_api_calls": DEFAULT_MAX_API_CALLS,
                         "max_wall_seconds": DEFAULT_MAX_WALL_SECONDS,
+                    },
+                    "progress_defaults": {
+                        "max_idle_seconds": DEFAULT_MAX_IDLE_SECONDS,
                     },
                 }
             )

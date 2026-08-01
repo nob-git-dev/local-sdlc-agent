@@ -27,6 +27,10 @@ from .budget import (
     DEFAULT_MAX_WALL_SECONDS,
     budget_status,
 )
+from .progress_monitor import (
+    DEFAULT_MAX_IDLE_SECONDS,
+    progress_status,
+)
 from .safety import pending_safety_decisions, read_safety_decisions, request_safety_approval
 from .models import DEFAULT_BASE_URL, DEFAULT_MODEL, GENERATED_DIR, RunnerError
 
@@ -348,6 +352,8 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
     manifest, manifest_path, partial_manifest = _manifest_for_run(run_dir)
     budget = budget_status(run_dir) if run_dir is not None else {"state": "not_configured"}
     budget_exhausted = budget.get("state") == "exhausted"
+    progress_monitor = progress_status(run_dir) if run_dir is not None else {"state": "not_configured"}
+    stalled = progress_monitor.get("state") == "stalled"
     artifacts: list[dict[str, object]] = []
     seen: set[str] = set()
 
@@ -403,7 +409,7 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
                 "brief": f"{payload.get('brief') or 'この依頼'}について、目的、固定要件、受け入れ条件、検証方法をSPEC.mdに整理して",
             }
         )
-    if payload.get("status") == "failed" and not budget_exhausted:
+    if payload.get("status") == "failed" and not budget_exhausted and not stalled:
         next_actions.append(
             {
                 "type": "analyze_failure",
@@ -455,12 +461,16 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
         safety_state = "SAFETY_BLOCKED"
     elif pending_approvals:
         safety_state = "APPROVAL_REQUIRED"
-    control_state = "BUDGET_EXHAUSTED" if budget_exhausted else safety_state
+    control_state = "BUDGET_EXHAUSTED" if budget_exhausted else ("STALLED" if stalled else safety_state)
     progress = _progress_text(payload, run_dir, manifest, partial_manifest)
     if budget_exhausted:
         stop = budget.get("stop")
         reason = str(stop.get("reason") or "") if isinstance(stop, dict) else ""
         progress = "予算上限で停止" + (f": {reason}" if reason else "")
+    elif stalled:
+        stall = progress_monitor.get("stall")
+        reason = str(stall.get("reason") or "") if isinstance(stall, dict) else ""
+        progress = "進捗が止まったため停止" + (f": {reason}" if reason else "")
     return {
         "run_dir": str(run_dir) if run_dir is not None else "",
         "run_manifest": str(manifest_path) if manifest_path is not None else "",
@@ -475,6 +485,7 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
         "safety_state": safety_state,
         "control_state": control_state,
         "budget": budget,
+        "progress_monitor": progress_monitor,
         "pending_safety_decisions": pending_approvals,
         "blocked_safety_decisions": blocked_decisions[-5:],
         "artifacts": artifacts,
@@ -538,6 +549,16 @@ def _append_budget_args(command: list[str], payload: dict[str, object]) -> None:
         command.extend([flag, str(_number_at_least(payload, key, default, minimum))])
 
 
+def _append_progress_args(command: list[str], payload: dict[str, object]) -> None:
+    value = _number_at_least(
+        payload,
+        "max_idle_seconds",
+        DEFAULT_MAX_IDLE_SECONDS,
+        0.001,
+    )
+    command.extend(["--max-idle-seconds", str(value)])
+
+
 def _append_run_dir_arg(command: list[str], payload: dict[str, object], project: Path) -> None:
     run_dir_text = _optional_text(payload, "run_dir")
     if not run_dir_text:
@@ -562,6 +583,7 @@ def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCom
     _append_common_args(command, payload, config, project)
     if mode in {"agent", "run-stages", "supervisor"}:
         _append_budget_args(command, payload)
+        _append_progress_args(command, payload)
 
     brief = _optional_text(payload, "brief")
     if mode in {"agent", "run-stages", "spec"} and not brief:

@@ -96,16 +96,18 @@ The first implementation should keep the vector small and observable:
   "stream_bytes": 12345,
   "stream_chunks": 88,
   "reasoning_chunks": 12,
+  "command_output_bytes": 0,
   "documents_count": 19,
   "evidence_count": 6,
+  "acceptance_pass_count": 4,
   "changed_paths_hash": "stable-hash",
-  "partial_manifest_mtime": 1234567890.0,
-  "output_log_mtime": 1234567890.0
+  "evidence_hash": "stable-hash"
 }
 ```
 
-The exact threshold values are not fixed in this concept spec. They must be
-configurable and tuned by tests.
+Wall-clock duration, status-file mtimes, and monitor writes are intentionally
+not vector dimensions: observing the monitor itself must not refresh the
+deadline. Thresholds are configurable and must be tuned from run evidence.
 
 ## State Machine
 
@@ -409,3 +411,49 @@ absorbing-stop, independent dimensions, cancel/safety precedence, injected
 wall deadlines, in-flight command timeout, parent/child propagation,
 20-thread start races, immutable resume policy, Action Gate audit, agent API
 cutoff, staged propagation, CLI reporting, and Web reporting.
+
+### 2026-08-01 P03 Persistent No-Progress Monitor
+
+P03 uses a deliberately small, canonical progress vector `V(t)`. Let `H` be a
+stable JSON hash and `Imax` the immutable idle threshold for one run:
+
+```text
+Changed(t) := H(V(t)) != H(V(last))
+
+last_progress(t) :=
+  t             if Changed(t)
+  last_progress otherwise
+
+STALLED(t) := t - last_progress(t) >= Imax
+```
+
+The vector admits only observable workflow dimensions: stage/function/round,
+LLM stream bytes and chunks, command output bytes, document/evidence counts,
+acceptance progress, and stable hashes of changed paths or evidence. Elapsed
+duration, status-file mtimes, action UUIDs, and the monitor's own writes are
+excluded, because a self-generated heartbeat must not prove progress.
+
+P03 is liveness detection, not repeated-failure diagnosis. A changing LLM
+stream is live even when the semantic quality is not yet known; P05 separately
+decides whether completed attempts remain on the same failure plateau.
+
+Implemented invariants:
+
+- `progress_policy.json` fixes `max_idle_seconds`; the default is 900 seconds
+- `progress_state.json` stores the latest canonical vector and last meaningful change
+- `stall.json` is the canonical, persistent `STALLED` reason and evidence
+- identical observations do not refresh `last_progress_at`
+- stream bytes/chunks refresh the deadline, including Supervisor calls that do not provide a runner-specific callback
+- quiet non-stream API calls and commands are bounded by the smaller of wall-budget remaining time and no-progress remaining time
+- the Action Gate performs an early stall check and an atomic stall recheck/work-start under the progress lock
+- if STALLED wins after budget admission but before work-start, the unused budget charge is refunded
+- child-stage stall and parent-goal propagation occur under ordered progress locks
+- Action Gate audit detects any legacy work-start after the persisted stall sequence
+- CLI `--max-idle-seconds` and `progress-status`, Web advanced settings, manifests, and Web job results expose the same state
+- P03 does not invent a recovery action; until P04, ordinary resume/retry cannot clear `STALLED`
+
+Verified by `tests.test_progress_monitor.ProgressMonitorTests`, including exact
+threshold behavior, volatile-field rejection, stream deadline refresh,
+absorbing stop, budget refund at a stall race, parent/child propagation,
+post-stall audit, immutable policy, quiet-command interruption, agent API
+interruption, staged promotion, CLI reporting, and Web reporting.

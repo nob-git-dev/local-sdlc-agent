@@ -17,6 +17,7 @@ from .artifacts import *
 from .control import *
 from .safety import *
 from .budget import *
+from .progress_monitor import *
 from .run_state import *
 from .stages import *
 from .history import *
@@ -63,6 +64,11 @@ def command_run_stages(args: argparse.Namespace) -> int:
         prior_context_paths.extend(stage_required_paths(stage))
     run_dir = make_run_dir(project, args.run_dir)
     initialize_budget(run_dir, budget_limits_from_args(args), scope_kind="goal")
+    initialize_progress_monitor(
+        run_dir,
+        progress_policy_from_args(args),
+        scope_kind="goal",
+    )
     begin_action(
         run_dir,
         "run_stages_setup",
@@ -76,26 +82,31 @@ def command_run_stages(args: argparse.Namespace) -> int:
     child_pending_safety_decisions: list[dict[str, object]] = []
     child_blocked_safety_decisions: list[dict[str, object]] = []
     child_budget_stops: list[dict[str, object]] = []
+    child_stalls: list[dict[str, object]] = []
 
     def run_child_agent(
         child_args: argparse.Namespace,
         child_run_dir: Path,
-    ) -> tuple[int, list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
+    ) -> tuple[int, list[dict[str, object]], list[dict[str, object]], dict[str, object], dict[str, object]]:
         try:
             exit_code = command_agent(child_args)
         except BudgetExceeded as exc:
-            return 1, pending_safety_decisions(child_run_dir), blocked_safety_decisions(child_run_dir), dict(exc.stop)
+            return 1, pending_safety_decisions(child_run_dir), blocked_safety_decisions(child_run_dir), dict(exc.stop), read_stall_state(child_run_dir)
+        except ProgressStalled as exc:
+            return 1, pending_safety_decisions(child_run_dir), blocked_safety_decisions(child_run_dir), read_budget_stop(child_run_dir), dict(exc.stall)
         except RunnerError:
             child_pending = pending_safety_decisions(child_run_dir)
             child_blocked = blocked_safety_decisions(child_run_dir)
-            if not child_pending and not child_blocked:
+            child_stall = read_stall_state(child_run_dir)
+            if not child_pending and not child_blocked and not child_stall:
                 raise
-            return 1, child_pending, child_blocked, read_budget_stop(child_run_dir)
+            return 1, child_pending, child_blocked, read_budget_stop(child_run_dir), child_stall
         return (
             exit_code,
             pending_safety_decisions(child_run_dir),
             blocked_safety_decisions(child_run_dir),
             read_budget_stop(child_run_dir),
+            read_stall_state(child_run_dir),
         )
 
     queue_doc = stage_queue_document(stages)
@@ -107,6 +118,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         manifest["model_profile"] = llm_model_profile_manifest(args)
         manifest["documents"] = [display_path(path, project) for path in written]
         manifest["budget"] = budget_status(run_dir)
+        manifest["progress"] = progress_status(run_dir, evaluate=False)
         manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         written.append(manifest_path)
         print(f"run_dir: {run_dir}")
@@ -132,11 +144,14 @@ def command_run_stages(args: argparse.Namespace) -> int:
         except BudgetExceeded:
             final_status = "budget_exhausted"
             break
+        except ProgressStalled:
+            final_status = "stalled"
+            break
         stage_dir = run_dir / f"{stage.stage_id.lower()}-{slugify(stage.title)}"
         stage_args = build_stage_agent_args(args, stage, stage_dir, completed, prior_changed_paths)
         stage_args.control_dir = [run_dir]
         print(f"stage: {stage.stage_id} {stage.title}")
-        exit_code, stage_pending, stage_blocked, stage_budget_stop = run_child_agent(stage_args, stage_dir)
+        exit_code, stage_pending, stage_blocked, stage_budget_stop, stage_stall = run_child_agent(stage_args, stage_dir)
         summary = read_stage_agent_manifest(stage, stage_dir, exit_code, project)
         completed.append(summary)
         prior_changed_paths = unique_ordered([*prior_changed_paths, *summary.changed_paths, *summary.required_paths])
@@ -154,6 +169,10 @@ def command_run_stages(args: argparse.Namespace) -> int:
             child_budget_stops.append(
                 {**stage_budget_stop, "run_dir": str(stage_dir.resolve()), "stage_id": stage.stage_id}
             )
+        if stage_stall:
+            child_stalls.append(
+                {**stage_stall, "run_dir": str(stage_dir.resolve()), "stage_id": stage.stage_id}
+            )
 
         manifest = stage_run_manifest(args.brief, stages, completed, "running", args.test_command or [], project)
         manifest["model_profile"] = llm_model_profile_manifest(args)
@@ -162,8 +181,13 @@ def command_run_stages(args: argparse.Namespace) -> int:
         manifest["blocked_safety_decisions"] = list(child_blocked_safety_decisions)
         manifest["budget"] = budget_status(run_dir)
         manifest["child_budget_stops"] = list(child_budget_stops)
+        manifest["progress"] = progress_status(run_dir, evaluate=False)
+        manifest["child_stalls"] = list(child_stalls)
         write_run_document(run_dir, "run.partial.json", json.dumps(manifest, ensure_ascii=False, indent=2))
 
+        if stage_stall:
+            final_status = "stalled"
+            break
         if stage_budget_stop:
             final_status = "budget_exhausted"
             break
@@ -201,6 +225,10 @@ def command_run_stages(args: argparse.Namespace) -> int:
                 final_status = "budget_exhausted"
                 final_ok = False
                 break
+            except ProgressStalled:
+                final_status = "stalled"
+                final_ok = False
+                break
             path = write_run_document(run_dir, f"99-final-command-{index:02d}.md", doc)
             written.append(path)
             final_checks.append(
@@ -223,7 +251,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         if read_budget_stop(run_dir):
             final_status = "budget_exhausted"
             final_ok = False
-        if final_status not in {"approval_required", "safety_blocked", "budget_exhausted"}:
+        if final_status not in {"approval_required", "safety_blocked", "budget_exhausted", "stalled"}:
             final_required_paths = all_stage_required_paths(stages)
             try:
                 begin_action(
@@ -235,7 +263,10 @@ def command_run_stages(args: argparse.Namespace) -> int:
             except BudgetExceeded:
                 final_status = "budget_exhausted"
                 final_ok = False
-        if final_status not in {"approval_required", "safety_blocked", "budget_exhausted"}:
+            except ProgressStalled:
+                final_status = "stalled"
+                final_ok = False
+        if final_status not in {"approval_required", "safety_blocked", "budget_exhausted", "stalled"}:
             for index, (doc, ok) in enumerate(run_required_path_checks(project, final_required_paths), start=1):
                 path = write_run_document(run_dir, f"99-final-required-path-{index:02d}.md", doc)
                 written.append(path)
@@ -248,7 +279,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
                     }
                 )
                 final_ok = final_ok and ok
-        if not final_ok and final_status not in {"approval_required", "safety_blocked", "budget_exhausted"}:
+        if not final_ok and final_status not in {"approval_required", "safety_blocked", "budget_exhausted", "stalled"}:
             final_status = "final_check_failed"
 
     integration_repair: StageRunSummary | None = None
@@ -262,7 +293,9 @@ def command_run_stages(args: argparse.Namespace) -> int:
             )
         except BudgetExceeded:
             final_status = "budget_exhausted"
-        if final_status != "budget_exhausted":
+        except ProgressStalled:
+            final_status = "stalled"
+        if final_status not in {"budget_exhausted", "stalled"}:
             repair_stage = StageWorkItem(
                 stage_id="S99",
                 title="Final integration repair",
@@ -273,12 +306,17 @@ def command_run_stages(args: argparse.Namespace) -> int:
             print("stage: S99 Final integration repair")
             repair_args = build_integration_repair_args(args, stages, completed, run_dir)
             repair_args.control_dir = [run_dir]
-            exit_code, repair_pending, repair_blocked, repair_budget_stop = run_child_agent(
+            exit_code, repair_pending, repair_blocked, repair_budget_stop, repair_stall = run_child_agent(
                 repair_args,
                 repair_args.run_dir,
             )
             integration_repair = read_stage_agent_manifest(repair_stage, repair_args.run_dir, exit_code, project)
-            if repair_budget_stop:
+            if repair_stall:
+                child_stalls.append(
+                    {**repair_stall, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": "S99"}
+                )
+                final_status = "stalled"
+            elif repair_budget_stop:
                 child_budget_stops.append(
                     {**repair_budget_stop, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": "S99"}
                 )
@@ -349,6 +387,8 @@ def command_run_stages(args: argparse.Namespace) -> int:
     ]
     manifest["budget"] = budget_status(run_dir)
     manifest["child_budget_stops"] = child_budget_stops
+    manifest["progress"] = progress_status(run_dir, evaluate=False)
+    manifest["child_stalls"] = child_stalls
     manifest["action_gate_audit"] = action_gate_audit(run_dir)
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     written.append(manifest_path)
