@@ -19,7 +19,8 @@ L01-L04: event contract, ledger/outbox, completeness, legacy adapters
           (acceptance propositions EL01-EL06)
     -> Integration Gate A
     -> resume Supervisor P04/P05 while collecting real episodes
-    -> EL05-EL12: normalization, abstraction, validation, registry, retrieval
+    -> L05-L11: normalization, abstraction, validation, registry, retrieval
+               (acceptance propositions EL07-EL12)
 ```
 
 Building the full learner before observing real P04/P05 recovery events would
