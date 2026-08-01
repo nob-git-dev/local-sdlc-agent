@@ -15,6 +15,11 @@ staged execution, prompt contracts, artifact controls, verification evidence,
 major routines, and current implementation limitations with interactive
 diagrams and charts.
 
+## Active Specifications
+
+- **Autonomous execution plane:** [`architecture/autonomous_supervisor_runtime_spec.md`](architecture/autonomous_supervisor_runtime_spec.md)
+- **Experience learning control plane:** [`../learning-runtime/SPEC.md`](../learning-runtime/SPEC.md)
+
 ## Structure
 
 | Directory | Purpose |

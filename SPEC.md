@@ -15,6 +15,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 文書成果物: `.sdlc-runner/runs/` に保存される Markdown / JSON の判断記録、実行証拠、失敗分析、生成物ログ。
 - runner: LLM の出力を検査し、許可された場合だけファイル適用、テスト実行、証拠保存を行う決定的な実行制御層。
 - 自律 Supervisor Runtime: agent / run-stages / Web job を外側から監視し、停止・停滞・失敗を状態として分類し、安全条件を満たす範囲で resume / retry / split / blocked へ遷移させる親制御層。
+- Experience Learning Runtime: Supervisor の状態遷移イベントを別プロセスで収集し、経験の構造化、知識候補の抽象化、反例検証、版管理された知識スナップショットの公開を行う学習制御面。モデルの重み学習は行わない。
 - Safety/Suppression Harness: command、artifact apply、resume、service 操作、git 操作などの action を実行前に分類し、allow / require_approval / block を決定する安全制御層。
 - 中核命題: 現時点で固定してよい安全・進捗・証拠の不変条件。例: Safety は完走性より優先する、cancel 後に新しい action を開始しない。
 - 発見命題: 実装・検証・失敗分析で新たに判明した条件。証拠、適用範囲、反例、汎用化理由を持つ場合だけ SPEC.md または learning record へ昇格できる。
@@ -43,6 +44,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | Model/API Preset Profile | Qwen/Ornith/Nemotron などモデル特性ごとの既定 model・temperature・max_tokens・thinking を名前付き preset として管理する | モデル差し替えを散在 CLI flag ではなく `--model-profile` と function-level override で行い、API call ごとの model 選択余地を残す |
 | Local Web Chat UI | ブラウザから chat 形式で `agent` / `run-stages` / `spec` / `doctor` / `health` を投入・監視・停止する | Web UI は薄い presentation adapter に留め、既存 CLI harness の実行規律を迂回しない |
 | Autonomous Supervisor Runtime | 長時間実行、停滞、失敗、再開、stage split を goal 単位で管理し、完了または理由付き blocked へ到達させる | 停止した agent 自身に自己観測を任せず、外側の親制御層が観測・判断・再投入を行う |
+| Experience Learning Runtime | 複数プロジェクトの検証済み経験を別制御面で収集・抽象化・反例検証し、次回以降の run が利用できる知識へ育てる | 実行中の run を変更せず、LLM 候補を直接有効化せず、scope・authority・evidence・counterexample を持つ版管理済みスナップショットだけを読み取り利用させる |
 | Safety/Suppression Harness | すべての action を実行前に安全分類し、人間 cancel / approval-required / block を完走性より優先する | LLM に実行承認権限を渡さず、危険操作を粘り強く再試行する自律ループにしない |
 | Anti-overfitting Governance | 失敗から得た学習を中核命題と発見命題に分け、適用範囲と反例を持つ規則だけを昇格する | Tetris / Mini SQLite / 特定モデルなど個別経験を無条件に一般規則へしない |
 
@@ -89,6 +91,8 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - `require_approval` の action は人間承認が記録されるまで実行しない。LLM 出力、Judge 承認、成功予測は人間承認の代替にならない。
 - 発見命題を一般規則に昇格する場合は、根拠となる evidence、適用範囲、既知の反例、汎用化理由、回帰テストを持たせる。
 - 過去 benchmark から得た個別修復規則は、core runner に直接ハードコードせず、まず発見命題または scope 付き regression memory として保存する。
+- Experience Learning Runtime の詳細仕様は `learning-runtime/SPEC.md` を正本とする。Supervisor は状態遷移を直接学習規則へ変換せず、共通イベント契約へ永続化するだけとし、別プロセスが候補化、反例検証、昇格、版管理を行う。
+- 学習基盤は `learning-runtime/SPEC.md` の L01〜L04（EL01〜EL06）を P04/P05 より先に実装する。Integration Gate A 後は、実際の recovery event を蓄積しながら残りの学習機能と Supervisor Runtime を交互に進める。
 
 ## 受け入れ条件
 
@@ -148,6 +152,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [ ] P10: 自律 mode のファイル変更は既定で隔離 worktree 上で行われ、承認済み成果物だけが元 project へ copy back される
 - [ ] P11: 発見命題は evidence、scope、counterexamples、generalization_rationale、regression_tests を持たない限り中核規則へ昇格されない
 - [ ] P12: Tetris、Mini SQLite、Redis など既存 benchmark 固有の失敗規則は、未知小課題に対する regression で過剰発火しないことを確認する
+- [ ] EL-GA: `learning-runtime/SPEC.md` の L01〜L04（EL01〜EL06）が完了し、共通イベント契約、transactional outbox、完全性監査、既存 P01/P02/P03/P09 証拠の移行互換性を満たす
 
 ## スコープ（やらないこと）
 
@@ -204,6 +209,9 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - P04が完成するまで STALLED は通常 action に対する吸収状態であり、LLMの自己判断や単純resumeで解除しない
 - 自律 mode の変更適用は既定で隔離 worktree 上で行う
 - 中核命題と発見命題を分離し、発見命題を一般規則へ昇格するには evidence、scope、counterexamples、generalization_rationale、regression_tests を必須とする
+- canonical な状態遷移は単一の transition gateway を通り、要求された event と run-local outbox record を同じ transaction で永続化する。イベント契約がない状態遷移を追加した場合はテストを失敗させる
+- 学習制御面は Supervisor とは別プロセス・別保存領域で動作し、対象 project と実行中 run に対する書き込み権限を持たない
+- active run は開始時に選択した immutable knowledge snapshot だけを読み取り利用し、実行途中の知識昇格で判断基準を変更しない
 
 ## システム構成（コンポーネント依存関係）
 
@@ -228,6 +236,12 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 変更対象: `docs/architecture/autonomous_supervisor_runtime_spec.md`
   - 依存している: 本 SPEC.md、これまでの Tetris / Mini SQLite / Redis 実験で得た停止・安全・過剰適合の知見
   - 依存されている: 今後の実装フェーズ、TDD、review
+- 変更対象: `learning-runtime/`
+  - 依存している: versioned event contract、run-local outbox、既存の progress / safety / budget / stall / failure evidence
+  - 依存されている: Knowledge Registry、将来の Supervisor read-only retriever、P11/P12 の検証
+- 変更対象: `.sdlc-runner/runs/<timestamp>/runtime-events.sqlite3`
+  - 依存している: canonical transition gateway、standard-library SQLite transaction
+  - 依存されている: Experience Collector、event completeness audit、legacy JSON/JSONL projection
 - 変更対象: `tests/test_local_sdlc.py`
   - 依存している: `local_sdlc.py`, 一時ディレクトリ上のテスト用 SKILL.md
   - 依存されている: 受け入れ条件の検証
@@ -240,9 +254,10 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 
 - Presentation 層: `argparse` による CLI、標準出力、標準ライブラリHTTPサーバーによるローカルWeb UI
 - Application 層: Supervisor、agent loop、stage runner、repair budget、workflow orchestration、Autonomous Supervisor Runtime
-- Domain 層: Skill model、生成物プロトコル、failure classification、semantic contract、stage work item、ProgressEvent、SafetyDecision、Core/Discovered Proposition
+- Learning Control Plane: Experience Collector、Episode Builder、Candidate Miner、Validator、Knowledge Registry、Snapshot Publisher
+- Domain 層: Skill model、生成物プロトコル、failure classification、semantic contract、stage work item、ProgressEvent、SafetyDecision、Core/Discovered Proposition、TransitionEvent、KnowledgeCandidate
 - Infrastructure 層: OpenAI 互換 HTTP クライアント、streaming、git/subprocess、ファイルシステム読み書き
-- Persistence 層: run manifest、run_dir、SPEC.md、progress.jsonl、safety_decisions.jsonl、control token、観測ログ、docs 出力
+- Persistence 層: run manifest、run_dir、SPEC.md、progress.jsonl、safety_decisions.jsonl、runtime event ledger/outbox、knowledge registry/snapshot、control token、観測ログ、docs 出力
 
 ### ADR
 
@@ -311,6 +326,12 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 **判断:** `local_sdlc.py web` は Python 標準ライブラリの `ThreadingHTTPServer` で単一HTMLを配信し、UI からの依頼を既存 CLI コマンドの argv に変換してローカル子プロセスとして起動する。
 **理由:** Web UI が agent harness を再実装すると、CLI とブラウザで挙動が分岐し、安全制御が抜ける。UI は開始・監視・停止だけに限定し、実装判断は既存 Application/Domain/Infrastructure 層へ委譲する。
 **影響:** Web UI は完全ローカルで動く。外部Web framework、npm、CDNは不要。ジョブログは `.sdlc-runner/web/jobs/` に残り、CLI実行時の `.sdlc-runner/runs/` と合わせて監査できる。
+
+#### ADR-12: 学習は別制御面で行い、実行系とは durable event contract で接続する
+**状況:** progress、safety、budget、stall、failure analysis には再利用可能な経験が残るが、個別ログの追加忘れ、実行中の自己書き換え、単一 benchmark への過剰適合を防ぐ統一境界がない。
+**判断:** `learning-runtime/SPEC.md` を正本とする別プロセスを設け、Supervisor は canonical transition と outbox event の永続化だけを担う。学習側は非同期に収集・候補化・反例検証・昇格し、Supervisor は次の run 開始時に immutable snapshot を読み取る。
+**理由:** 実行と学習を時間・権限・保存領域で分離しつつ、状態遷移イベントの呼び忘れを契約網羅テストと closure audit で機械的に防止するため。
+**影響:** P04/P05 より先に L01〜L04（EL01〜EL06）を実装する。Integration Gate A 後は P04/P05 と学習機能を交互に進め、実 recovery event を検証材料にする。LLM は知識候補を直接有効化できない。
 
 ## テスト計画
 
