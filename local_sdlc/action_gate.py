@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 import uuid
 
 from .control import ensure_not_cancelled, read_progress_events, record_work_start, work_starts_after_cancel
@@ -43,8 +43,12 @@ def begin_action(
     risk_class: str,
     metadata: Mapping[str, object] | None = None,
     control_dirs: Sequence[Path] = (),
+    cancel_dirs: Sequence[Path] | None = None,
+    budget_dirs: Sequence[Path] | None = None,
+    progress_dirs: Sequence[Path] | None = None,
     command: str = "",
     decision: SafetyDecision | None = None,
+    pre_work_check: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     """Authorize and record one action before any side effect starts.
 
@@ -52,8 +56,11 @@ def begin_action(
     cancel check -> stall check -> persisted SafetyDecision -> consumed budget
     -> atomic stall recheck/work_start -> execution.
     """
-    ensure_not_cancelled(run_dir, action, control_dirs)
-    ensure_not_stalled(run_dir, action, control_dirs)
+    cancellation_scope = tuple(control_dirs if cancel_dirs is None else cancel_dirs)
+    budget_scope = tuple(control_dirs if budget_dirs is None else budget_dirs)
+    progress_scope = tuple(control_dirs if progress_dirs is None else progress_dirs)
+    ensure_not_cancelled(run_dir, action, cancellation_scope)
+    ensure_not_stalled(run_dir, action, progress_scope)
     action_id = uuid.uuid4().hex
     action_metadata = dict(metadata or {})
     action_metadata["action_id"] = action_id
@@ -80,7 +87,7 @@ def begin_action(
         action,
         action_type=action_type,
         action_id=action_id,
-        budget_dirs=control_dirs,
+        budget_dirs=budget_scope,
     )
     work_metadata = {
         **action_metadata,
@@ -96,7 +103,8 @@ def begin_action(
             run_dir,
             action,
             metadata=work_metadata,
-            control_dirs=control_dirs,
+            control_dirs=cancellation_scope,
+            pre_start_check=pre_work_check,
         )
 
     try:
@@ -105,7 +113,7 @@ def begin_action(
             action,
             action_type=action_type,
             metadata=work_metadata,
-            control_dirs=control_dirs,
+            control_dirs=progress_scope,
             start_work=start_work,
         )
     except RunnerError as exc:
@@ -115,7 +123,7 @@ def begin_action(
                 action,
                 action_type=action_type,
                 action_id=action_id,
-                budget_dirs=control_dirs,
+                budget_dirs=budget_scope,
                 reason=f"work_start was not recorded: {exc}",
             )
         raise
@@ -180,7 +188,20 @@ def action_gate_audit(run_dir: Path) -> dict[str, object]:
                 )
     cancel_violations = work_starts_after_cancel(run_dir)
     stall_enabled = bool(read_progress_policy(run_dir))
-    stall_violations = work_starts_after_stall(run_dir) if stall_enabled else []
+    raw_stall_violations = work_starts_after_stall(run_dir) if stall_enabled else []
+    if raw_stall_violations:
+        # Recovery is the only controlled exception to STALLED absorption. The
+        # validator rechecks the persisted plan and stall digest; a metadata flag
+        # by itself never authorizes work after a stall.
+        from .recovery_plan import recovery_authorization_is_valid
+
+        stall_violations = [
+            event
+            for event in raw_stall_violations
+            if not recovery_authorization_is_valid(event)
+        ]
+    else:
+        stall_violations = []
     return {
         "status": "pass"
         if not cancel_violations and not stall_violations and not safety_violations and not budget_violations

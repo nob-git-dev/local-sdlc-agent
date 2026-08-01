@@ -6,7 +6,7 @@ from contextlib import ExitStack, contextmanager
 import json
 import time
 from pathlib import Path
-from typing import Iterator, Mapping, Sequence
+from typing import Callable, Iterator, Mapping, Sequence
 
 import fcntl
 
@@ -196,9 +196,12 @@ def record_work_start(
     *,
     metadata: Mapping[str, object] | None = None,
     control_dirs: Sequence[Path] = (),
+    pre_start_check: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     with _locked_control_scope(run_dir, control_dirs) as scoped:
         _ensure_scope_not_cancelled(scoped, action)
+        if pre_start_check is not None:
+            pre_start_check()
         event = _append_progress_event_unlocked(
             run_dir,
             "work_start",

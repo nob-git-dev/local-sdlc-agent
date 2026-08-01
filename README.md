@@ -160,8 +160,33 @@ python3 local_sdlc.py progress-status --run-dir .sdlc-runner/runs/<run-id>
 
 ストリーミング中は受信量の変化で期限が更新されるため、長く考えていても出力が継続している処理を
 時間だけで停止しません。一方、同じ観測値のままAPIやコマンドが止まった場合は、残り停滞時間を
-単一処理のtimeoutにも反映します。`STALLED`からの自動回復はP04の責務であり、現段階では通常の
-resumeで停止状態を解除しません。
+単一処理のtimeoutにも反映します。`STALLED`になった元runは通常のresumeでは解除されません。
+自動回復を有効にすると、停止証拠に結び付いた変更不能な回復計画を保存し、新しいrunで再開します。
+
+```bash
+python3 local_sdlc.py agent "修正して" \
+  --include app.py --apply \
+  --auto-recover-stalls \
+  --max-idle-seconds 900
+```
+
+手動で確認してから再開する場合は、まず計画を作り、その計画が指定した新しいrunへ進めます。
+
+```bash
+python3 local_sdlc.py recovery-plan \
+  --run-dir .sdlc-runner/runs/<stalled-run-id> \
+  --strategy auto
+
+python3 local_sdlc.py agent "停止原因を分析して修正" \
+  --resume .sdlc-runner/runs/<stalled-run-id> \
+  --recovery-plan .sdlc-runner/runs/<stalled-run-id>/recovery_plan.json \
+  --run-dir <計画に表示された-recovery-target> \
+  --include app.py --apply
+```
+
+同じfailure familyが閾値以上続いた場合、通常のretryは許さず、独立したfailure analysisを先に実行します。
+分析済みでも同じ系列が続けばroot cause recoveryへ進みます。元runのcancel状態と回復予算は引き継ぎ、
+新しいrunの進捗時計だけを新しく始めます。
 
 Qwen / Ornith などのモデル差し替えは、散在する個別 flag ではなく `--model-profile` と
 `--api-profile FUNCTION:key=value` で管理します。

@@ -298,6 +298,8 @@ flowchart TD
 ### 7.2 Run Resume
 
 `agent --resume <run_dir>` は、前回の `run.json` と Markdown 文書を読み、次の repair round から続ける。
+ただし、前回runが `STALLED` の場合は単純resumeを拒否する。停止証拠と再開先を固定した
+`recovery_plan.json` を作り、その計画が指定する新しいrunでだけ再開できる。
 
 ```bash
 python3 local_sdlc.py agent "失敗を修正して" \
@@ -308,6 +310,22 @@ python3 local_sdlc.py agent "失敗を修正して" \
 ```
 
 このとき、新しい Coder API call は前回の会話履歴ではなく、保存済み文書だけを入力として受け取る。
+
+```bash
+python3 local_sdlc.py recovery-plan \
+  --run-dir .sdlc-runner/runs/20260704-120000 \
+  --strategy auto
+
+python3 local_sdlc.py agent "停止原因を分析して修正" \
+  --resume .sdlc-runner/runs/20260704-120000 \
+  --recovery-plan .sdlc-runner/runs/20260704-120000/recovery_plan.json \
+  --run-dir .sdlc-runner/runs/20260704-120000-recovery-01 \
+  --include app.py --apply
+```
+
+`--auto-recover-stalls` を付けると、この計画作成と新runへの接続を自動化する。source runの
+`STALLED` は消さず、cancelと回復予算を引き継ぐ。同じfailure familyが続く場合は、通常retryより
+failure analysis / root cause recoveryを優先する。
 
 ### 7.3 JSON Artifact
 

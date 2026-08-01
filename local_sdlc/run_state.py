@@ -16,7 +16,8 @@ from .utils import truncate_text, unique_ordered
 from .workspace import resolve_project_path
 
 
-def make_run_dir(project: Path, requested: Path | None = None) -> Path:
+def resolve_run_dir(project: Path, requested: Path | None = None) -> Path:
+    """Resolve a run directory without creating or otherwise mutating it."""
     if requested is not None:
         run_dir = requested
         if not run_dir.is_absolute():
@@ -29,6 +30,11 @@ def make_run_dir(project: Path, requested: Path | None = None) -> Path:
     else:
         timestamp = _datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         run_dir = project / GENERATED_DIR / "runs" / timestamp
+    return run_dir
+
+
+def make_run_dir(project: Path, requested: Path | None = None) -> Path:
+    run_dir = resolve_run_dir(project, requested)
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 

@@ -43,6 +43,8 @@ def record_runtime_transition(
     propositions: Sequence[str] = (),
     evidence_refs: Sequence[EvidenceReference] = (),
     eligibility: str = "unknown",
+    correlation_id: str = "",
+    causation_id: str | None = None,
 ) -> EventEnvelope:
     try:
         ledger = RuntimeEventLedger(run_dir)
@@ -62,6 +64,8 @@ def record_runtime_transition(
                 payload=payload,
                 propositions=tuple(propositions),
                 evidence_refs=tuple(evidence_refs),
+                correlation_id=correlation_id,
+                causation_id=causation_id,
                 knowledge_eligibility=eligibility,
                 sensitivity="project",
             )

@@ -15,7 +15,7 @@ import tempfile
 import textwrap
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .models import RunnerError
 from .safety import *
@@ -276,7 +276,14 @@ def run_checked_command(
     *,
     action: str = "command",
     control_dirs: Sequence[Path] = (),
+    cancel_dirs: Sequence[Path] | None = None,
+    budget_dirs: Sequence[Path] | None = None,
+    progress_dirs: Sequence[Path] | None = None,
+    metadata: Mapping[str, object] | None = None,
 ) -> tuple[str, bool]:
+    cancellation_scope = tuple(control_dirs if cancel_dirs is None else cancel_dirs)
+    budget_scope = tuple(control_dirs if budget_dirs is None else budget_dirs)
+    progress_scope = tuple(control_dirs if progress_dirs is None else progress_dirs)
     reason = dangerous_command_reason(command)
     shell_reason = unsupported_shell_command_reason(command)
     decision = command_safety_decision(
@@ -293,7 +300,10 @@ def run_checked_command(
                 action_type="command",
                 risk_class=decision.risk_class,
                 command=command,
-                control_dirs=control_dirs,
+                metadata=metadata,
+                cancel_dirs=cancellation_scope,
+                budget_dirs=budget_scope,
+                progress_dirs=progress_scope,
                 decision=decision,
             )
         except SafetyGateDenied as exc:
@@ -306,14 +316,14 @@ def run_checked_command(
         return command_result_document(command, 2, "", "", 0.0, blocked_reason), False
 
     effective_timeout = (
-        bounded_action_timeout(timeout, run_dir, control_dirs)
+        bounded_action_timeout(timeout, run_dir, budget_scope)
         if run_dir is not None
         else timeout
     )
     started = time.monotonic()
     progress_enabled = (
         run_dir is not None
-        and remaining_progress_seconds(run_dir, control_dirs) is not None
+        and remaining_progress_seconds(run_dir, progress_scope) is not None
     )
     if not progress_enabled:
         try:
@@ -343,7 +353,7 @@ def run_checked_command(
                     run_dir,
                     action,
                     action_type="command",
-                    budget_dirs=control_dirs,
+                    budget_dirs=budget_scope,
                 )
             stdout = (
                 exc.stdout
@@ -404,13 +414,13 @@ def run_checked_command(
                                 "command_output_bytes": output_bytes,
                             },
                             source="command_output",
-                            control_dirs=control_dirs,
+                            control_dirs=progress_scope,
                         )
                         last_output_bytes = output_bytes
                     elapsed = time.monotonic() - started
                     hard_remaining = max(0.0, effective_timeout - elapsed)
                     idle_remaining = (
-                        remaining_progress_seconds(run_dir, control_dirs)
+                        remaining_progress_seconds(run_dir, progress_scope)
                         if run_dir is not None
                         else None
                     )
@@ -455,12 +465,12 @@ def run_checked_command(
                     run_dir,
                     action,
                     action_type="command",
-                    budget_dirs=control_dirs,
+                    budget_dirs=budget_scope,
                 )
                 enforce_progress_deadline(
                     run_dir,
                     action,
-                    control_dirs=control_dirs,
+                    control_dirs=progress_scope,
                 )
             stderr = stderr + f"\ncommand timed out after {effective_timeout:g}s"
             diagnostic = unittest_timeout_diagnostic(project, command, effective_timeout)

@@ -43,6 +43,7 @@ from .control import *
 from .safety import *
 from .budget import *
 from .progress_monitor import *
+from .recovery import *
 from .run_state import *
 from .requirements import *
 from .evidence import *
@@ -217,7 +218,55 @@ def command_agent(args: argparse.Namespace) -> int:
     # Preserve the existing CLI-module monkeypatch surface used by tests and
     # external harnesses while keeping the execution loop outside this file.
     _sync_runner_dependencies()
-    return _agent_runner.command_agent(args)
+    automatic = bool(getattr(args, "auto_recover_stalls", False))
+    current = args
+    if automatic and current.run_dir is None:
+        current.run_dir = make_run_dir(current.project.resolve())
+
+    while True:
+        try:
+            result = _agent_runner.command_agent(current)
+        except ProgressStalled:
+            if not automatic:
+                raise
+        else:
+            args.completed_run_dir = Path(current.run_dir).resolve() if current.run_dir else None
+            return result
+
+        source = Path(current.run_dir).resolve()
+        plan = plan_stalled_recovery(
+            source,
+            requested_strategy=str(getattr(args, "recovery_strategy", "auto") or "auto"),
+            failure_family_threshold=int(
+                getattr(args, "failure_family_threshold", DEFAULT_FAILURE_FAMILY_THRESHOLD)
+            ),
+            target_profile=str(getattr(args, "recovery_profile", "") or ""),
+        )
+        target = Path(str(plan["target_run_dir"])).resolve()
+        inherited_cancel = list(
+            getattr(current, "cancel_control_dir", None)
+            or getattr(current, "control_dir", [])
+            or []
+        )
+        inherited_budget = list(
+            getattr(current, "budget_control_dir", None)
+            or getattr(current, "control_dir", [])
+            or []
+        )
+        next_args = argparse.Namespace(**vars(current))
+        next_args.resume = source
+        next_args.run_dir = target
+        next_args.recovery_plan = recovery_plan_file_path(source)
+        next_args.cancel_control_dir = list(dict.fromkeys([source, *inherited_cancel]))
+        next_args.budget_control_dir = list(dict.fromkeys([source, *inherited_budget]))
+        next_args.progress_control_dir = []
+        if plan.get("strategy") == "profile_switch":
+            next_args.model_profile = str(plan.get("target_profile") or "")
+        current = next_args
+        args.completed_run_dir = target
+        print(f"recovery_plan: {recovery_plan_file_path(source)}")
+        print(f"recovery_strategy: {plan['strategy']}")
+        print(f"recovery_target: {target}")
 
 
 
@@ -315,6 +364,19 @@ def command_progress_status(args: argparse.Namespace) -> int:
     payload = progress_status(run_dir)
     payload["action_gate_audit"] = action_gate_audit(run_dir)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_recovery_plan(args: argparse.Namespace) -> int:
+    source = args.run_dir.expanduser().resolve()
+    plan = plan_stalled_recovery(
+        source,
+        requested_strategy=args.strategy,
+        failure_family_threshold=args.failure_family_threshold,
+        target_run_dir=args.target_run_dir,
+        target_profile=args.target_profile,
+    )
+    print(json.dumps(plan, ensure_ascii=False, indent=2))
     return 0
 
 def _run_json_from_path(path: Path) -> Path:
@@ -740,6 +802,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="coder artifact format: JSON first, JSON only, or legacy diff/marker artifacts",
     )
     agent.add_argument("--resume", type=Path, default=None, help="resume/repair from a previous agent run directory")
+    agent.add_argument(
+        "--recovery-plan",
+        type=Path,
+        default=None,
+        help="validated recovery_plan.json required when --resume points to a STALLED run",
+    )
+    agent.add_argument(
+        "--auto-recover-stalls",
+        action="store_true",
+        help="plan and start bounded recovery attempts in new run directories after STALLED",
+    )
+    agent.add_argument(
+        "--recovery-strategy",
+        choices=("auto", *sorted(VALID_RECOVERY_STRATEGIES)),
+        default="auto",
+        help="strategy requested by automatic stalled recovery",
+    )
+    agent.add_argument("--recovery-profile", default="", help="target model profile for profile_switch recovery")
+    agent.add_argument(
+        "--failure-family-threshold",
+        type=int,
+        default=DEFAULT_FAILURE_FAMILY_THRESHOLD,
+        help="consecutive normalized failure-family observations before strategy escalation",
+    )
     agent.add_argument("--resume-worktree", action="store_true", help="when resuming, start from the previous run's temporary worktree state")
     agent.add_argument("--resume-worktree-path", type=Path, default=None, help="start from an explicit temporary worktree path, even without a completed run.json")
     agent.add_argument(
@@ -781,6 +867,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     progress_status_parser.add_argument("--run-dir", type=Path, required=True)
     progress_status_parser.set_defaults(func=command_progress_status)
+
+    recovery_plan_parser = sub.add_parser(
+        "recovery-plan",
+        help="create an evidence-bound recovery plan for a persistently stalled run",
+    )
+    recovery_plan_parser.add_argument("--run-dir", type=Path, required=True, help="stalled source run directory")
+    recovery_plan_parser.add_argument(
+        "--strategy",
+        choices=("auto", *sorted(VALID_RECOVERY_STRATEGIES)),
+        default="auto",
+        help="requested strategy; a proven failure plateau overrides ordinary retry",
+    )
+    recovery_plan_parser.add_argument("--target-run-dir", type=Path, default=None, help="new run directory")
+    recovery_plan_parser.add_argument("--target-profile", default="", help="required model profile for profile_switch")
+    recovery_plan_parser.add_argument(
+        "--failure-family-threshold",
+        type=int,
+        default=DEFAULT_FAILURE_FAMILY_THRESHOLD,
+        help="consecutive normalized failure-family observations before strategy escalation",
+    )
+    recovery_plan_parser.set_defaults(func=command_recovery_plan)
 
     check = sub.add_parser("check-command", help="evaluate a shell command against local safety rules")
     check.add_argument("command")

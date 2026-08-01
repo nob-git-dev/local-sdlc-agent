@@ -450,10 +450,71 @@ Implemented invariants:
 - child-stage stall and parent-goal propagation occur under ordered progress locks
 - Action Gate audit detects any legacy work-start after the persisted stall sequence
 - CLI `--max-idle-seconds` and `progress-status`, Web advanced settings, manifests, and Web job results expose the same state
-- P03 does not invent a recovery action; until P04, ordinary resume/retry cannot clear `STALLED`
+- P03 does not invent a recovery action; ordinary resume/retry cannot clear `STALLED`
 
 Verified by `tests.test_progress_monitor.ProgressMonitorTests`, including exact
 threshold behavior, volatile-field rejection, stream deadline refresh,
 absorbing stop, budget refund at a stall race, parent/child propagation,
 post-stall audit, immutable policy, quiet-command interruption, agent API
 interruption, staged promotion, CLI reporting, and Web reporting.
+
+### 2026-08-01 P04/P05 Evidence-bound Stalled Recovery
+
+P04 treats recovery as a new evidence-bound run, never as deletion of the
+source `STALLED` state. For a source run `S`, plan `R`, and target run `T`:
+
+```text
+ValidRecovery(R, S, T) :=
+  status(R) = RECOVERY_PLANNED
+  and source(R) = S
+  and target(R) = T
+  and T != S
+  and H(stall.json(S)) = R.source_stall_sha256
+  and id(R) = H(S, stall_hash, strategy, target_profile, T)
+
+AdmitRecovery(R) :=
+  ValidRecovery(R, S, T)
+  and not CancelRequested(S)
+  and SafetyAllowed(R)
+  and RecoveryBudgetRemaining(S)
+  and ValidRecovery(R, S, T) immediately before work_start
+```
+
+The second validation closes the interval between admission and work-start.
+If the persisted stall evidence changes in that interval, no work starts and
+the reserved budget charge is refunded. A metadata flag without a matching
+persisted plan and digest is never authorization.
+
+P05 uses only the newest consecutive normalized failure family `F`; a generic
+failure type cannot stand in for a project-specific family:
+
+```text
+Plateau(F, n) := F != empty and ConsecutiveNewest(F) >= n
+
+Strategy :=
+  failure_analysis     if Plateau and no completed analysis for F
+  root_cause_recovery  if Plateau and a completed analysis for F exists
+  requested strategy   otherwise
+```
+
+Implemented invariants:
+
+- `recovery_plan.json` is immutable for one stall digest and fixes source,
+  target, strategy, target profile, failure evidence, and causal event
+- the source remains `STALLED`; ordinary source actions and simple resume stay
+  blocked while the authorized target receives a fresh progress scope
+- source cancellation and recovery budget are inherited by the target, so a
+  new directory cannot reset user control or autonomous-loop limits
+- resume, retry, split, and profile switch are ordinary strategies only before
+  a same-family plateau is proven
+- profile switch plans enforce the planned model profile; a conflicting CLI
+  profile is rejected before creating the target directory or calling the LLM
+- failure analysis is an independent API call and precedes root-cause artifact
+  generation; its reasoning is handed off through persisted documents
+- completed analyses are recognized across same-family resume ancestry, while
+  a different family terminates the sequence
+- `RECOVERY_PLANNED`, `RECOVERY_STARTED`, and `RECOVERY_COMPLETED` use the
+  canonical transition gateway and carry causation identifiers
+
+Verified by `tests.test_recovery_runtime.RecoveryRuntimeTests` together with
+P01/P02/P03/P09 focus suites and the complete project test suite.

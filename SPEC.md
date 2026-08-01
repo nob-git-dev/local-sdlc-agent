@@ -143,8 +143,8 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] P02: 危険 action は人間承認なしに実行されず、`SafetyDecision` として `require_approval` または `block` が記録される
 - [x] P02a: command action は実行前に `SafetyDecision` を記録し、危険コマンドは `require_approval` または `block` として実行しない
 - [x] P03: progress vector が一定時間変化しない場合、goal または stage が `STALLED` に遷移する
-- [ ] P04: `STALLED` 後、許可された recovery が存在する場合は `RECOVERY_PLANNED` を記録し、resume / retry / split / profile switch のいずれかへ遷移できる
-- [ ] P05: 同一 failure family が閾値以上続く場合、通常 retry ではなく failure analysis または root cause recovery へ遷移する
+- [x] P04: `STALLED` 後、許可された recovery が存在する場合は `RECOVERY_PLANNED` を記録し、resume / retry / split / profile switch のいずれかへ遷移できる
+- [x] P05: 同一 failure family が閾値以上続く場合、通常 retry ではなく failure analysis または root cause recovery へ遷移する
 - [ ] P06: artifact 生成中に形式違反が確定した場合、stream guard が早期停止し、次 action を format repair または blocked に限定する
 - [ ] P07: `COMPLETED` は acceptance matrix の全条件が pass した場合だけ成立する
 - [ ] P08: `BLOCKED` は reason、supporting evidence、next required human input を持つ
@@ -198,7 +198,8 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 危険 action の承認は人間または明示 policy だけが与えられる。LLM は承認を代替しない
 - すべての自律 action は実行前に Safety/Suppression Harness を通す
 - 自律 loop には goal / stage / recovery / API call / wall-clock の予算上限を必ず設ける
-- action 開始判定は `cancel -> stall check -> SafetyDecision -> budget consume -> atomic stall recheck/work_start -> execution` の順で行い、cancel、STALLED、または Safety 拒否された action は実行しない
+- 通常 action の開始判定は `cancel -> stall check -> SafetyDecision -> budget consume -> atomic stall recheck/work_start -> execution` の順で行い、cancel、STALLED、または Safety 拒否された action は実行しない
+- STALLED recovery は、source の `stall.json` hash、遷移先 run、戦略を固定した `RECOVERY_PLANNED` 計画を検証し、`cancel -> recovery plan validation -> SafetyDecision -> inherited recovery budget consume -> atomic plan revalidation/work_start -> execution` の順で、新しい target run だけを開始する
 - goal と子 stage の予算消費は1回のロック区間で判定・記録し、一方だけ消費する部分成功を許さない
 - 予算停止は吸収状態とし、同じ run directory の resume や上限引き上げで解除しない
 - wall-clock の残量は API call と command の単一実行 timeout にも反映し、1 action が残り時間を超えて占有し続けない
@@ -206,7 +207,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - progress vector は stage/function/round の遷移、LLM stream bytes/chunks、文書・証拠数、変更パス・受け入れ証拠の安定hashなど、機械観測可能な値だけで構成する
 - 経過時間、status file の mtime、監視ログ自身の書き込みは progress と数えない
 - 子 stage の停滞判定と親 goal への伝播は1回のロック区間で行い、STALLED 後の新しい work-start を許さない
-- P04が完成するまで STALLED は通常 action に対する吸収状態であり、LLMの自己判断や単純resumeで解除しない
+- STALLED は source run の通常 action に対する吸収状態であり続け、LLMの自己判断、metadata flag、単純resumeでは解除しない。証拠と結び付いた immutable recovery plan に一致する新しい target run だけを許可する
 - 自律 mode の変更適用は既定で隔離 worktree 上で行う
 - 中核命題と発見命題を分離し、発見命題を一般規則へ昇格するには evidence、scope、counterexamples、generalization_rationale、regression_tests を必須とする
 - canonical な状態遷移は単一の transition gateway を通り、要求された event と run-local outbox record を同じ transaction で永続化する。イベント契約がない状態遷移を追加した場合はテストを失敗させる
@@ -378,6 +379,8 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | P02: 全 action の SafetyDecision が work-start より先に永続化され、危険 action は block または一回限りの人間承認待ちとなり、子 stage の承認待ち / block も親 manifest / CLI / Web に伝播する | `test_action_gate_records_safety_before_work_and_audits_cleanly`, `test_human_approval_is_exact_one_time_and_audited`, `test_block_decision_cannot_be_human_approved`, `test_llm_cannot_be_an_approval_source`, `test_unknown_risk_class_fails_closed_to_human_approval`, `test_agent_precheck_stops_at_approval_required_without_coder_retry`, `test_agent_precheck_stops_at_safety_blocked_without_coder_retry`, `test_run_stages_propagates_child_approval_required_to_parent_manifest`, `test_run_stages_propagates_child_safety_blocked_to_parent_manifest`, `test_web_job_exposes_and_records_explicit_safety_approval`, `test_web_job_exposes_child_safety_blocked_state`, `test_web_approval_rejects_decision_outside_job_run_directory` | PASS |
 | P09: 5次元の永続予算をAction Gateで原子的に消費し、並行開始・親子stage・resumeを含めて上限超過後のwork-startを拒否し、CLI/Web/manifestへ停止理由を伝播する | `tests.test_budget.RuntimeBudgetTests` | PASS |
 | P03: 意味のある progress vector が設定時間変化しない場合に goal/child stage を原子的に `STALLED` とし、API/commandを停止してCLI/Web/manifestへ証拠を伝播する | `tests.test_progress_monitor.ProgressMonitorTests` | PASS |
+| P04: STALLED sourceを変更せず、stall証拠hashとtarget runを固定した計画だけがcancel/safety/予算/開始直前再検証を通って新しいrunを開始できる | `tests.test_recovery_runtime.RecoveryRuntimeTests` | PASS |
+| P05: newest consecutive failure familyだけを系列として数え、閾値到達時は通常retryをfailure analysisへ、分析済みならroot cause recoveryへ強制する | `test_failure_plateau_forces_analysis_then_root_cause`, `test_different_failure_families_do_not_trigger_plateau`, `test_plateau_recovery_runs_failure_analysis_before_any_patch_call` | PASS |
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 | S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |

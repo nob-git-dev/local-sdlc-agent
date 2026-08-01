@@ -37,6 +37,7 @@ from .policy_triage import (
 from .budget import *
 from .progress_monitor import *
 from .action_gate import *
+from .recovery import *
 
 
 def attach_regression_memory(
@@ -91,20 +92,71 @@ def command_agent(args: argparse.Namespace) -> int:
     pm_skill = required_skill(skills, args.pm_skill)
     coder_skill = required_skill(skills, args.coder_skill)
     judge_skill = required_skill(skills, args.judge_skill)
-    client = LocalLLMClient(build_config(args))
     resume_manifest: dict[str, object] = {}
     resume_documents: list[tuple[str, str]] = []
     resume_paths: list[Path] = []
+    recovery_plan: dict[str, object] = {}
+    recovery_source: Path | None = None
     if args.resume:
         resume_dir = args.resume.resolve()
         resume_manifest, resume_documents, resume_paths = load_resume_context(resume_dir, original_project)
-        run_dir = make_run_dir(original_project, args.run_dir or resume_dir)
+        raw_recovery_plan = getattr(args, "recovery_plan", None)
+        if raw_recovery_plan is not None:
+            recovery_plan = validate_recovery_plan(resume_dir, Path(raw_recovery_plan))
+        else:
+            recovery_plan = require_recovery_plan_for_resume(resume_dir, None)
+        if recovery_plan:
+            recovery_source = resume_dir
+            planned_target = Path(str(recovery_plan["target_run_dir"])).resolve()
+            if args.run_dir is not None and resolve_run_dir(original_project, args.run_dir).resolve() != planned_target:
+                raise InvalidRecoveryPlan("--run-dir does not match recovery_plan.json target_run_dir")
+            target_profile = str(recovery_plan.get("target_profile") or "")
+            configured_profile = str(getattr(args, "model_profile", None) or "")
+            if target_profile and configured_profile and configured_profile != target_profile:
+                raise InvalidRecoveryPlan(
+                    "--model-profile does not match recovery_plan.json target_profile"
+                )
+            if target_profile:
+                args.model_profile = target_profile
+            run_dir = make_run_dir(original_project, planned_target)
+        else:
+            run_dir = make_run_dir(original_project, args.run_dir or resume_dir)
     else:
+        if getattr(args, "recovery_plan", None) is not None:
+            raise InvalidRecoveryPlan("--recovery-plan requires --resume")
         run_dir = make_run_dir(original_project, args.run_dir)
+    client = LocalLLMClient(build_config(args))
 
     control_dirs = tuple(
         Path(raw).resolve()
         for raw in (getattr(args, "control_dir", []) or [])
+    )
+    explicit_cancel_dirs = getattr(args, "cancel_control_dir", None)
+    explicit_budget_dirs = getattr(args, "budget_control_dir", None)
+    explicit_progress_dirs = getattr(args, "progress_control_dir", None)
+    cancel_control_dirs = tuple(
+        Path(raw).resolve()
+        for raw in (control_dirs if explicit_cancel_dirs is None else explicit_cancel_dirs)
+    )
+    budget_control_dirs = tuple(
+        Path(raw).resolve()
+        for raw in (control_dirs if explicit_budget_dirs is None else explicit_budget_dirs)
+    )
+    progress_control_dirs = tuple(
+        Path(raw).resolve()
+        for raw in (control_dirs if explicit_progress_dirs is None else explicit_progress_dirs)
+    )
+    if recovery_source is not None:
+        cancel_control_dirs = tuple(dict.fromkeys((recovery_source, *cancel_control_dirs)))
+        budget_control_dirs = tuple(dict.fromkeys((recovery_source, *budget_control_dirs)))
+        if explicit_progress_dirs is None:
+            # A recovery attempt has a fresh liveness clock. Its stalled source
+            # remains immutable evidence and must not block the new attempt.
+            progress_control_dirs = ()
+    recovery_metadata = (
+        {"recovery_authorization": recovery_authorization(recovery_plan)}
+        if recovery_plan
+        else {}
     )
     initialize_budget(
         run_dir,
@@ -117,13 +169,25 @@ def command_agent(args: argparse.Namespace) -> int:
         scope_kind="stage" if control_dirs else "goal_stage",
     )
     try:
-        begin_action(
-            run_dir,
-            "agent_setup",
-            action_type="resume" if args.resume else "orchestration",
-            risk_class="read_only",
-            control_dirs=control_dirs,
-        )
+        if recovery_source is not None:
+            begin_stalled_recovery(
+                recovery_source,
+                run_dir,
+                recovery_plan,
+                cancel_dirs=cancel_control_dirs,
+                budget_dirs=budget_control_dirs,
+                progress_dirs=progress_control_dirs,
+            )
+        else:
+            begin_action(
+                run_dir,
+                "agent_setup",
+                action_type="resume" if args.resume else "orchestration",
+                risk_class="read_only",
+                cancel_dirs=cancel_control_dirs,
+                budget_dirs=budget_control_dirs,
+                progress_dirs=progress_control_dirs,
+            )
     except ProgressStalled as exc:
         write_run_document(
             run_dir,
@@ -166,8 +230,10 @@ def command_agent(args: argparse.Namespace) -> int:
             "worktree_create",
             action_type="worktree_create",
             risk_class="project_write",
-            metadata={"isolated": True},
-            control_dirs=control_dirs,
+            metadata={"isolated": True, **recovery_metadata},
+            cancel_dirs=cancel_control_dirs,
+            budget_dirs=budget_control_dirs,
+            progress_dirs=progress_control_dirs,
         )
         worktree_path = create_copy_worktree(resume_worktree_source or original_project)
         project = worktree_path
@@ -187,6 +253,8 @@ def command_agent(args: argparse.Namespace) -> int:
     documents: list[tuple[str, str]] = []
     api_calls = int(resume_manifest.get("api_calls", 0)) if resume_manifest else 0
     final_verdict = "not_judged"
+    recovery_strategy = str(recovery_plan.get("strategy") or "")
+    force_root_cause_recovery = recovery_strategy in ANALYTIC_RECOVERY_STRATEGIES
     previous_completed_rounds = int(resume_manifest.get("completed_rounds", 0)) if resume_manifest else 0
     completed_rounds = previous_completed_rounds
     requirement_records = requirements_from_spec(spec, display_path(spec_path, original_project))
@@ -197,6 +265,8 @@ def command_agent(args: argparse.Namespace) -> int:
     ]
     evidence_records: list[dict[str, object]] = list(resume_manifest.get("evidence", [])) if resume_manifest else []
     final_failure_type: str | None = None
+    if force_root_cause_recovery:
+        final_failure_type = "repeated_same_failure"
     protocol_rounds_used = int(resume_manifest.get("protocol_rounds_used", 0)) if resume_manifest else 0
     functional_rounds_used = int(resume_manifest.get("functional_rounds_used", 0)) if resume_manifest else 0
     adaptive_rounds_used = int(resume_manifest.get("adaptive_rounds_used", 0)) if resume_manifest else 0
@@ -259,14 +329,17 @@ def command_agent(args: argparse.Namespace) -> int:
         metadata: Mapping[str, object] | None = None,
     ) -> None:
         nonlocal final_verdict, final_failure_type
+        action_metadata = {**recovery_metadata, **dict(metadata or {})}
         try:
             begin_action(
                 run_dir,
                 action,
                 action_type=action_type,
                 risk_class=risk_class,
-                metadata=metadata,
-                control_dirs=control_dirs,
+                metadata=action_metadata,
+                cancel_dirs=cancel_control_dirs,
+                budget_dirs=budget_control_dirs,
+                progress_dirs=progress_control_dirs,
             )
         except BudgetExceeded as exc:
             final_verdict = "budget_exhausted"
@@ -292,7 +365,7 @@ def command_agent(args: argparse.Namespace) -> int:
                         run_dir,
                         action,
                         action_type=action_type,
-                        budget_dirs=control_dirs,
+                        budget_dirs=budget_control_dirs,
                     )
                 except BudgetExceeded as exc:
                     final_verdict = "budget_exhausted"
@@ -306,7 +379,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     enforce_progress_deadline(
                         run_dir,
                         action,
-                        control_dirs=control_dirs,
+                        control_dirs=progress_control_dirs,
                     )
                 except ProgressStalled as exc:
                     final_verdict = "stalled"
@@ -321,8 +394,8 @@ def command_agent(args: argparse.Namespace) -> int:
             set_progress_callback = getattr(client, "set_runtime_progress_callback", None)
 
             def bind_timeout() -> None:
-                wall_remaining = remaining_wall_seconds(run_dir, control_dirs)
-                progress_remaining = remaining_progress_seconds(run_dir, control_dirs)
+                wall_remaining = remaining_wall_seconds(run_dir, budget_control_dirs)
+                progress_remaining = remaining_progress_seconds(run_dir, progress_control_dirs)
                 limits = [
                     value
                     for value in (wall_remaining, progress_remaining)
@@ -342,7 +415,7 @@ def command_agent(args: argparse.Namespace) -> int:
                         "reasoning_chunks": stats.reasoning_chunks,
                     },
                     source="llm_stream",
-                    control_dirs=control_dirs,
+                    control_dirs=progress_control_dirs,
                 )
                 bind_timeout()
 
@@ -369,7 +442,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     ),
                 },
                 source=f"manifest:{status}",
-                control_dirs=control_dirs,
+                control_dirs=progress_control_dirs,
             )
         acceptance_matrix = build_acceptance_matrix(acceptance_criteria, evidence_records)
         partial_doc: dict[str, object] = {
@@ -392,6 +465,8 @@ def command_agent(args: argparse.Namespace) -> int:
             "last_functional_failure_family_signature": last_functional_failure_family_signature,
             "repeated_same_failure_count": repeated_same_failure_count,
             "resumed_from": str(args.resume.resolve()) if args.resume else None,
+            "recovery_plan_id": recovery_plan.get("plan_id") if recovery_plan else None,
+            "recovery_strategy": recovery_plan.get("strategy") if recovery_plan else None,
             "artifact_format": args.artifact_format,
             "small_patch": bool(args.small_patch),
             "no_replace_file": bool(args.no_replace_file),
@@ -493,7 +568,10 @@ def command_agent(args: argparse.Namespace) -> int:
                 args.command_timeout,
                 run_dir,
                 action=action,
-                control_dirs=control_dirs,
+                cancel_dirs=cancel_control_dirs,
+                budget_dirs=budget_control_dirs,
+                progress_dirs=progress_control_dirs,
+                metadata=recovery_metadata,
             )
         except ProgressStalled as exc:
             final_verdict = "stalled"
@@ -631,7 +709,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     "reasoning_chunks": stats.reasoning_chunks,
                 },
                 source="llm_stream",
-                control_dirs=control_dirs,
+                control_dirs=progress_control_dirs,
             )
             latest_stream_status.clear()
             latest_stream_status.update(
@@ -1004,6 +1082,35 @@ def command_agent(args: argparse.Namespace) -> int:
     if resume_documents:
         documents.extend(resume_documents)
 
+    if recovery_plan:
+        recovery_control_doc = json.dumps(
+            {
+                "plan_id": recovery_plan.get("plan_id"),
+                "strategy": recovery_strategy,
+                "rationale": recovery_plan.get("rationale"),
+                "failure_family": recovery_plan.get("failure_family"),
+                "failure_family_count": recovery_plan.get("failure_family_count"),
+                "failure_family_threshold": recovery_plan.get("failure_family_threshold"),
+                "resumed_from": recovery_plan.get("source_run_dir"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        path = write_run_document(run_dir, "00-recovery-control.json", recovery_control_doc)
+        written.append(path)
+        documents.append(("Supervisor recovery control", recovery_control_doc))
+
+    recovery_failure_analysis_pending = recovery_strategy == "failure_analysis"
+    recovery_failure_analysis_evidence = [
+        (name, document)
+        for name, document in resume_documents
+        if parse_command_result_document(document).get("status") == "FAIL"
+    ]
+    if recovery_failure_analysis_pending and not recovery_failure_analysis_evidence:
+        recovery_failure_analysis_evidence = list(
+            resume_documents[-max(1, args.document_window) :]
+        )
+
     if resume_manifest and read_text_if_exists(run_dir / "01-pm-control.md"):
         pm_doc = read_text_if_exists(run_dir / "01-pm-control.md")
     elif args.skip_pm or resume_manifest:
@@ -1356,6 +1463,12 @@ def command_agent(args: argparse.Namespace) -> int:
         attach_regression_memory(manifest_doc, run_dir, original_project, written)
         manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
         written.append(manifest_path)
+        if recovery_source is not None:
+            complete_stalled_recovery(
+                recovery_source,
+                run_dir,
+                outcome="completed",
+            )
 
         print(f"run_dir: {run_dir}")
         print(f"api_calls: {api_calls}")
@@ -1560,6 +1673,15 @@ def command_agent(args: argparse.Namespace) -> int:
         file_context = collect_file_context(project, current_paths, args.max_context_chars, context_slices)
         if symbol_ledger:
             file_context = symbol_ledger + "\n\n" + file_context
+        if recovery_failure_analysis_pending:
+            run_failure_analysis(
+                round_index,
+                "recovery_failure_plateau",
+                str(recovery_plan.get("failure_family") or ""),
+                recovery_failure_analysis_evidence,
+            )
+            recovery_failure_analysis_pending = False
+            root_cause_patch_pending = True
         new_file_instruction = "Create these new project-relative file(s): " + ", ".join(new_files) if new_files else "(none)"
         writable_targets = ", ".join(allowed_artifact_paths) if allowed_artifact_paths else "(none)"
         extra_file_policy = (
@@ -1863,9 +1985,13 @@ def command_agent(args: argparse.Namespace) -> int:
             ).strip()
 
         current_transition = transition_for_failure(final_failure_type)
-        role_label = current_transition.next_role if round_index > 1 else "stage_coder"
+        role_label = (
+            current_transition.next_role
+            if round_index > 1 or force_root_cause_recovery
+            else "stage_coder"
+        )
         transition_instruction = ""
-        if round_index > 1 and current_transition.instructions:
+        if (round_index > 1 or force_root_cause_recovery) and current_transition.instructions:
             transition_instruction = textwrap.dedent(
                 f"""
                 Current supervisor transition rule:
@@ -1939,7 +2065,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     """
                 ).rstrip()
 
-        if round_index > 1 and role_label == "root_cause_repair":
+        if role_label == "root_cause_repair":
             analysis_instruction = textwrap.dedent(
                 f"""
                 Act as the objective root-cause analysis role for this request.
@@ -3296,6 +3422,8 @@ def command_agent(args: argparse.Namespace) -> int:
         "last_functional_failure_family_signature": last_functional_failure_family_signature,
         "repeated_same_failure_count": repeated_same_failure_count,
         "resumed_from": str(args.resume.resolve()) if args.resume else None,
+        "recovery_plan_id": recovery_plan.get("plan_id") if recovery_plan else None,
+        "recovery_strategy": recovery_plan.get("strategy") if recovery_plan else None,
         "artifact_format": args.artifact_format,
         "small_patch": bool(args.small_patch),
         "no_replace_file": bool(args.no_replace_file),
@@ -3358,6 +3486,12 @@ def command_agent(args: argparse.Namespace) -> int:
     attach_regression_memory(manifest_doc, run_dir, original_project, written)
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
     written.append(manifest_path)
+    if recovery_source is not None:
+        complete_stalled_recovery(
+            recovery_source,
+            run_dir,
+            outcome="completed" if final_verdict == "approved" else "failed",
+        )
 
     print(f"run_dir: {run_dir}")
     print(f"api_calls: {api_calls}")

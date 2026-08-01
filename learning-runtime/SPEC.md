@@ -53,6 +53,14 @@ Verification evidence:
 This result authorizes resuming P04/P05 while collecting real recovery events.
 It does not mark L05-L11 or `EL07`-`EL12` complete.
 
+### Integration Follow-up: P04/P05
+
+Completed on 2026-08-01: the execution plane now emits canonical
+`RECOVERY_PLANNED`, `RECOVERY_STARTED`, and `RECOVERY_COMPLETED` events with
+causation identifiers and immutable stall-evidence references. These are real
+capture inputs for the later learner stages; they do not by themselves promote
+knowledge or complete `EL07`-`EL12`.
+
 ## Purpose
 
 Create a local, independent program that learns from verified software-agent
