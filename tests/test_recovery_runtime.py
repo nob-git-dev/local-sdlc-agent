@@ -445,6 +445,10 @@ class RecoveryRuntimeTests(LocalSDLCTestCase):
             manifest = json.loads((target / "run.json").read_text(encoding="utf-8"))
             origin = json.loads((target / "recovery_origin.json").read_text(encoding="utf-8"))
             state = json.loads((source / "recovery_state.json").read_text(encoding="utf-8"))
+            completion_evidence = json.loads(
+                (source / "recovery_completion_evidence.json").read_text(encoding="utf-8")
+            )
+            recovery_events = RuntimeEventLedger(source).list_events()
 
         self.assertEqual(result, 0)
         self.assertEqual(manifest["resumed_from"], str(source.resolve()))
@@ -452,6 +456,17 @@ class RecoveryRuntimeTests(LocalSDLCTestCase):
         self.assertEqual(origin["strategy"], "resume")
         self.assertEqual(state["status"], "RECOVERY_COMPLETED")
         self.assertEqual(state["outcome"], "completed")
+        self.assertTrue(completion_evidence["verification_passed"])
+        self.assertEqual(completion_evidence["target_final_verdict"], "approved")
+        completed_event = next(
+            event
+            for event in recovery_events
+            if event.event_type == EventType.RECOVERY_COMPLETED.value
+        )
+        self.assertEqual(
+            [reference.path for reference in completed_event.evidence_refs],
+            ["recovery_completion_evidence.json"],
+        )
 
     def test_profile_switch_plan_rejects_a_conflicting_model_profile_before_work(self):
         with tempfile.TemporaryDirectory() as temp:

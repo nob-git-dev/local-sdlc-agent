@@ -1468,6 +1468,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 recovery_source,
                 run_dir,
                 outcome="completed",
+                changed_paths=unique_ordered(changed_paths),
             )
 
         print(f"run_dir: {run_dir}")
@@ -3491,6 +3492,7 @@ def command_agent(args: argparse.Namespace) -> int:
             recovery_source,
             run_dir,
             outcome="completed" if final_verdict == "approved" else "failed",
+            changed_paths=unique_ordered(changed_paths),
         )
 
     print(f"run_dir: {run_dir}")

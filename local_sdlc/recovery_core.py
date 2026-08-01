@@ -14,6 +14,7 @@ from .models import RunnerError
 RECOVERY_PLAN_FILENAME = "recovery_plan.json"
 RECOVERY_STATE_FILENAME = "recovery_state.json"
 RECOVERY_ORIGIN_FILENAME = "recovery_origin.json"
+RECOVERY_COMPLETION_EVIDENCE_FILENAME = "recovery_completion_evidence.json"
 RECOVERY_SCHEMA_VERSION = 1
 DEFAULT_FAILURE_FAMILY_THRESHOLD = 2
 
@@ -48,6 +49,10 @@ def recovery_plan_file_path(run_dir: Path) -> Path:
 
 def recovery_state_file_path(run_dir: Path) -> Path:
     return run_dir.resolve() / RECOVERY_STATE_FILENAME
+
+
+def recovery_completion_evidence_file_path(run_dir: Path) -> Path:
+    return run_dir.resolve() / RECOVERY_COMPLETION_EVIDENCE_FILENAME
 
 
 def recovery_origin_file_path(run_dir: Path) -> Path:
