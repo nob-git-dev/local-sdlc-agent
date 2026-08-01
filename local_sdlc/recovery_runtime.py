@@ -119,6 +119,8 @@ def complete_stalled_recovery(
     *,
     outcome: str,
     changed_paths: Sequence[str] = (),
+    change_isolation: str = "unknown",
+    concurrent_changed_paths: Sequence[str] = (),
 ) -> dict[str, object]:
     source = source_run_dir.resolve()
     target = target_run_dir.resolve()
@@ -128,6 +130,9 @@ def complete_stalled_recovery(
         raise InvalidRecoveryPlan("recovery has not started")
     if str(state.get("target_run_dir") or "") != str(target):
         raise InvalidRecoveryPlan("recovery completion target does not match the started recovery")
+    normalized_isolation = change_isolation.strip().lower() or "unknown"
+    if normalized_isolation not in {"isolated", "unisolated", "unknown"}:
+        raise InvalidRecoveryPlan(f"invalid recovery change isolation: {change_isolation}")
     target_manifest_path = target / "run.json"
     target_manifest = read_json_object(target_manifest_path, "recovery target manifest")
     target_final_verdict = str(target_manifest.get("final_verdict") or "unknown")
@@ -139,12 +144,26 @@ def complete_stalled_recovery(
             if str(path).strip()
         }
     )
+    normalized_concurrent_paths = sorted(
+        {
+            str(path).strip()
+            for path in concurrent_changed_paths
+            if str(path).strip()
+        }
+    )
     verification_passed = (
         outcome == "completed"
         and target_final_verdict == "approved"
         and acceptance_counts["fail"] == 0
         and acceptance_counts["unverified"] == 0
         and acceptance_counts["other"] == 0
+    )
+    atomic_change = len(normalized_paths) == 1
+    causal_attribution_eligible = (
+        verification_passed
+        and atomic_change
+        and normalized_isolation == "isolated"
+        and not normalized_concurrent_paths
     )
     completion_evidence = {
         "schema_version": RECOVERY_SCHEMA_VERSION,
@@ -159,7 +178,10 @@ def complete_stalled_recovery(
         "verification_passed": verification_passed,
         "changed_paths": normalized_paths,
         "change_count": len(normalized_paths),
-        "atomic_change": len(normalized_paths) == 1,
+        "atomic_change": atomic_change,
+        "change_isolation": normalized_isolation,
+        "concurrent_changed_paths": normalized_concurrent_paths,
+        "causal_attribution_eligible": causal_attribution_eligible,
         "recorded_at": recovery_timestamp(),
     }
     completion_path = recovery_completion_evidence_file_path(source)
@@ -182,12 +204,14 @@ def complete_stalled_recovery(
             "target_final_verdict": target_final_verdict,
             "verification_passed": verification_passed,
             "changed_paths": normalized_paths,
-            "atomic_change": len(normalized_paths) == 1,
+            "atomic_change": atomic_change,
+            "change_isolation": normalized_isolation,
+            "concurrent_changed_paths": normalized_concurrent_paths,
         },
         aggregate_id=str(plan["plan_id"]),
         propositions=(f"recovery_outcome={outcome}", f"verification_passed={verification_passed}"),
         evidence_refs=(evidence,),
-        eligibility="eligible" if verification_passed else "ineligible",
+        eligibility="eligible" if causal_attribution_eligible else "ineligible",
         causation_id=str(state.get("recovery_started_event_id") or "") or None,
     )
     completed = {
@@ -198,6 +222,8 @@ def complete_stalled_recovery(
         "recovery_completed_event_id": event.event_id,
         "completion_evidence": RECOVERY_COMPLETION_EVIDENCE_FILENAME,
         "verification_passed": verification_passed,
+        "change_isolation": normalized_isolation,
+        "causal_attribution_eligible": causal_attribution_eligible,
     }
     atomic_write_json(recovery_state_file_path(source), completed)
     return completed

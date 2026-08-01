@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+from typing import Mapping
 
 from sdlc_events import EventEnvelope, canonical_json, event_timestamp
 
@@ -67,6 +68,20 @@ class ExperienceStore:
                     duplicate_count INTEGER NOT NULL DEFAULT 0,
                     error TEXT NOT NULL DEFAULT ''
                 );
+
+                CREATE TABLE IF NOT EXISTS recovery_episodes (
+                    episode_id TEXT PRIMARY KEY,
+                    source_run_id TEXT NOT NULL,
+                    project_fingerprint TEXT NOT NULL,
+                    eligibility TEXT NOT NULL,
+                    structural_signature TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    normalized_episode_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_recovery_episodes_project
+                    ON recovery_episodes(project_fingerprint, eligibility);
+                CREATE INDEX IF NOT EXISTS idx_recovery_episodes_structure
+                    ON recovery_episodes(structural_signature);
                 """
             )
 
@@ -95,9 +110,43 @@ class ExperienceStore:
             )
             return cursor.rowcount == 1
 
+    def put_episode(self, episode: Mapping[str, object]) -> bool:
+        sanitized = sanitize_shared(episode)
+        unsafe = sensitive_values(sanitized)
+        if unsafe:
+            raise ValueError("shared episode still contains sensitive values: " + ", ".join(unsafe))
+        if not isinstance(sanitized, Mapping):
+            raise ValueError("shared episode must be an object")
+        episode_id = str(sanitized.get("episode_id") or "")
+        if not episode_id:
+            raise ValueError("shared episode requires episode_id")
+        serialized = canonical_json(sanitized)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO recovery_episodes("
+                "episode_id, source_run_id, project_fingerprint, eligibility, "
+                "structural_signature, created_at, normalized_episode_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    episode_id,
+                    str(sanitized.get("source_run_id") or ""),
+                    str(sanitized.get("project_fingerprint") or ""),
+                    str(sanitized.get("eligibility") or "case_only"),
+                    str(sanitized.get("structural_signature") or ""),
+                    event_timestamp(),
+                    serialized,
+                ),
+            )
+            return cursor.rowcount == 1
+
     def event_count(self) -> int:
         with self._connect() as connection:
             row = connection.execute("SELECT COUNT(*) AS value FROM normalized_events").fetchone()
+        return int(row["value"] or 0)
+
+    def episode_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS value FROM recovery_episodes").fetchone()
         return int(row["value"] or 0)
 
     def events(self) -> list[dict[str, object]]:
@@ -106,3 +155,10 @@ class ExperienceStore:
                 "SELECT sanitized_envelope_json FROM normalized_events ORDER BY rowid"
             ).fetchall()
         return [json.loads(str(row["sanitized_envelope_json"])) for row in rows]
+
+    def episodes(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT normalized_episode_json FROM recovery_episodes ORDER BY rowid"
+            ).fetchall()
+        return [json.loads(str(row["normalized_episode_json"])) for row in rows]

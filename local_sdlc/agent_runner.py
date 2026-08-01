@@ -1469,6 +1469,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 run_dir,
                 outcome="completed",
                 changed_paths=unique_ordered(changed_paths),
+                change_isolation="isolated" if args.worktree_mode == "copy" else "unisolated",
             )
 
         print(f"run_dir: {run_dir}")
@@ -3493,6 +3494,7 @@ def command_agent(args: argparse.Namespace) -> int:
             run_dir,
             outcome="completed" if final_verdict == "approved" else "failed",
             changed_paths=unique_ordered(changed_paths),
+            change_isolation="isolated" if args.worktree_mode == "copy" else "unisolated",
         )
 
     print(f"run_dir: {run_dir}")

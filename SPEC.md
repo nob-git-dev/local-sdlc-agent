@@ -92,7 +92,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 発見命題を一般規則に昇格する場合は、根拠となる evidence、適用範囲、既知の反例、汎用化理由、回帰テストを持たせる。
 - 過去 benchmark から得た個別修復規則は、core runner に直接ハードコードせず、まず発見命題または scope 付き regression memory として保存する。
 - Experience Learning Runtime の詳細仕様は `learning-runtime/SPEC.md` を正本とする。Supervisor は状態遷移を直接学習規則へ変換せず、共通イベント契約へ永続化するだけとし、別プロセスが候補化、反例検証、昇格、版管理を行う。
-- 学習基盤は `learning-runtime/SPEC.md` の L01〜L04（EL01〜EL06）を P04/P05 より先に実装する。Integration Gate A 後は、実際の recovery event を蓄積しながら残りの学習機能と Supervisor Runtime を交互に進める。
+- 学習基盤は L01〜L04（EL01〜EL06）、Integration Gate A、P04/P05 の実 recovery capture、L05（EL07）、Integration Gate B の順に実装する。次の学習 slice は L06（EL08）とし、その後も証拠を蓄積しながら Supervisor Runtime と交互に進める。
 
 ## 受け入れ条件
 
@@ -153,6 +153,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [ ] P11: 発見命題は evidence、scope、counterexamples、generalization_rationale、regression_tests を持たない限り中核規則へ昇格されない
 - [ ] P12: Tetris、Mini SQLite、Redis など既存 benchmark 固有の失敗規則は、未知小課題に対する regression で過剰発火しないことを確認する
 - [x] EL-GA: `learning-runtime/SPEC.md` の L01〜L04（EL01〜EL06）が完了し、共通イベント契約、transactional outbox、完全性監査、既存 P01/P02/P03/P09 証拠の移行互換性を満たす
+- [x] EL-GB: L05（EL07）が完了し、完全な因果鎖・承認済み検証・単一変更・明示的隔離・同時変更なしを満たす recovery だけを学習適格とし、交絡ケースを理由付き `case_only` で保存する
 
 ## スコープ（やらないこと）
 
@@ -332,7 +333,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 **状況:** progress、safety、budget、stall、failure analysis には再利用可能な経験が残るが、個別ログの追加忘れ、実行中の自己書き換え、単一 benchmark への過剰適合を防ぐ統一境界がない。
 **判断:** `learning-runtime/SPEC.md` を正本とする別プロセスを設け、Supervisor は canonical transition と outbox event の永続化だけを担う。学習側は非同期に収集・候補化・反例検証・昇格し、Supervisor は次の run 開始時に immutable snapshot を読み取る。
 **理由:** 実行と学習を時間・権限・保存領域で分離しつつ、状態遷移イベントの呼び忘れを契約網羅テストと closure audit で機械的に防止するため。
-**影響:** P04/P05 より先に L01〜L04（EL01〜EL06）を実装する。Integration Gate A 後は P04/P05 と学習機能を交互に進め、実 recovery event を検証材料にする。LLM は知識候補を直接有効化できない。
+**影響:** L01〜L04（EL01〜EL06）と Integration Gate A の後に P04/P05 の実 recovery を収集し、L05（EL07）と Integration Gate B を完了する。その後も実証拠を使って学習機能と Supervisor Runtime を交互に進める。LLM は知識候補を直接有効化できない。
 
 ## テスト計画
 
@@ -381,6 +382,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | P03: 意味のある progress vector が設定時間変化しない場合に goal/child stage を原子的に `STALLED` とし、API/commandを停止してCLI/Web/manifestへ証拠を伝播する | `tests.test_progress_monitor.ProgressMonitorTests` | PASS |
 | P04: STALLED sourceを変更せず、stall証拠hashとtarget runを固定した計画だけがcancel/safety/予算/開始直前再検証を通って新しいrunを開始できる | `tests.test_recovery_runtime.RecoveryRuntimeTests` | PASS |
 | P05: newest consecutive failure familyだけを系列として数え、閾値到達時は通常retryをfailure analysisへ、分析済みならroot cause recoveryへ強制する | `test_failure_plateau_forces_analysis_then_root_cause`, `test_different_failure_families_do_not_trigger_plateau`, `test_plateau_recovery_runs_failure_analysis_before_any_patch_call` | PASS |
+| EL07: P04/P05 recovery event を正規化・秘匿化した因果 episode に変換し、交絡のない verified isolated single-change だけを適格化する | `tests.test_learning_episodes`, `tests.test_recovery_episode_capture`, full suite (478 tests) | PASS |
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 | S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |

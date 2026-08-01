@@ -2,13 +2,13 @@
 
 ## Status
 
-- Status: capture foundation implemented; Integration Gate A passed
+- Status: causal episode normalization implemented; Integration Gate B passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
   the repository root `SPEC.md` remains authoritative for the execution plane
-- Implemented propositions: `EL01` through `EL06`
-- Deferred propositions: `EL07` through `EL12`
+- Implemented propositions: `EL01` through `EL07`
+- Deferred propositions: `EL08` through `EL12`
 
 ## Decision and Development Order
 
@@ -19,9 +19,11 @@ its capture foundation is a blocking predecessor.
 L01-L04: event contract, ledger/outbox, completeness, legacy adapters
           (acceptance propositions EL01-EL06)
     -> Integration Gate A
-    -> resume Supervisor P04/P05 while collecting real episodes
-    -> L05-L11: normalization, abstraction, validation, registry, retrieval
-               (acceptance propositions EL07-EL12)
+    -> Supervisor P04/P05 plus real recovery capture
+    -> L05: normalization, redaction, causal episode builder (EL07)
+    -> Integration Gate B
+    -> L06-L11: domain map, abstraction, validation, registry, retrieval
+                (acceptance propositions EL08-EL12)
 ```
 
 Building the full learner before observing real P04/P05 recovery events would
@@ -51,15 +53,51 @@ Verification evidence:
   15 events idempotently, and left zero pending outbox records.
 
 This result authorizes resuming P04/P05 while collecting real recovery events.
-It does not mark L05-L11 or `EL07`-`EL12` complete.
+At that gate, L05-L11 and `EL07`-`EL12` remained incomplete.
 
 ### Integration Follow-up: P04/P05
 
 Completed on 2026-08-01: the execution plane now emits canonical
 `RECOVERY_PLANNED`, `RECOVERY_STARTED`, and `RECOVERY_COMPLETED` events with
-causation identifiers and immutable stall-evidence references. These are real
-capture inputs for the later learner stages; they do not by themselves promote
-knowledge or complete `EL07`-`EL12`.
+causation identifiers and immutable stall-evidence references. Event emission
+alone does not promote knowledge; it supplied the real input required by L05.
+
+### Integration Gate B Result
+
+Completed on 2026-08-02:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| P04/P05 capture | PASS | Two production-control recovery episodes use distinct failure families and select `failure_analysis` and `root_cause_recovery` respectively. |
+| Completion evidence | PASS | Target manifest hash, acceptance status counts, changed paths, atomicity, isolation, concurrent paths, and verification outcome are persisted and hash-referenced. |
+| Causal episode graph | PASS | Exactly one planned, started, and completed event with valid causation links produces decision -> intervention -> outcome. |
+| Confounding control | PASS | Unverified, non-atomic, unisolated, concurrent, incomplete, duplicate, or causally broken episodes remain `case_only` with structured reason codes. |
+| Normalization/privacy | PASS | Concrete filenames, absolute home paths, email addresses, source bodies, and evidence paths do not enter normalized episode records; hashes and opaque provenance remain. |
+
+Eligibility is deliberately conjunctive. A recovery episode is eligible only
+when all of the following are mechanically true:
+
+1. its planned, started, and completed events form one complete causal chain;
+2. the target run is approved and verification passed;
+3. exactly one changed path is attributed to the intervention;
+4. the change was explicitly isolated; and
+5. no concurrent changed path was observed.
+
+Failure of any condition does not erase the incident. The learner persists it
+as case memory with reason codes, but candidate mining cannot treat it as causal
+evidence.
+
+Verification evidence:
+
+- `tests.test_learning_episodes`: renamed-structure, privacy, causality,
+  confounding, persistence, idempotency, and independent-CLI cases passed;
+- focused learning/recovery selection: 41 tests passed;
+- `python3 -m unittest discover -s tests`: 478 tests passed;
+- an ignored local evidence run produced two eligible episodes, zero case-only
+  episodes, then replayed with zero inserts and two duplicates.
+
+This result completes L05 and `EL07`. L06/`EL08` is the next learning slice;
+candidate mining, activation, and Supervisor retrieval remain unavailable.
 
 ## Purpose
 
@@ -488,8 +526,14 @@ Exit: `EL06` and all existing tests pass. P04/P05 may resume.
 
 ### L05 - Normalization, Redaction, and Episode Builder
 
+Status: completed on 2026-08-02.
+
 Normalize identities, paths, symbols, evidence, and ownership; redact shared
 records; build causal episode graphs; classify confounded episodes.
+
+Implemented as an independent deterministic transformation over collected
+events. It stores normalized episodes idempotently in the shared SQLite store
+and exposes `build-episodes` without granting mutation or promotion authority.
 
 Exit: `EL07` passes.
 
@@ -542,6 +586,7 @@ database tables.
 
 ```text
 python3 local_sdlc_learning.py collect --run-dir <path>
+python3 local_sdlc_learning.py build-episodes --data-dir <path>
 python3 local_sdlc_learning.py audit --run-dir <path>
 python3 local_sdlc_learning.py consolidate
 python3 local_sdlc_learning.py validate --candidate <id>

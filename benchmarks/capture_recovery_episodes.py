@@ -267,6 +267,7 @@ def _capture_one(
         target_run,
         outcome="completed",
         changed_paths=(scenario.module_name,),
+        change_isolation="isolated",
     )
 
     ledger = RuntimeEventLedger(source_run)
@@ -294,6 +295,7 @@ def _capture_one(
         "causal_chain_valid": causal_chain_valid,
         "completion_verified": completion["verification_passed"],
         "atomic_change": completion["atomic_change"],
+        "change_isolation": completion["change_isolation"],
         "changed_paths": completion["changed_paths"],
         "audit_status": audit["status"],
         "outbox": collection["outbox"],

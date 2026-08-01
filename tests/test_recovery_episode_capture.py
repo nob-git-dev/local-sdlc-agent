@@ -38,6 +38,8 @@ class RecoveryEpisodeCaptureTests(unittest.TestCase):
             self.assertEqual(episode["audit_status"], "pass")
             self.assertEqual(episode["outbox"]["pending"], 0)
             self.assertGreaterEqual(episode["outbox"]["delivered"], 4)
+            self.assertTrue(episode["atomic_change"])
+            self.assertEqual(episode["change_isolation"], "isolated")
         recovery_types = {
             str(event.get("event_type"))
             for event in stored_events

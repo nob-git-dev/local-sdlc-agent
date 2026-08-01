@@ -458,6 +458,7 @@ class RecoveryRuntimeTests(LocalSDLCTestCase):
         self.assertEqual(state["outcome"], "completed")
         self.assertTrue(completion_evidence["verification_passed"])
         self.assertEqual(completion_evidence["target_final_verdict"], "approved")
+        self.assertEqual(completion_evidence["change_isolation"], "unisolated")
         completed_event = next(
             event
             for event in recovery_events
@@ -467,6 +468,7 @@ class RecoveryRuntimeTests(LocalSDLCTestCase):
             [reference.path for reference in completed_event.evidence_refs],
             ["recovery_completion_evidence.json"],
         )
+        self.assertEqual(completed_event.knowledge_eligibility, "ineligible")
 
     def test_profile_switch_plan_rejects_a_conflicting_model_profile_before_work(self):
         with tempfile.TemporaryDirectory() as temp:

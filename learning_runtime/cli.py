@@ -13,6 +13,7 @@ from sdlc_events import RuntimeEventLedger, event_ledger_path, validate_contract
 
 from .audit import audit_run
 from .collector import collect_run
+from .episodes import build_and_store_recovery_episodes
 from .legacy import import_legacy_run
 from .inventory import validate_mutation_inventory
 from .storage import ExperienceStore, learning_data_dir
@@ -38,6 +39,13 @@ def command_audit(args: argparse.Namespace) -> int:
         import_legacy=not args.no_legacy,
         persist_violation=not args.no_persist_violation,
     )
+    _print(report)
+    return 0 if report.get("status") == "pass" else 1
+
+
+def command_build_episodes(args: argparse.Namespace) -> int:
+    store = ExperienceStore(args.data_dir)
+    report = build_and_store_recovery_episodes(store)
     _print(report)
     return 0 if report.get("status") == "pass" else 1
 
@@ -103,6 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--data-dir", type=Path, default=None)
     collect.add_argument("--no-legacy", action="store_true")
     collect.set_defaults(func=command_collect)
+
+    episodes = sub.add_parser("build-episodes", help="build normalized causal recovery episodes")
+    episodes.add_argument("--data-dir", type=Path, required=True)
+    episodes.set_defaults(func=command_build_episodes)
 
     audit = sub.add_parser("audit", help="audit event and closure completeness")
     audit.add_argument("--run-dir", type=Path, required=True)
