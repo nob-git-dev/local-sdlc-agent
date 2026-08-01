@@ -19,6 +19,14 @@ from urllib.parse import quote
 
 from .control import request_cancel
 from .action_gate import begin_action
+from .budget import (
+    DEFAULT_MAX_API_CALLS,
+    DEFAULT_MAX_GOAL_ACTIONS,
+    DEFAULT_MAX_RECOVERY_ACTIONS,
+    DEFAULT_MAX_STAGE_ACTIONS,
+    DEFAULT_MAX_WALL_SECONDS,
+    budget_status,
+)
 from .safety import pending_safety_decisions, read_safety_decisions, request_safety_approval
 from .models import DEFAULT_BASE_URL, DEFAULT_MODEL, GENERATED_DIR, RunnerError
 
@@ -53,6 +61,24 @@ def _string_list(value: object) -> list[str]:
 def _optional_text(payload: dict[str, object], key: str) -> str:
     value = payload.get(key)
     return str(value).strip() if value is not None else ""
+
+
+def _number_at_least(
+    payload: dict[str, object],
+    key: str,
+    default: int | float,
+    minimum: int | float,
+) -> int | float:
+    raw = payload.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(raw) if isinstance(default, float) else int(raw)
+    except (TypeError, ValueError) as exc:
+        raise RunnerError(f"{key} must be a number") from exc
+    if value < minimum:
+        raise RunnerError(f"{key} must be at least {minimum}")
+    return value
 
 
 def _repo_entrypoint() -> Path:
@@ -320,6 +346,8 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
     output_log = log_dir / "output.log"
     run_dir = _find_run_dir(output_log, output_lines) or _infer_run_dir_from_job_id(project, log_dir)
     manifest, manifest_path, partial_manifest = _manifest_for_run(run_dir)
+    budget = budget_status(run_dir) if run_dir is not None else {"state": "not_configured"}
+    budget_exhausted = budget.get("state") == "exhausted"
     artifacts: list[dict[str, object]] = []
     seen: set[str] = set()
 
@@ -375,7 +403,7 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
                 "brief": f"{payload.get('brief') or 'この依頼'}について、目的、固定要件、受け入れ条件、検証方法をSPEC.mdに整理して",
             }
         )
-    if payload.get("status") == "failed":
+    if payload.get("status") == "failed" and not budget_exhausted:
         next_actions.append(
             {
                 "type": "analyze_failure",
@@ -427,18 +455,26 @@ def summarize_job_result(payload: dict[str, object], project: Path, log_dir: Pat
         safety_state = "SAFETY_BLOCKED"
     elif pending_approvals:
         safety_state = "APPROVAL_REQUIRED"
+    control_state = "BUDGET_EXHAUSTED" if budget_exhausted else safety_state
+    progress = _progress_text(payload, run_dir, manifest, partial_manifest)
+    if budget_exhausted:
+        stop = budget.get("stop")
+        reason = str(stop.get("reason") or "") if isinstance(stop, dict) else ""
+        progress = "予算上限で停止" + (f": {reason}" if reason else "")
     return {
         "run_dir": str(run_dir) if run_dir is not None else "",
         "run_manifest": str(manifest_path) if manifest_path is not None else "",
         "partial_manifest": partial_manifest,
         "final_verdict": final_verdict,
         "failure_type": failure_type,
-        "progress": _progress_text(payload, run_dir, manifest, partial_manifest),
+        "progress": progress,
         "current_round": manifest.get("current_round"),
         "completed_rounds": manifest.get("completed_rounds"),
         "api_calls": manifest.get("api_calls"),
         "streaming_label": streaming.get("label", "") if isinstance(streaming, dict) else "",
         "safety_state": safety_state,
+        "control_state": control_state,
+        "budget": budget,
         "pending_safety_decisions": pending_approvals,
         "blocked_safety_decisions": blocked_decisions[-5:],
         "artifacts": artifacts,
@@ -489,6 +525,19 @@ def _append_common_args(command: list[str], payload: dict[str, object], config: 
         command.append("--stream")
 
 
+def _append_budget_args(command: list[str], payload: dict[str, object]) -> None:
+    values = (
+        ("--max-goal-actions", "max_goal_actions", DEFAULT_MAX_GOAL_ACTIONS),
+        ("--max-stage-actions", "max_stage_actions", DEFAULT_MAX_STAGE_ACTIONS),
+        ("--max-recovery-actions", "max_recovery_actions", DEFAULT_MAX_RECOVERY_ACTIONS),
+        ("--max-api-calls", "max_api_calls", DEFAULT_MAX_API_CALLS),
+        ("--max-wall-seconds", "max_wall_seconds", DEFAULT_MAX_WALL_SECONDS),
+    )
+    for flag, key, default in values:
+        minimum = 0.001 if key == "max_wall_seconds" else 0
+        command.extend([flag, str(_number_at_least(payload, key, default, minimum))])
+
+
 def _append_run_dir_arg(command: list[str], payload: dict[str, object], project: Path) -> None:
     run_dir_text = _optional_text(payload, "run_dir")
     if not run_dir_text:
@@ -511,6 +560,8 @@ def build_cli_command(payload: dict[str, object], config: WebConfig) -> BuiltCom
     if api_key:
         env_overrides["LOCAL_SDLC_API_KEY"] = api_key
     _append_common_args(command, payload, config, project)
+    if mode in {"agent", "run-stages", "supervisor"}:
+        _append_budget_args(command, payload)
 
     brief = _optional_text(payload, "brief")
     if mode in {"agent", "run-stages", "spec"} and not brief:

@@ -34,6 +34,7 @@ from .policy_triage import (
     triage_allows_test_harness_edit,
     triage_string_list,
 )
+from .budget import *
 from .action_gate import *
 
 
@@ -104,10 +105,15 @@ def command_agent(args: argparse.Namespace) -> int:
         Path(raw).resolve()
         for raw in (getattr(args, "control_dir", []) or [])
     )
+    initialize_budget(
+        run_dir,
+        budget_limits_from_args(args),
+        scope_kind="stage" if control_dirs else "goal_stage",
+    )
     begin_action(
         run_dir,
         "agent_setup",
-        action_type="orchestration",
+        action_type="resume" if args.resume else "orchestration",
         risk_class="read_only",
         control_dirs=control_dirs,
     )
@@ -226,14 +232,48 @@ def command_agent(args: argparse.Namespace) -> int:
         risk_class: str = "read_only",
         metadata: Mapping[str, object] | None = None,
     ) -> None:
-        begin_action(
-            run_dir,
-            action,
-            action_type=action_type,
-            risk_class=risk_class,
-            metadata=metadata,
-            control_dirs=control_dirs,
-        )
+        nonlocal final_verdict, final_failure_type
+        try:
+            begin_action(
+                run_dir,
+                action,
+                action_type=action_type,
+                risk_class=risk_class,
+                metadata=metadata,
+                control_dirs=control_dirs,
+            )
+        except BudgetExceeded as exc:
+            final_verdict = "budget_exhausted"
+            final_failure_type = "budget_exhausted"
+            write_partial_manifest(
+                "budget_exhausted",
+                {"budget_stop": dict(exc.stop)},
+            )
+            raise
+        if action_type == "api_call":
+            remaining = remaining_wall_seconds(run_dir, control_dirs)
+
+            def enforce_api_deadline() -> None:
+                nonlocal final_verdict, final_failure_type
+                try:
+                    enforce_wall_budget(
+                        run_dir,
+                        action,
+                        action_type=action_type,
+                        budget_dirs=control_dirs,
+                    )
+                except BudgetExceeded as exc:
+                    final_verdict = "budget_exhausted"
+                    final_failure_type = "budget_exhausted"
+                    write_partial_manifest(
+                        "budget_exhausted",
+                        {"budget_stop": dict(exc.stop)},
+                    )
+                    raise
+
+            set_timeout_limit = getattr(client, "set_runtime_timeout_limit", None)
+            if callable(set_timeout_limit):
+                set_timeout_limit(remaining, enforce_api_deadline)
 
     def write_partial_manifest(status: str, extra: dict[str, object] | None = None) -> None:
         acceptance_matrix = build_acceptance_matrix(acceptance_criteria, evidence_records)
@@ -310,6 +350,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "pending_safety_decisions": pending_safety_decisions(run_dir),
             "blocked_safety_decisions": blocked_safety_decisions(run_dir),
             "action_gate_audit": action_gate_audit(run_dir),
+            "budget": budget_status(run_dir),
             "documents": [display_path(path, original_project) for path in written],
         }
         if latest_stream_status:
@@ -1175,6 +1216,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "pending_safety_decisions": pending_safety_decisions(run_dir),
             "blocked_safety_decisions": blocked_safety_decisions(run_dir),
             "action_gate_audit": action_gate_audit(run_dir),
+            "budget": budget_status(run_dir),
             "documents": [display_path(path, original_project) for path in written],
         }
         attach_regression_memory(manifest_doc, run_dir, original_project, written)
@@ -1265,7 +1307,10 @@ def command_agent(args: argparse.Namespace) -> int:
         )
 
     for round_index in range(start_round, final_round + 1):
-        guard_action(f"round_{round_index}_start")
+        guard_action(
+            f"round_{round_index}_start",
+            action_type="recovery" if round_index > start_round else "round_start",
+        )
         completed_rounds = round_index
         write_partial_manifest("round_started", {"current_round": round_index})
         active_repair_strategy = str(latest_repair_advice.get("strategy", "")) if latest_repair_advice else ""
@@ -3176,6 +3221,7 @@ def command_agent(args: argparse.Namespace) -> int:
         "pending_safety_decisions": pending_safety_decisions(run_dir),
         "blocked_safety_decisions": blocked_safety_decisions(run_dir),
         "action_gate_audit": action_gate_audit(run_dir),
+        "budget": budget_status(run_dir),
         "documents": [display_path(path, original_project) for path in written],
     }
     attach_regression_memory(manifest_doc, run_dir, original_project, written)

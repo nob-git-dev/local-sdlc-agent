@@ -8,6 +8,7 @@ from typing import Mapping, Sequence
 import uuid
 
 from .control import ensure_not_cancelled, read_progress_events, record_work_start, work_starts_after_cancel
+from .budget import consume_action_budget, read_budget_events, read_budget_policy, refund_action_budget
 from .models import RunnerError
 from .safety import (
     SafetyDecision,
@@ -42,7 +43,7 @@ def begin_action(
     """Authorize and record one action before any side effect starts.
 
     Ordering invariant:
-    cancel check -> persisted SafetyDecision -> atomic work_start -> execution.
+    cancel check -> persisted SafetyDecision -> consumed budget -> atomic work_start -> execution.
     """
     ensure_not_cancelled(run_dir, action, control_dirs)
     action_id = uuid.uuid4().hex
@@ -66,17 +67,39 @@ def begin_action(
     persisted = authorize_safety_decision(run_dir, proposed)
     if str(persisted.get("decision") or "") not in {"allow", "allow_in_worktree"}:
         raise SafetyGateDenied(persisted)
-    record_work_start(
+    budget_event = consume_action_budget(
         run_dir,
         action,
-        metadata={
-            **action_metadata,
-            "safety_decision_id": persisted.get("decision_id"),
-            "safety_decision": persisted.get("decision"),
-            "risk_class": persisted.get("risk_class"),
-        },
-        control_dirs=control_dirs,
+        action_type=action_type,
+        action_id=action_id,
+        budget_dirs=control_dirs,
     )
+    work_metadata = {
+        **action_metadata,
+        "safety_decision_id": persisted.get("decision_id"),
+        "safety_decision": persisted.get("decision"),
+        "risk_class": persisted.get("risk_class"),
+    }
+    if budget_event:
+        work_metadata["budget_event_id"] = budget_event.get("event_id")
+    try:
+        record_work_start(
+            run_dir,
+            action,
+            metadata=work_metadata,
+            control_dirs=control_dirs,
+        )
+    except RunnerError as exc:
+        if budget_event:
+            refund_action_budget(
+                run_dir,
+                action,
+                action_type=action_type,
+                action_id=action_id,
+                budget_dirs=control_dirs,
+                reason=f"work_start was not recorded: {exc}",
+            )
+        raise
     return persisted
 
 
@@ -87,6 +110,20 @@ def action_gate_audit(run_dir: Path) -> dict[str, object]:
         if item.get("decision_id")
     }
     safety_violations: list[dict[str, object]] = []
+    budget_enabled = bool(read_budget_policy(run_dir))
+    all_budget_events = read_budget_events(run_dir)
+    refunded_budget_event_ids = {
+        str(item.get("consumed_event_id"))
+        for item in all_budget_events
+        if item.get("outcome") == "refunded" and item.get("consumed_event_id")
+    }
+    budget_events = {
+        str(item.get("event_id")): item
+        for item in all_budget_events
+        if item.get("event_id") and item.get("outcome") == "consumed"
+        and str(item.get("event_id")) not in refunded_budget_event_ids
+    }
+    budget_violations: list[dict[str, object]] = []
     for event in read_progress_events(run_dir):
         if not event.get("starts_work"):
             continue
@@ -112,11 +149,23 @@ def action_gate_audit(run_dir: Path) -> dict[str, object]:
                     "reason": "work_start references a non-authorizing SafetyDecision",
                 }
             )
+        if budget_enabled:
+            budget_event_id = str(metadata.get("budget_event_id") or "") if isinstance(metadata, dict) else ""
+            if not budget_event_id or budget_event_id not in budget_events:
+                budget_violations.append(
+                    {
+                        "sequence": event.get("sequence"),
+                        "action": event.get("action"),
+                        "reason": "work_start has no preceding consumed budget event",
+                    }
+                )
     cancel_violations = work_starts_after_cancel(run_dir)
     return {
-        "status": "pass" if not cancel_violations and not safety_violations else "fail",
+        "status": "pass" if not cancel_violations and not safety_violations and not budget_violations else "fail",
         "cancel_absorbing": not cancel_violations,
         "safety_precedes_work": not safety_violations,
+        "budget_precedes_work": not budget_violations,
         "cancel_violations": cancel_violations,
         "safety_violations": safety_violations,
+        "budget_violations": budget_violations,
     }

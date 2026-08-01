@@ -25,6 +25,25 @@ class LocalLLMClient:
     def __init__(self, config: LLMConfig):
         self.config = config
         self.reasoning_records: list[dict[str, object]] = []
+        self.runtime_timeout_limit: float | None = None
+        self.runtime_timeout_callback: Callable[[], None] | None = None
+
+    def set_runtime_timeout_limit(
+        self,
+        timeout: float | None,
+        callback: Callable[[], None] | None = None,
+    ) -> None:
+        self.runtime_timeout_limit = None if timeout is None else max(0.001, float(timeout))
+        self.runtime_timeout_callback = callback
+
+    def _effective_timeout(self, requested: float) -> float:
+        if self.runtime_timeout_limit is None:
+            return requested
+        return max(0.001, min(float(requested), self.runtime_timeout_limit))
+
+    def _notify_runtime_timeout(self) -> None:
+        if self.runtime_timeout_callback is not None:
+            self.runtime_timeout_callback()
 
     def _record_reasoning_content(
         self,
@@ -99,7 +118,8 @@ class LocalLLMClient:
         timeout: float | None = None,
     ) -> dict:
         url = self.config.base_url.rstrip("/") + path
-        request_timeout = self.config.timeout if timeout is None else timeout
+        requested_timeout = self.config.timeout if timeout is None else timeout
+        request_timeout = self._effective_timeout(requested_timeout)
         data = None
         headers = {"Authorization": f"Bearer {self.config.api_key}"}
         if payload is not None:
@@ -117,6 +137,7 @@ class LocalLLMClient:
             with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except (TimeoutError, socket.timeout) as exc:
+            self._notify_runtime_timeout()
             raise LLMTimeoutError(path, request_timeout) from exc
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -196,7 +217,8 @@ class LocalLLMClient:
         if chat_template_kwargs is not None:
             payload["chat_template_kwargs"] = chat_template_kwargs
         url = self.config.base_url.rstrip("/") + "/chat/completions"
-        request_timeout = self.config.timeout if timeout is None else timeout
+        requested_timeout = self.config.timeout if timeout is None else timeout
+        request_timeout = self._effective_timeout(requested_timeout)
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -219,7 +241,13 @@ class LocalLLMClient:
         last_chunk_at: float | None = None
         partial_file = None
         partial_path_text = str(partial_output_path) if partial_output_path else None
+        use_wall_clock_alarm = threading.current_thread() is threading.main_thread()
+        old_handler = None
         try:
+            if use_wall_clock_alarm:
+                old_handler = signal.getsignal(signal.SIGALRM)
+                signal.signal(signal.SIGALRM, self._alarm_handler)
+                signal.setitimer(signal.ITIMER_REAL, request_timeout)
             if partial_output_path is not None:
                 partial_output_path.parent.mkdir(parents=True, exist_ok=True)
                 partial_file = partial_output_path.open("w", encoding="utf-8")
@@ -301,6 +329,7 @@ class LocalLLMClient:
                             )
                         )
         except (TimeoutError, socket.timeout) as exc:
+            self._notify_runtime_timeout()
             raise LLMTimeoutError("/chat/completions", request_timeout) from exc
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -310,6 +339,10 @@ class LocalLLMClient:
                 raise LLMTimeoutError("/chat/completions", request_timeout) from exc
             raise RunnerError(f"LLM API connection failed: {exc.reason}") from exc
         finally:
+            if use_wall_clock_alarm:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                if old_handler is not None:
+                    signal.signal(signal.SIGALRM, old_handler)
             if partial_file is not None:
                 partial_file.close()
         duration = time.monotonic() - start

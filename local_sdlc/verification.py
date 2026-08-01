@@ -18,6 +18,7 @@ from typing import Sequence
 from .models import RunnerError
 from .safety import *
 from .action_gate import SafetyGateDenied, begin_action
+from .budget import bounded_action_timeout, enforce_wall_budget
 from .utils import display_path, truncate_text, unique_ordered
 from .workspace import resolve_project_path
 
@@ -297,6 +298,11 @@ def run_checked_command(
     if blocked_reason:
         return command_result_document(command, 2, "", "", 0.0, blocked_reason), False
 
+    effective_timeout = (
+        bounded_action_timeout(timeout, run_dir, control_dirs)
+        if run_dir is not None
+        else timeout
+    )
     started = time.monotonic()
     try:
         result = subprocess.run(
@@ -304,7 +310,7 @@ def run_checked_command(
             cwd=project,
             text=True,
             capture_output=True,
-            timeout=timeout,
+            timeout=effective_timeout,
             check=False,
         )
         duration = time.monotonic() - started
@@ -314,10 +320,17 @@ def run_checked_command(
         )
     except subprocess.TimeoutExpired as exc:
         duration = time.monotonic() - started
+        if run_dir is not None:
+            enforce_wall_budget(
+                run_dir,
+                action,
+                action_type="command",
+                budget_dirs=control_dirs,
+            )
         stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
         stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", errors="replace")
-        stderr = stderr + f"\ncommand timed out after {timeout:g}s"
-        diagnostic = unittest_timeout_diagnostic(project, command, timeout)
+        stderr = stderr + f"\ncommand timed out after {effective_timeout:g}s"
+        diagnostic = unittest_timeout_diagnostic(project, command, effective_timeout)
         if diagnostic:
             stderr = stderr + "\n\n" + diagnostic
         return command_result_document(command, 124, stdout, stderr, duration), False

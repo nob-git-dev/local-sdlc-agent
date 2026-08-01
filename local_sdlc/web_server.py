@@ -13,6 +13,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .llm_client import build_config
+from .budget import (
+    DEFAULT_MAX_API_CALLS,
+    DEFAULT_MAX_GOAL_ACTIONS,
+    DEFAULT_MAX_RECOVERY_ACTIONS,
+    DEFAULT_MAX_STAGE_ACTIONS,
+    DEFAULT_MAX_WALL_SECONDS,
+)
 from .models import DEFAULT_API_KEY, MODEL_PROFILE_ALIASES, RunnerError
 from .web_jobs import JobRegistry, WebConfig, _repo_entrypoint, build_cli_command, resolve_project_path
 
@@ -130,6 +137,13 @@ class AgentWebHandler(BaseHTTPRequestHandler):
                     "model_profile": self.config.model_profile,
                     "api_key_configured": self.config.api_key_configured,
                     "model_profiles": sorted(MODEL_PROFILE_ALIASES),
+                    "budget_defaults": {
+                        "max_goal_actions": DEFAULT_MAX_GOAL_ACTIONS,
+                        "max_stage_actions": DEFAULT_MAX_STAGE_ACTIONS,
+                        "max_recovery_actions": DEFAULT_MAX_RECOVERY_ACTIONS,
+                        "max_api_calls": DEFAULT_MAX_API_CALLS,
+                        "max_wall_seconds": DEFAULT_MAX_WALL_SECONDS,
+                    },
                 }
             )
             return

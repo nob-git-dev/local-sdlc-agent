@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Sequence
 
 from .artifacts import final_failure_focus_from_command_docs, repair_advice_document
+from .budget import (
+    DEFAULT_MAX_API_CALLS,
+    DEFAULT_MAX_GOAL_ACTIONS,
+    DEFAULT_MAX_RECOVERY_ACTIONS,
+    DEFAULT_MAX_STAGE_ACTIONS,
+    DEFAULT_MAX_WALL_SECONDS,
+)
 from .evidence import (
     acceptance_blockers as _acceptance_blockers,
     build_acceptance_matrix as _build_acceptance_matrix,
@@ -357,6 +364,11 @@ def build_stage_agent_args(
         protocol_repair_rounds=args.protocol_repair_rounds,
         adaptive_rounds=args.adaptive_rounds,
         root_cause_patch_rounds=args.root_cause_patch_rounds,
+        max_goal_actions=getattr(args, "max_goal_actions", DEFAULT_MAX_GOAL_ACTIONS),
+        max_stage_actions=getattr(args, "max_stage_actions", DEFAULT_MAX_STAGE_ACTIONS),
+        max_recovery_actions=getattr(args, "max_recovery_actions", DEFAULT_MAX_RECOVERY_ACTIONS),
+        max_api_calls=getattr(args, "max_api_calls", DEFAULT_MAX_API_CALLS),
+        max_wall_seconds=getattr(args, "max_wall_seconds", DEFAULT_MAX_WALL_SECONDS),
         run_dir=run_dir,
     )
 
@@ -520,6 +532,11 @@ def build_integration_repair_args(
         protocol_repair_rounds=args.protocol_repair_rounds,
         adaptive_rounds=args.adaptive_rounds,
         root_cause_patch_rounds=args.root_cause_patch_rounds,
+        max_goal_actions=getattr(args, "max_goal_actions", DEFAULT_MAX_GOAL_ACTIONS),
+        max_stage_actions=getattr(args, "max_stage_actions", DEFAULT_MAX_STAGE_ACTIONS),
+        max_recovery_actions=getattr(args, "max_recovery_actions", DEFAULT_MAX_RECOVERY_ACTIONS),
+        max_api_calls=getattr(args, "max_api_calls", DEFAULT_MAX_API_CALLS),
+        max_wall_seconds=getattr(args, "max_wall_seconds", DEFAULT_MAX_WALL_SECONDS),
         run_dir=run_dir / "s99-final-integration-repair",
     )
 

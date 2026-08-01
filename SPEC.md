@@ -144,7 +144,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [ ] P06: artifact 生成中に形式違反が確定した場合、stream guard が早期停止し、次 action を format repair または blocked に限定する
 - [ ] P07: `COMPLETED` は acceptance matrix の全条件が pass した場合だけ成立する
 - [ ] P08: `BLOCKED` は reason、supporting evidence、next required human input を持つ
-- [ ] P09: 自律 loop は goal / stage / recovery / API call / wall-clock の予算上限を持ち、上限到達時に理由付きで停止する
+- [x] P09: 自律 loop は goal / stage / recovery / API call / wall-clock の予算上限を持ち、上限到達時に理由付きで停止する
 - [ ] P10: 自律 mode のファイル変更は既定で隔離 worktree 上で行われ、承認済み成果物だけが元 project へ copy back される
 - [ ] P11: 発見命題は evidence、scope、counterexamples、generalization_rationale、regression_tests を持たない限り中核規則へ昇格されない
 - [ ] P12: Tetris、Mini SQLite、Redis など既存 benchmark 固有の失敗規則は、未知小課題に対する regression で過剰発火しないことを確認する
@@ -193,6 +193,10 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 危険 action の承認は人間または明示 policy だけが与えられる。LLM は承認を代替しない
 - すべての自律 action は実行前に Safety/Suppression Harness を通す
 - 自律 loop には goal / stage / recovery / API call / wall-clock の予算上限を必ず設ける
+- 予算判定は `cancel -> SafetyDecision -> budget consume -> work_start -> execution` の順で行い、cancel または Safety 拒否された action は予算を消費しない
+- goal と子 stage の予算消費は1回のロック区間で判定・記録し、一方だけ消費する部分成功を許さない
+- 予算停止は吸収状態とし、同じ run directory の resume や上限引き上げで解除しない
+- wall-clock の残量は API call と command の単一実行 timeout にも反映し、1 action が残り時間を超えて占有し続けない
 - 自律 mode の変更適用は既定で隔離 worktree 上で行う
 - 中核命題と発見命題を分離し、発見命題を一般規則へ昇格するには evidence、scope、counterexamples、generalization_rationale、regression_tests を必須とする
 
@@ -346,6 +350,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | command action の SafetyDecision を実行前に記録し、approval-required / blocked command を停止する | `test_run_checked_command_records_allowed_safety_decision`, `test_run_checked_command_records_approval_required_safety_decision`, `test_run_checked_command_records_blocked_safety_decision`, `test_run_checked_command_requires_approval_for_risky_class_without_legacy_block_reason`, `test_agent_applies_patch_and_runs_test_command` | PASS |
 | P01: Action Gate が cancel と work-start を直列化し、親 cancel を子 stage に伝播し、API / command / resume / retry / stage split / artifact apply / copy back の開始を拒否する | `test_cancel_is_absorbing_for_every_autonomous_action_kind`, `test_parent_cancel_blocks_child_stage_action_and_mirrors_prior_work`, `test_cancel_and_action_start_are_serialized`, `test_cancel_after_coder_output_prevents_artifact_apply`, `test_cancel_after_isolated_test_prevents_copy_back`, `test_run_stages_cancel_after_stage_prevents_final_command`, `test_web_stop_before_process_start_is_absorbing` | PASS |
 | P02: 全 action の SafetyDecision が work-start より先に永続化され、危険 action は block または一回限りの人間承認待ちとなり、子 stage の承認待ち / block も親 manifest / CLI / Web に伝播する | `test_action_gate_records_safety_before_work_and_audits_cleanly`, `test_human_approval_is_exact_one_time_and_audited`, `test_block_decision_cannot_be_human_approved`, `test_llm_cannot_be_an_approval_source`, `test_unknown_risk_class_fails_closed_to_human_approval`, `test_agent_precheck_stops_at_approval_required_without_coder_retry`, `test_agent_precheck_stops_at_safety_blocked_without_coder_retry`, `test_run_stages_propagates_child_approval_required_to_parent_manifest`, `test_run_stages_propagates_child_safety_blocked_to_parent_manifest`, `test_web_job_exposes_and_records_explicit_safety_approval`, `test_web_job_exposes_child_safety_blocked_state`, `test_web_approval_rejects_decision_outside_job_run_directory` | PASS |
+| P09: 5次元の永続予算をAction Gateで原子的に消費し、並行開始・親子stage・resumeを含めて上限超過後のwork-startを拒否し、CLI/Web/manifestへ停止理由を伝播する | `tests.test_budget.RuntimeBudgetTests` | PASS |
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 | S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |

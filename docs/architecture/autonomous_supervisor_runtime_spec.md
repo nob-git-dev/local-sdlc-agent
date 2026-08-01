@@ -30,7 +30,7 @@ The loop is valid only while all execution predicates hold:
 Executable(A) :=
   not CancelRequested(goal)
   and SafetyAllowed(A)
-  and BudgetRemaining(goal, stage)
+  and BudgetRemaining(goal, stage, recovery, api, wall)
   and HasRequiredContext(A)
 ```
 
@@ -364,3 +364,48 @@ Verified:
 
 P01 and P02 are complete. Later propositions must call `begin_action()` rather
 than adding an independent execution preflight.
+
+### 2026-08-01 P09 Persistent Runtime Budget Gate
+
+P09 models one autonomous run with the usage vector:
+
+```text
+U = (G, S, R, A, T)
+L = (Gmax, Smax, Rmax, Amax, Tmax)
+
+Admit(action) :=
+  not CancelRequested
+  and SafetyAllowed(action)
+  and U_counted + Charge(action) <= L_counted
+  and elapsed_wall_time < Tmax
+```
+
+`G` is every goal-level action, `S` every action in a direct or child stage,
+`R` every recovery/retry/resume/stage-split start, `A` every LLM API action,
+and `T` elapsed wall-clock time. A recovery or API action also consumes its
+containing goal/stage action count; the dimensions are independent upper
+bounds, not mutually exclusive categories.
+
+Implemented invariants:
+
+- the Action Gate order is `cancel -> persisted SafetyDecision -> consumed budget -> work_start -> execution`
+- a cancelled or safety-denied action consumes no budget
+- `budget.json` fixes the run policy, `budget_events.jsonl` is the append-only ledger, and `budget_stop.json` is the canonical stop reason
+- `budget_stop.json` is absorbing; reinitializing or resuming the same run cannot raise limits or clear the stop
+- a child stage consumes its local stage budget and parent goal budget under ordered file locks; evaluation completes before either ledger is changed
+- any child or parent exhaustion is propagated to both scopes and becomes parent status `budget_exhausted`
+- concurrent starts cannot exceed a count limit; denied actions never receive a `work_start`
+- wall-clock remaining time bounds command and LLM request timeouts; an in-flight deadline overrun persists `exhausted_during_action`
+- direct `agent`, `supervise`, and `supervisor` runs use a combined goal/stage scope; `run-stages` uses a parent goal scope plus one stage scope per child
+- CLI flags and the Web advanced settings configure all five limits; `budget-status`, run manifests, and Web results expose usage, remaining capacity, and stop reason
+
+The default limits are intentionally finite but generous: 1000 goal actions,
+200 actions per stage, 100 recovery actions, 250 API calls, and 86400 seconds.
+Existing algorithm-local limits such as `--max-rounds` remain in force beneath
+P09; they do not replace the cross-cutting runtime budget.
+
+Verified by `tests.test_budget.RuntimeBudgetTests`, including exact-limit,
+absorbing-stop, independent dimensions, cancel/safety precedence, injected
+wall deadlines, in-flight command timeout, parent/child propagation,
+20-thread start races, immutable resume policy, Action Gate audit, agent API
+cutoff, staged propagation, CLI reporting, and Web reporting.

@@ -126,6 +126,25 @@ python3 local_sdlc.py safety-status --run-dir .sdlc-runner/runs/<run-id>
 python3 local_sdlc.py approve --run-dir <表示された-run_dir> --decision-id D000001 --note "内容を確認済み"
 ```
 
+自律実行には、全体、1工程、やり直し、AI呼び出し、実行時間の5種類の上限があります。
+Webでは「詳細設定」から変更できます。CLIでは次のように指定し、実行中または停止後の使用量を
+`budget-status` で確認できます。
+
+```bash
+python3 local_sdlc.py agent "修正して" \
+  --include app.py --apply \
+  --max-goal-actions 1000 \
+  --max-stage-actions 200 \
+  --max-recovery-actions 100 \
+  --max-api-calls 250 \
+  --max-wall-seconds 86400
+
+python3 local_sdlc.py budget-status --run-dir .sdlc-runner/runs/<run-id>
+```
+
+上限到達は通常のテスト失敗とは区別され、`budget_stop.json` に理由が残ります。同じrunの再開で
+上限を引き上げたり停止を解除したりはできないため、設定を変える場合は新しいrunとして開始します。
+
 Qwen / Ornith などのモデル差し替えは、散在する個別 flag ではなく `--model-profile` と
 `--api-profile FUNCTION:key=value` で管理します。
 

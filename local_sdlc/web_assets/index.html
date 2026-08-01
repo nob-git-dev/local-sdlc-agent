@@ -570,6 +570,32 @@
               <input id="api-key" type="password" autocomplete="off" placeholder="省略時はconfig/env">
             </div>
           </div>
+          <div class="row">
+            <div>
+              <label for="max-goal-actions">全体の最大アクション数</label>
+              <input id="max-goal-actions" type="number" min="0" step="1">
+            </div>
+            <div>
+              <label for="max-stage-actions">1工程の最大アクション数</label>
+              <input id="max-stage-actions" type="number" min="0" step="1">
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="max-recovery-actions">最大やり直し回数</label>
+              <input id="max-recovery-actions" type="number" min="0" step="1">
+            </div>
+            <div>
+              <label for="max-api-calls">最大AI呼び出し回数</label>
+              <input id="max-api-calls" type="number" min="0" step="1">
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="max-wall-seconds">最大実行時間（秒）</label>
+              <input id="max-wall-seconds" type="number" min="1" step="1">
+            </div>
+          </div>
         </details>
       </section>
 
@@ -620,6 +646,10 @@
     }
     function hasText(id) {
       return values(id).length > 0;
+    }
+    function numberValue(id, allowZero = true) {
+      const value = Number(el(id).value);
+      return Number.isFinite(value) && (allowZero ? value >= 0 : value > 0) ? value : null;
     }
     function setVisible(id, visible) {
       el(id).classList.toggle("hidden", !visible);
@@ -751,7 +781,12 @@
         stream: el("stream").checked,
         execute: el("execute-route").checked,
         allow_ambiguous: true,
-        skip_probes: true
+        skip_probes: true,
+        max_goal_actions: numberValue("max-goal-actions"),
+        max_stage_actions: numberValue("max-stage-actions"),
+        max_recovery_actions: numberValue("max-recovery-actions"),
+        max_api_calls: numberValue("max-api-calls"),
+        max_wall_seconds: numberValue("max-wall-seconds", false)
       };
     }
     function readiness() {
@@ -810,6 +845,12 @@
       el("model").value = config.model || "";
       el("api-key").placeholder = config.api_key_configured ? "configured by file/env" : "省略時はdummy-local";
       el("server-state").textContent = config.host + ":" + config.port;
+      const budgetDefaults = config.budget_defaults || {};
+      el("max-goal-actions").value = budgetDefaults.max_goal_actions || 1000;
+      el("max-stage-actions").value = budgetDefaults.max_stage_actions || 200;
+      el("max-recovery-actions").value = budgetDefaults.max_recovery_actions || 100;
+      el("max-api-calls").value = budgetDefaults.max_api_calls || 250;
+      el("max-wall-seconds").value = budgetDefaults.max_wall_seconds || 86400;
       for (const profile of config.model_profiles) {
         const option = document.createElement("option");
         option.value = profile;
@@ -860,12 +901,32 @@
       if (job.result.final_verdict) resultBits.push("verdict: " + job.result.final_verdict);
       if (job.result.failure_type) resultBits.push("failure: " + job.result.failure_type);
       if (job.result.safety_state) resultBits.push("safety: " + job.result.safety_state);
+      if (job.result.control_state) resultBits.push("control: " + job.result.control_state);
       if (job.result.current_round) resultBits.push("round: " + job.result.current_round);
       if (job.result.api_calls !== null && job.result.api_calls !== undefined) resultBits.push("api_calls: " + job.result.api_calls);
       if (job.result.partial_manifest) resultBits.push("partial: 実行中の途中結果です");
       if (job.result.run_dir) resultBits.push("run_dir: " + job.result.run_dir);
       meta.textContent = resultBits.length ? resultBits.join("\n") : "まだ実行準備中です。成果物が作られるとここに表示します。";
       panel.appendChild(meta);
+
+      const budget = job.result.budget || {};
+      if (budget.state && budget.state !== "not_configured") {
+        const usage = budget.usage || {};
+        const limits = budget.limits || {};
+        const stop = budget.stop || {};
+        const budgetBox = document.createElement("div");
+        budgetBox.className = "result-meta";
+        budgetBox.textContent = [
+          `予算: ${budget.state === "exhausted" ? "上限到達" : "実行可能"}`,
+          `全体 ${usage.goal_actions || 0}/${limits.max_goal_actions || "-"}`,
+          `工程 ${usage.stage_actions || 0}/${limits.max_stage_actions || "-"}`,
+          `やり直し ${usage.recovery_actions || 0}/${limits.max_recovery_actions || "-"}`,
+          `AI呼び出し ${usage.api_calls || 0}/${limits.max_api_calls || "-"}`,
+          `経過 ${Math.round(budget.elapsed_seconds || 0)}秒/${limits.max_wall_seconds || "-"}秒`,
+          stop.reason ? `停止理由: ${stop.reason}` : ""
+        ].filter(Boolean).join("\n");
+        panel.appendChild(budgetBox);
+      }
 
       const pendingSafety = job.result.pending_safety_decisions || [];
       if (pendingSafety.length) {
