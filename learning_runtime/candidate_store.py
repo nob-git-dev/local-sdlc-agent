@@ -127,7 +127,7 @@ class CandidateStore:
     ) -> bool:
         batch = require_identifier(batch_id, "batch_id")
         normalized_status = require_slug(status, "attempt status")
-        if normalized_status not in {"accepted", "duplicate", "rejected"}:
+        if normalized_status not in {"accepted", "duplicate", "rejected", "stopped"}:
             raise ValueError("invalid candidate attempt status")
         reason = require_slug(reason_code, "reason_code")
         source_ids = tuple(sorted(require_identifier(value, "source_episode_id") for value in source_episode_ids))

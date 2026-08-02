@@ -31,6 +31,12 @@ from .operations import doctor_report
 from .operations_cli import add_operations_parsers
 from .storage import ExperienceStore, learning_data_dir
 from .validation_cli import add_validation_parser
+from .work_control import LearningWorkControl
+from .work_control_cli import (
+    add_cancel_parser,
+    add_work_control_arguments,
+    limits_from_args,
+)
 
 
 def _print(payload: object) -> None:
@@ -86,12 +92,29 @@ def command_mine_candidates(args: argparse.Namespace) -> int:
     llm = LocalCandidateLLM(client)
     experience = ExperienceStore(args.data_dir)
     candidates = CandidateStore(args.data_dir)
+    domain_maps = _load_domain_maps(args.domain_map)
+    token_reservations = {
+        name: client.call_settings("judge", name).max_tokens
+        for name in (
+            "candidate_abstraction",
+            "scope_classification",
+            "candidate_serialization",
+        )
+    }
+    control = LearningWorkControl(
+        args.data_dir,
+        "candidate_mining",
+        limits=limits_from_args(args),
+        operation_id=args.learning_operation_id,
+    )
     report = mine_candidates(
         experience,
         candidates,
         llm,
-        domain_maps=_load_domain_maps(args.domain_map),
+        domain_maps=domain_maps,
         max_batches=args.max_batches,
+        control=control,
+        token_reservations=token_reservations,
     )
     report["model_profile"] = config.model_profile
     report["function_profiles"] = {
@@ -110,6 +133,8 @@ def command_mine_candidates(args: argparse.Namespace) -> int:
     }
     report["reasoning_audit"] = llm.reasoning_audit()
     _print(report)
+    if report.get("status") == "stopped":
+        return 2
     return 0 if report.get("status") == "pass" else 1
 
 
@@ -192,9 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--domain-map", type=Path, action="append", default=[])
     candidates.add_argument("--max-batches", type=int, default=10)
     _add_llm_arguments(candidates)
+    add_work_control_arguments(candidates)
     candidates.set_defaults(func=command_mine_candidates)
 
     add_validation_parser(sub)
+    add_cancel_parser(sub)
 
     audit = sub.add_parser("audit", help="audit event and closure completeness")
     audit.add_argument("--run-dir", type=Path, required=True)

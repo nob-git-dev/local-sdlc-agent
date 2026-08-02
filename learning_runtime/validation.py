@@ -14,6 +14,7 @@ from .knowledge_schema import KnowledgeItem
 from .metamorphic import renamed_domain_map
 from .storage import ExperienceStore
 from .validation_models import ValidationCase, ValidationPolicy
+from .work_control import LearningLimits, LearningWorkControl, LearningWorkStopped
 
 
 def _wilson_lower_bound(successes: int, total: int, z: float) -> float:
@@ -29,9 +30,14 @@ def _wilson_lower_bound(successes: int, total: int, z: float) -> float:
     return max(0.0, (center - margin) / denominator)
 
 
-def _metamorphic_cases(cases: Sequence[ValidationCase]) -> tuple[ValidationCase, ...]:
+def _metamorphic_cases(
+    cases: Sequence[ValidationCase],
+    control: LearningWorkControl | None = None,
+) -> tuple[ValidationCase, ...]:
     generated: list[ValidationCase] = []
     for case in cases:
+        if control is not None:
+            control.checkpoint("before_metamorphic_transform")
         if case.suite not in {"replay", "holdout"} or not case.expected_applies:
             continue
         case_id = stable_identifier("VCM", case.case_id, "rename")
@@ -88,6 +94,7 @@ def validate_candidate(
     cases: Sequence[ValidationCase],
     *,
     policy: ValidationPolicy | None = None,
+    control: LearningWorkControl | None = None,
 ) -> dict[str, object]:
     if item.state != "candidate":
         raise ValueError("validation accepts candidate state only")
@@ -98,13 +105,13 @@ def validate_candidate(
     case_ids = [case.case_id for case in supplied]
     if len(set(case_ids)) != len(case_ids):
         raise ValueError("validation case IDs must be unique")
-    all_cases = supplied + _metamorphic_cases(supplied)
-    results = tuple(
-        sorted(
-            (_case_result(item, case) for case in all_cases),
-            key=lambda result: str(result["case_id"]),
-        )
-    )
+    all_cases = supplied + _metamorphic_cases(supplied, control)
+    result_list: list[dict[str, object]] = []
+    for case in all_cases:
+        if control is not None:
+            control.checkpoint("before_validation_case", cases=1)
+        result_list.append(_case_result(item, case))
+    results = tuple(sorted(result_list, key=lambda result: str(result["case_id"])))
     reasons: set[str] = set()
     source_episode_ids = {
         anchor.episode_id for anchor in item.evidence_refs if anchor.episode_id
@@ -217,7 +224,28 @@ def validate_and_store(
     cases: Sequence[ValidationCase],
     *,
     policy: ValidationPolicy | None = None,
+    control: LearningWorkControl | None = None,
+    limits: LearningLimits | None = None,
 ) -> dict[str, object]:
-    return evaluations.put_report(
-        validate_candidate(item, experience, cases, policy=policy)
+    active_control = control or LearningWorkControl(
+        experience.data_dir,
+        "candidate_validation",
+        limits=limits,
     )
+    try:
+        core = validate_candidate(
+            item,
+            experience,
+            cases,
+            policy=policy,
+            control=active_control,
+        )
+        active_control.checkpoint("before_evaluation_storage")
+        report = evaluations.put_report(core)
+        active_control.complete()
+        return report
+    except LearningWorkStopped:
+        raise
+    except Exception:
+        active_control.stop("internal_failure")
+        raise

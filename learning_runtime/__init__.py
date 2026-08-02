@@ -30,6 +30,13 @@ from .snapshots import SnapshotStore
 from .storage import ExperienceStore, learning_data_dir
 from .validation import validate_and_store, validate_candidate
 from .validation_models import ValidationCase, ValidationPolicy
+from .work_control import (
+    LearningLimits,
+    LearningWorkControl,
+    LearningWorkStopped,
+    request_learning_cancel,
+)
+from .work_control_store import learning_work_status
 
 __all__ = [
     "Applicability",
@@ -42,6 +49,9 @@ __all__ = [
     "ExperienceStore",
     "KnowledgeItem",
     "KnowledgeValidationError",
+    "LearningLimits",
+    "LearningWorkControl",
+    "LearningWorkStopped",
     "PromotionService",
     "RegistryStore",
     "SnapshotStore",
@@ -59,6 +69,8 @@ __all__ = [
     "inspect_knowledge",
     "is_high_impact",
     "learning_data_dir",
+    "learning_work_status",
+    "request_learning_cancel",
     "snapshot_view",
     "validate_domain_map",
     "validate_and_store",

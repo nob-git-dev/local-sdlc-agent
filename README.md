@@ -241,6 +241,7 @@ python3 local_sdlc_learning.py doctor
 python3 local_sdlc_learning.py inspect K-example
 python3 local_sdlc_learning.py explain K-example
 python3 local_sdlc_learning.py snapshots --data-dir "$LOCAL_SDLC_LEARNING_HOME"
+python3 local_sdlc_learning.py work-status --data-dir "$LOCAL_SDLC_LEARNING_HOME"
 ```
 
 検証済みの知識案を昇格する例です。高影響の場合、最初のコマンドは
@@ -266,6 +267,20 @@ python3 local_sdlc_learning.py challenge \
 python3 local_sdlc_learning.py rollback \
   --data-dir "$LOCAL_SDLC_LEARNING_HOME" --snapshot KS-previous
 ```
+
+候補生成と検証は、API呼び出し回数、検証ケース数、予約出力token数、経過時間の上限を持ちます。
+実行状況は `work-status` で確認でき、人間は実行IDを指定するか、実行中の学習処理すべてを次の安全な
+チェックポイントで停止できます。
+
+```bash
+python3 local_sdlc_learning.py cancel-work \
+  --data-dir "$LOCAL_SDLC_LEARNING_HOME" --operation LW-example
+```
+
+上限は `mine-candidates` / `validate` の
+`--learner-max-api-calls`、`--learner-max-cases`、`--learner-max-tokens`、
+`--learner-max-wall-seconds` で変更できます。中止または予算超過後は次のAPI呼び出し、ケース判定、
+保存処理を開始しません。
 
 実行対象プロジェクトに `DOMAIN_MAP.json` がある場合、`agent` / `run-stages` / `supervisor` はrun開始時に
 適用可能なactive知識だけを選び、`knowledge-snapshot.json`へ固定します。実行途中で共有知識が更新されても

@@ -2,13 +2,13 @@
 
 ## Status
 
-- Status: Operations and UX implemented; Integration Gate H passed
+- Status: Complete; Integration Gate I passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
   the repository root `SPEC.md` remains authoritative for the execution plane
-- Implemented propositions: `EL01` through `EL11`
-- Deferred proposition: `EL12` final integration
+- Implemented propositions: `EL01` through `EL12`
+- Deferred propositions: none
 
 ## Decision and Development Order
 
@@ -24,7 +24,7 @@ L01-L04: event contract, ledger/outbox, completeness, legacy adapters
     -> Integration Gate B
     -> L06: Domain Map and Knowledge Schema (EL08)
     -> Integration Gate C
-    -> L07-L11: abstraction, validation, registry, retrieval
+    -> L07-L12: abstraction, validation, registry, retrieval, final integration
                 (acceptance propositions EL09-EL12)
 ```
 
@@ -217,9 +217,8 @@ Verification evidence:
 - `python3 -B -m unittest discover -s tests`: 557 tests passed;
 - all new L09 production and test modules are below 300 lines.
 
-This result completes L09 mechanics required by `EL12`. The final `EL12` claim
-remains open until L10 run isolation and the L12 cross-family integration gate
-pass. Supervisor retrieval remains unavailable.
+This result completes L09 mechanics required by `EL12`; the cross-family claim
+is proved by Integration Gate I.
 
 ### Integration Gate G Result
 
@@ -243,8 +242,8 @@ Verification evidence:
 - `python3 -B -m unittest discover -s tests`: 563 tests passed;
 - new binding/retrieval modules and their test module remain below 300 lines.
 
-This result completes L10 and `EL11`. L11 operations and the final L12
-cross-family anti-overfitting gate remain.
+This result completes L10 and `EL11`. L11 and L12 subsequently passed their
+separate gates.
 
 ### Integration Gate H Result
 
@@ -266,8 +265,52 @@ Verification evidence:
 - README documents the candidate-to-validation-to-promotion lifecycle and
   one-time high-impact approval sequence.
 
-This result completes L11. Only L12 and the final `EL12` cross-family claim
-remain.
+This result completes L11. L12 subsequently completed the cross-family claim.
+
+### Integration Gate I Result
+
+Completed on 2026-08-03:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| Cross-family generalization | PASS | A structural rule passes replay, deterministic rename, negative, and independent holdout cases while a different project-scoped rule does not escape its project boundary. |
+| Anti-overfitting | PASS | A deliberately over-broad structural rule fails an unrelated holdout with a critical regression and cannot obtain `shadow_pass`. |
+| Promotion authority | PASS | A low-impact validated rule publishes a snapshot; a high-impact rule leaves the snapshot unchanged until one explicit one-time human approval is consumed. |
+| Snapshot isolation and reversal | PASS | Run A retains its original binding, run B binds a later snapshot, challenge removes a bad rule, and rollback changes the effective pointer without rewriting prior registry events. |
+| Learner control | PASS | Durable cancellation plus API-call, validation-case, reserved-token, and wall-clock budgets stop before the next work checkpoint; stopped validation writes no report. |
+| Persistence recovery | PASS | Faults between immutable-file publication and SQLite indexing leave recoverable files; identical retry completes both snapshot and evaluation publication. |
+| Privacy and explainability | PASS | The isolated shared root contains no injected home path, email, address, or credential marker; doctor, inspect, and explain account for effective items, approval, events, and learner operations. |
+
+The learner control order at every work boundary is:
+
+```text
+durable cancel state
+  -> wall-clock limit
+  -> API/case/reserved-token limit
+  -> atomic budget consumption and checkpoint event
+  -> LLM call, case evaluation, or persistence action
+```
+
+A cancellation committed before the checkpoint therefore wins. A checkpoint
+committed first may finish that already-started unit, but the following
+checkpoint observes cancellation and starts no further unit. Token accounting
+is conservative: the configured maximum output tokens are reserved before an
+LLM call, even when the call later returns fewer tokens or fails.
+
+Verification evidence:
+
+- `tests.test_learning_lifecycle`: the eight L12 lifecycle conditions, two
+  structural families, fault injection, history preservation, and privacy pass
+  in one isolated data root;
+- `tests.test_learning_work_control`: cancellation and all four learner budget
+  dimensions pass in six focused cases;
+- `tests.test_learning_neutrality`: production learning modules contain no
+  benchmark-named branch;
+- all learning tests: 103 tests passed;
+- `python3 -m unittest discover -s tests -p 'test_*.py'`: 575 tests passed;
+- production modules and all L12 test modules remain below 300 lines.
+
+This result completes L12, `EL12`, and the learning-runtime Definition of Done.
 
 ## Purpose
 
@@ -851,8 +894,8 @@ Exit: `EL10` passes, including rejection of a benchmark-specific general rule.
 
 ### L09 - Registry, Promotion, and Rollback
 
-Status: implemented; Integration Gate F passed on 2026-08-02. Final cross-family
-`EL12` integration remains assigned to L12.
+Status: implemented; Integration Gate F passed on 2026-08-02 and its final
+cross-family `EL12` integration passed in L12/Gate I on 2026-08-03.
 
 Implement lifecycle transitions, approval policy, immutable hash-addressed
 snapshots, challenge, supersession, retirement, rollback, and provenance.
@@ -942,7 +985,7 @@ database tables.
 
 ### L12 - Final Integration and Anti-overfitting Gate
 
-Status: planned.
+Status: implemented; Integration Gate I passed on 2026-08-03.
 
 Run the complete lifecycle against at least two project families and an
 unrelated holdout. Fault-inject persistence boundaries, scan shared data for
@@ -966,10 +1009,17 @@ The final benchmark must prove all of the following in one isolated data root:
 L12 adds no benchmark-name branches to production code. Fixtures express only
 domain roles, relations, technologies, scope, expected decisions, and evidence.
 
+Mining and validation now create a durable learner operation with bounded
+API-call, validation-case, reserved-token, and wall-clock budgets. The operation
+records every accepted checkpoint and stop reason in a separate SQLite control
+ledger. `work-status` exposes consumption and `cancel-work` atomically marks one
+or all running learner operations; the next checkpoint changes the operation to
+`stopped` before returning control to the caller.
+
 Exit: `EL01` through `EL12`, all existing Supervisor tests, privacy scans, and
 the full lifecycle benchmark pass.
 
-## Planned CLI
+## CLI
 
 ```text
 python3 local_sdlc_learning.py collect --run-dir <path>
@@ -983,6 +1033,8 @@ python3 local_sdlc_learning.py rollback --data-dir <path> --snapshot <id>
 python3 local_sdlc_learning.py inspect --data-dir <path> <id>
 python3 local_sdlc_learning.py explain --data-dir <path> <id>
 python3 local_sdlc_learning.py snapshots --data-dir <path>
+python3 local_sdlc_learning.py work-status --data-dir <path> [--operation <id>]
+python3 local_sdlc_learning.py cancel-work --data-dir <path> [--operation <id>]
 python3 local_sdlc_learning.py doctor
 ```
 
@@ -1019,6 +1071,8 @@ Tests assert structured reason codes and state, not explanatory prose.
 | Schema changes break replay | Versioned schemas and migration adapters |
 
 ## Definition of Done
+
+Status: achieved on 2026-08-03 by Integration Gate I.
 
 The project is complete only when `EL01` through `EL12` pass, existing
 Supervisor tests pass, at least two project families produce episodes, one

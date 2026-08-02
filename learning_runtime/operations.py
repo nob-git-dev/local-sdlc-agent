@@ -13,6 +13,7 @@ from .promotion_policy import is_high_impact
 from .registry_store import RegistryStore
 from .snapshots import SnapshotStore
 from .storage import ExperienceStore, learning_data_dir
+from .work_control_store import learning_work_status
 
 
 def _evaluation_summary(report: Mapping[str, object]) -> dict[str, object]:
@@ -199,6 +200,14 @@ def doctor_report(data_dir: Path | None = None) -> dict[str, object]:
         current_snapshot = registry.current_snapshot_id()
         if current_snapshot and current_snapshot not in snapshot_ids:
             findings.append("current_snapshot_missing")
+        effective_count = next(
+            (
+                len(item["active_items"])
+                for item in snapshot_records
+                if item["snapshot_id"] == current_snapshot
+            ),
+            0,
+        )
         candidate_records = candidates.candidates()
         lifecycle_counts = Counter(
             registry.state_for(str(item["knowledge_id"]), int(item["version"]))
@@ -206,6 +215,7 @@ def doctor_report(data_dir: Path | None = None) -> dict[str, object]:
         )
         verdict_counts = Counter(str(report["verdict"]) for report in reports)
         active_count = len(registry.active_items())
+        work = learning_work_status(root)
         storage_bytes = sum(
             path.stat().st_size for path in root.rglob("*") if path.is_file()
         )
@@ -217,11 +227,15 @@ def doctor_report(data_dir: Path | None = None) -> dict[str, object]:
             "evaluation_count": len(reports),
             "snapshot_count": len(snapshot_records),
             "active_count": active_count,
+            "effective_count": effective_count,
             "current_snapshot_id": current_snapshot,
             "lifecycle_counts": dict(sorted(lifecycle_counts.items())),
             "validation_verdict_counts": dict(sorted(verdict_counts.items())),
             "registry_event_count": len(registry.events()),
             "registry_integrity": "pass" if not registry_findings else "fail",
+            "learning_operation_count": work["operation_count"],
+            "learning_active_operation_count": work["active_count"],
+            "learning_operation_status_counts": work["status_counts"],
             "storage_bytes": storage_bytes,
             "findings": findings,
         }

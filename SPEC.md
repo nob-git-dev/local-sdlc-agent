@@ -92,7 +92,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 発見命題を一般規則に昇格する場合は、根拠となる evidence、適用範囲、既知の反例、汎用化理由、回帰テストを持たせる。
 - 過去 benchmark から得た個別修復規則は、core runner に直接ハードコードせず、まず発見命題または scope 付き regression memory として保存する。
 - Experience Learning Runtime の詳細仕様は `learning-runtime/SPEC.md` を正本とする。Supervisor は状態遷移を直接学習規則へ変換せず、共通イベント契約へ永続化するだけとし、別プロセスが候補化、反例検証、昇格、版管理を行う。
-- 学習基盤は L01〜L04（EL01〜EL06）、Integration Gate A、P04/P05 の実 recovery capture、L05（EL07）/Gate B、L06（EL08）/Gate C、L07（EL09）/Gate D、L08（EL10）/Gate E、L09/Gate F、L10（EL11）/Gate G、L11/Gate H の順に完了した。残る学習 slice は L12 の全ライフサイクル・過剰適合・障害注入総合ゲートである。
+- 学習基盤は L01〜L04（EL01〜EL06）、Integration Gate A、P04/P05 の実 recovery capture、L05（EL07）/Gate B、L06（EL08）/Gate C、L07（EL09）/Gate D、L08（EL10）/Gate E、L09/Gate F、L10（EL11）/Gate G、L11/Gate H、L12（EL12）/Gate I の順に完了した。L12 は異種project family、過剰一般化holdout、昇格権限、run snapshot固定、challenge/rollback、永続化障害、中断・4次元学習予算、privacyを一つの隔離rootで検証する。
 
 ## 受け入れ条件
 
@@ -395,6 +395,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | L09 registry: 検証済み候補だけを昇格し、高影響知識を一回限り人間承認で制御し、履歴を消さずsnapshotをrollbackできる | `tests.test_learning_registry`, all learning tests (85), full suite (557 tests) | PASS |
 | EL11: run開始時にknowledge snapshotを固定し、適用可能なactive知識だけを権限なし文書として取得する | `tests.test_learning_retrieval`, integration selection (329), all learning tests (91), full suite (563 tests) | PASS |
 | L11 operations: lifecycle操作と事実・仮説・検証・承認・有効状態の説明を構造化CLIで行える | `tests.test_learning_operations`, all learning tests (95), full suite (567 tests) | PASS |
+| L12/EL12: 異なるproject familyを横断する全ライフサイクルで、過剰一般化拒否、高影響知識の人間承認、run snapshot固定、challenge/rollback、障害復旧、privacy、中断とAPI/case/token/time予算を証明する | `tests.test_learning_lifecycle`, `tests.test_learning_work_control`, `tests.test_learning_neutrality`, all learning tests (103), full suite (575 tests) | PASS |
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 | S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |
