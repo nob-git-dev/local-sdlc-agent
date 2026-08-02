@@ -15,7 +15,12 @@ from local_sdlc.safety import (
 
 from .candidate_store import CandidateStore
 from .evaluation_store import EvaluationStore
-from .promotion_policy import active_item, is_high_impact
+from .promotion_policy import (
+    active_item,
+    is_high_impact,
+    non_active_snapshot_items,
+    snapshot_matches_active_items,
+)
 from .registry_store import RegistryStore
 from .schema_validation import require_identifier, require_slug
 from .snapshots import SnapshotStore
@@ -92,15 +97,7 @@ class PromotionService:
         if not snapshot_id:
             return False
         snapshot = self.snapshots.get_snapshot(snapshot_id)
-        expected = {
-            (item.knowledge_id, item.version)
-            for item in self.registry.active_items()
-        }
-        actual = {
-            (str(item["knowledge_id"]), int(item["version"]))
-            for item in snapshot["active_items"]
-        }
-        return actual == expected
+        return snapshot_matches_active_items(snapshot, self.registry.active_items())
 
     def promote(
         self,
@@ -279,6 +276,11 @@ class PromotionService:
 
     def rollback(self, snapshot_id: str) -> dict[str, object]:
         snapshot = self.snapshots.get_snapshot(snapshot_id)
+        invalid = non_active_snapshot_items(snapshot, self.registry.state_for)
+        if invalid:
+            raise ValueError(
+                "rollback snapshot contains non-active knowledge: " + ", ".join(invalid)
+            )
         current = self.registry.current_snapshot_id()
         event = self.registry.append_event(
             "snapshot_rolled_back",
@@ -294,6 +296,5 @@ class PromotionService:
             "registry_event_id": event["event_id"],
             "snapshot_id": snapshot["snapshot_id"],
         }
-
 
 __all__ = ["PromotionService", "is_high_impact"]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from .knowledge_schema import KnowledgeItem
 
@@ -44,4 +44,32 @@ def active_item(item: KnowledgeItem) -> KnowledgeItem:
     return KnowledgeItem.from_dict(payload)
 
 
-__all__ = ["active_item", "is_high_impact"]
+def non_active_snapshot_items(
+    snapshot: Mapping[str, object],
+    state_for: Callable[[str, int], str],
+) -> tuple[str, ...]:
+    return tuple(
+        f"{item['knowledge_id']}:{item['version']}"
+        for item in snapshot["active_items"]
+        if state_for(str(item["knowledge_id"]), int(item["version"])) != "active"
+    )
+
+
+def snapshot_matches_active_items(
+    snapshot: Mapping[str, object],
+    items: Sequence[KnowledgeItem],
+) -> bool:
+    expected = {(item.knowledge_id, item.version) for item in items}
+    actual = {
+        (str(item["knowledge_id"]), int(item["version"]))
+        for item in snapshot["active_items"]
+    }
+    return actual == expected
+
+
+__all__ = [
+    "active_item",
+    "is_high_impact",
+    "non_active_snapshot_items",
+    "snapshot_matches_active_items",
+]

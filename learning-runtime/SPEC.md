@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Supervisor Retrieval Integration implemented; Integration Gate G passed
+- Status: Operations and UX implemented; Integration Gate H passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
@@ -245,6 +245,29 @@ Verification evidence:
 
 This result completes L10 and `EL11`. L11 operations and the final L12
 cross-family anti-overfitting gate remain.
+
+### Integration Gate H Result
+
+Completed on 2026-08-03:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| Lifecycle commands | PASS | Promote, explicit promotion approval, challenge, retire, supersede, and rollback use the same domain services as library callers and return structured events/snapshot identities. |
+| Inspect | PASS | Candidate fields, lifecycle state, summarized evaluations, registry events, and effective snapshot membership are visible without direct database access. |
+| Explain | PASS | Observed counts, LLM hypothesis authority, mechanical validation, human approval, lifecycle, and effective snapshot are separated into explicit sections. |
+| Doctor and snapshots | PASS | Counts, validation verdicts, lifecycle backlog, registry integrity, active items, storage size, and immutable snapshot summaries are machine-readable JSON. |
+| Disable safety | PASS | Rollback rejects snapshots containing currently challenged or retired knowledge, preventing an old pointer from silently re-enabling disabled behavior. |
+
+Verification evidence:
+
+- `tests.test_learning_operations`: 4 operation/CLI tests passed;
+- all learning tests: 95 tests passed;
+- `python3 -B -m unittest discover -s tests`: 567 tests passed;
+- README documents the candidate-to-validation-to-promotion lifecycle and
+  one-time high-impact approval sequence.
+
+This result completes L11. Only L12 and the final `EL12` cross-family claim
+remain.
 
 ## Purpose
 
@@ -902,7 +925,7 @@ Exit: `EL11` passes and an unknown-task regression receives no unrelated rule.
 
 ### L11 - Operations and UX
 
-Status: planned.
+Status: implemented; Integration Gate H passed on 2026-08-03.
 
 Add `doctor`, `inspect`, `explain`, `challenge`, and `rollback` views. Report
 backlog, contract violations, candidate state, validation coverage, snapshot,

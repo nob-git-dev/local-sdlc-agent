@@ -27,6 +27,8 @@ from .domain_map import DomainMap
 from .episodes import build_and_store_recovery_episodes
 from .legacy import import_legacy_run
 from .inventory import validate_mutation_inventory
+from .operations import doctor_report
+from .operations_cli import add_operations_parsers
 from .storage import ExperienceStore, learning_data_dir
 from .validation_cli import add_validation_parser
 
@@ -142,6 +144,8 @@ def command_doctor(args: argparse.Namespace) -> int:
     findings = validate_contract_registry()
     findings.extend(validate_mutation_inventory(Path(__file__).resolve().parents[1]))
     sqlite_version = sqlite3.sqlite_version
+    runtime = doctor_report(data_dir)
+    findings.extend(str(item) for item in runtime.get("findings", []))
     try:
         store = ExperienceStore(data_dir)
         candidate_store = CandidateStore(data_dir)
@@ -150,6 +154,7 @@ def command_doctor(args: argparse.Namespace) -> int:
         findings.append(f"shared_store_unavailable:{exc}")
         writable = False
     report = {
+        **runtime,
         "status": "pass" if not findings and writable else "fail",
         "event_schema_contracts": "pass" if not validate_contract_registry() else "fail",
         "sqlite_version": sqlite_version,
@@ -208,6 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="check contracts and shared persistence")
     doctor.add_argument("--data-dir", type=Path, default=None)
     doctor.set_defaults(func=command_doctor)
+    add_operations_parsers(sub)
     return parser
 
 
@@ -244,6 +250,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+    except (KeyError, OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

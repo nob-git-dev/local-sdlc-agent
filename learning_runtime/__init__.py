@@ -22,6 +22,7 @@ from .knowledge_schema import (
     KnowledgeValidationError,
 )
 from .legacy import import_legacy_run
+from .operations import doctor_report, explain_knowledge, inspect_knowledge, snapshot_view
 from .promotion import PromotionService
 from .promotion_policy import is_high_impact
 from .registry_store import RegistryStore
@@ -51,10 +52,14 @@ __all__ = [
     "build_and_store_recovery_episodes",
     "build_recovery_episode_documents",
     "collect_run",
+    "doctor_report",
     "evaluate_applicability",
+    "explain_knowledge",
     "import_legacy_run",
+    "inspect_knowledge",
     "is_high_impact",
     "learning_data_dir",
+    "snapshot_view",
     "validate_domain_map",
     "validate_and_store",
     "validate_candidate",

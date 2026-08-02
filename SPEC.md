@@ -92,7 +92,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 発見命題を一般規則に昇格する場合は、根拠となる evidence、適用範囲、既知の反例、汎用化理由、回帰テストを持たせる。
 - 過去 benchmark から得た個別修復規則は、core runner に直接ハードコードせず、まず発見命題または scope 付き regression memory として保存する。
 - Experience Learning Runtime の詳細仕様は `learning-runtime/SPEC.md` を正本とする。Supervisor は状態遷移を直接学習規則へ変換せず、共通イベント契約へ永続化するだけとし、別プロセスが候補化、反例検証、昇格、版管理を行う。
-- 学習基盤は L01〜L04（EL01〜EL06）、Integration Gate A、P04/P05 の実 recovery capture、L05（EL07）/Gate B、L06（EL08）/Gate C、L07（EL09）/Gate D、L08（EL10）/Gate E、L09/Gate F、L10（EL11）/Gate G の順に完了した。次の学習 slice は L11 の運用・説明CLIとする。
+- 学習基盤は L01〜L04（EL01〜EL06）、Integration Gate A、P04/P05 の実 recovery capture、L05（EL07）/Gate B、L06（EL08）/Gate C、L07（EL09）/Gate D、L08（EL10）/Gate E、L09/Gate F、L10（EL11）/Gate G、L11/Gate H の順に完了した。残る学習 slice は L12 の全ライフサイクル・過剰適合・障害注入総合ゲートである。
 
 ## 受け入れ条件
 
@@ -159,6 +159,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] EL-GE: L08（EL10）が完了し、replay・改名metamorphic・negative・独立holdout・counterexampleを機械判定し、過剰一般化を拒否しながら候補状態を変更せず immutable evaluation を保存する
 - [x] EL-GF: L09 が完了し、追記専用hash chainからstateを再構築し、低影響の機械昇格、高影響の一回限り人間承認、immutable snapshot、challenge・retire・supersede・rollbackを実行できる
 - [x] EL-GG: L10（EL11）が完了し、run開始時にsnapshotを一度だけ固定し、Domain Mapへ機械適用できるactive知識だけを短い権限なし文書として渡し、親子stageとresumeで同一bindingを維持する
+- [x] EL-GH: L11 が完了し、候補・検証・承認・lifecycle・有効snapshotを構造化してinspect/explainでき、challenge・retire・supersede・rollbackとdoctorをDB直接操作なしで実行できる
 
 ## スコープ（やらないこと）
 
@@ -393,6 +394,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | EL10: replay・metamorphic・negative・holdout・counterexampleを機械判定し、LLMに合否権限を渡さず過剰一般化を拒否する | `tests.test_learning_validation`, all learning tests (76), full suite (548 tests) | PASS |
 | L09 registry: 検証済み候補だけを昇格し、高影響知識を一回限り人間承認で制御し、履歴を消さずsnapshotをrollbackできる | `tests.test_learning_registry`, all learning tests (85), full suite (557 tests) | PASS |
 | EL11: run開始時にknowledge snapshotを固定し、適用可能なactive知識だけを権限なし文書として取得する | `tests.test_learning_retrieval`, integration selection (329), all learning tests (91), full suite (563 tests) | PASS |
+| L11 operations: lifecycle操作と事実・仮説・検証・承認・有効状態の説明を構造化CLIで行える | `tests.test_learning_operations`, all learning tests (95), full suite (567 tests) | PASS |
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 | S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |

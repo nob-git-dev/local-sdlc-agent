@@ -226,6 +226,53 @@ python3 local_sdlc.py agent "停止原因を分析して修正" \
 分析済みでも同じ系列が続けばroot cause recoveryへ進みます。元runのcancel状態と回復予算は引き継ぎ、
 新しいrunの進捗時計だけを新しく始めます。
 
+### 検証済み経験の再利用
+
+Experience Learning Runtime は、成功・失敗の記録からいきなり規則を有効化しません。まず知識案を
+`candidate` として保存し、replay、改名しても同じ結果になる検査、negative、別プロジェクトの
+holdoutを通します。検証後も、低影響の提案だけが機械昇格でき、`require` / `forbid`、安全、権限に
+関わる知識は一回限りの人間承認が必要です。
+
+共有データの保存先は環境変数か `--data-dir` で指定します。
+
+```bash
+export LOCAL_SDLC_LEARNING_HOME=/path/to/learning-data
+python3 local_sdlc_learning.py doctor
+python3 local_sdlc_learning.py inspect K-example
+python3 local_sdlc_learning.py explain K-example
+python3 local_sdlc_learning.py snapshots --data-dir "$LOCAL_SDLC_LEARNING_HOME"
+```
+
+検証済みの知識案を昇格する例です。高影響の場合、最初のコマンドは
+`approval_required` と `operation_id` / `decision_id` を返します。内容を確認した人間が承認し、同じ
+昇格を再実行した時だけ承認が消費されます。
+
+```bash
+python3 local_sdlc_learning.py promote \
+  --data-dir "$LOCAL_SDLC_LEARNING_HOME" --candidate K-example
+python3 local_sdlc_learning.py approve-promotion \
+  --data-dir "$LOCAL_SDLC_LEARNING_HOME" \
+  --operation PO-example --decision D000001
+python3 local_sdlc_learning.py promote \
+  --data-dir "$LOCAL_SDLC_LEARNING_HOME" --candidate K-example
+```
+
+誤った知識は無効化でき、履歴は削除されません。
+
+```bash
+python3 local_sdlc_learning.py challenge \
+  --data-dir "$LOCAL_SDLC_LEARNING_HOME" \
+  --knowledge K-example --reason observed_regression
+python3 local_sdlc_learning.py rollback \
+  --data-dir "$LOCAL_SDLC_LEARNING_HOME" --snapshot KS-previous
+```
+
+実行対象プロジェクトに `DOMAIN_MAP.json` がある場合、`agent` / `run-stages` / `supervisor` はrun開始時に
+適用可能なactive知識だけを選び、`knowledge-snapshot.json`へ固定します。実行途中で共有知識が更新されても
+そのrunは変わりません。Domain Mapや共有ストアが無い場合は、理由付きの空snapshotで通常実行を続けます。
+明示的に無効化する場合は `--disable-learning-context` を使います。詳細契約は
+[`learning-runtime/SPEC.md`](learning-runtime/SPEC.md) を参照してください。
+
 Qwen / Ornith などのモデル差し替えは、散在する個別 flag ではなく `--model-profile` と
 `--api-profile FUNCTION:key=value` で管理します。
 
@@ -306,6 +353,8 @@ agent-native に作る——など、計 12 条。詳細は
 |---|---|
 | `local_sdlc.py` | 互換性を維持する CLI entrypoint |
 | `local_sdlc/` | Application / Domain / Infrastructure に分割された実装本体 |
+| `learning_runtime/` | 経験収集、候補化、反例検証、昇格、snapshot公開を行う独立制御面 |
+| `learning-runtime/SPEC.md` | Experience Learning Runtime の正本仕様 |
 | `tests/` | ハーネス自体の回帰テスト |
 | `SPEC.md` | ローカル SDLC Agent 自体の仕様書 |
 | `benchmarks/` | Agent に作らせた成果物、仕様、比較実験 |
