@@ -2,13 +2,13 @@
 
 ## Status
 
-- Status: causal episode normalization implemented; Integration Gate B passed
+- Status: Domain Map and Knowledge Schema implemented; Integration Gate C passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
   the repository root `SPEC.md` remains authoritative for the execution plane
-- Implemented propositions: `EL01` through `EL07`
-- Deferred propositions: `EL08` through `EL12`
+- Implemented propositions: `EL01` through `EL08`
+- Deferred propositions: `EL09` through `EL12`
 
 ## Decision and Development Order
 
@@ -22,8 +22,10 @@ L01-L04: event contract, ledger/outbox, completeness, legacy adapters
     -> Supervisor P04/P05 plus real recovery capture
     -> L05: normalization, redaction, causal episode builder (EL07)
     -> Integration Gate B
-    -> L06-L11: domain map, abstraction, validation, registry, retrieval
-                (acceptance propositions EL08-EL12)
+    -> L06: Domain Map and Knowledge Schema (EL08)
+    -> Integration Gate C
+    -> L07-L11: abstraction, validation, registry, retrieval
+                (acceptance propositions EL09-EL12)
 ```
 
 Building the full learner before observing real P04/P05 recovery events would
@@ -96,8 +98,52 @@ Verification evidence:
 - an ignored local evidence run produced two eligible episodes, zero case-only
   episodes, then replayed with zero inserts and two duplicates.
 
-This result completes L05 and `EL07`. L06/`EL08` is the next learning slice;
-candidate mining, activation, and Supervisor retrieval remain unavailable.
+This result completed L05 and `EL07`. At that gate, L06/`EL08`, candidate
+mining, activation, and Supervisor retrieval remained unavailable.
+
+### Integration Gate C Result
+
+Completed on 2026-08-02:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| Project-local Domain Map | PASS | Relative component paths and symbols map to explicit abstract roles; unresolved relations, traversal paths, duplicate facts, unknown fields, and tampered signatures fail closed. |
+| Rename-invariant projection | PASS | Component IDs, paths, symbols, project identity, and technologies are removed before structural hashing; two renamed isomorphic fixtures produce the same projection and signature. |
+| Knowledge Schema | PASS | Scope, authority, applicability, evidence, and effect are required independently; unknown fields, invalid enums, sensitive values, duplicate predicates, and ambiguous scope predicates are rejected. |
+| Mechanical applicability | PASS | `all` predicates cover structural roles/relations/signatures, evidenced technologies, exact projects, and exact episodes without changing knowledge state. |
+| Technology boundary | PASS | Technology scope requires at least one `technology_present` predicate and a matching Domain Map observation with a path-free evidence hash; the same structure without that observation does not match. |
+
+For knowledge item `k`, Domain Map `m`, and optional case `c`, L06 fixes these
+propositions:
+
+```text
+SchemaValid(k) =
+  RequiredFields(k)
+  and ScopePredicatesAreAllowed(k.scope, k.applicability)
+  and HasScopeAnchor(k.scope, k.applicability)
+  and HasEvidence(k)
+  and ContainsNoSharedSecret(k)
+
+Applicable(k, m, c) =
+  SchemaValid(k)
+  and every predicate p in k.applicability is mechanically true for (m, c)
+```
+
+`scope(k)` is never inferred from `authority(k)`, and authority never grants an
+effect or activation right. Domain roles are explicit observations; L06 does
+not guess them from filenames. The evaluator returns a decision document only.
+
+Verification evidence:
+
+- `tests.test_learning_domain_map` and
+  `tests.test_learning_knowledge_schema`: 16 tests passed;
+- focused learning, episode, schema, and Domain Map selection: 43 tests passed;
+- `python3 -B -m unittest discover -s tests`: 494 tests passed;
+- all new production modules and test modules are below 300 lines.
+
+This result completes L06 and `EL08`. L07/`EL09` is the next learning slice;
+candidate mining, activation, registry publication, and Supervisor retrieval
+remain unavailable.
 
 ## Purpose
 
@@ -539,8 +585,16 @@ Exit: `EL07` passes.
 
 ### L06 - Domain Map and Knowledge Schema
 
+Status: completed on 2026-08-02.
+
 Map concrete components to abstract roles; implement scope, authority,
 applicability, effect, and proposition kinds.
+
+Implemented as explicit project-local observations, a rename-invariant
+structural projection, a strict KnowledgeItem schema, path-free evidence
+anchors, scope-specific predicate validation, and a side-effect-free
+applicability decision. It does not infer roles, mine candidates, persist a
+registry, or activate knowledge.
 
 Exit: `EL08` passes on two renamed structural fixtures and one genuinely
 technology-specific fixture.
