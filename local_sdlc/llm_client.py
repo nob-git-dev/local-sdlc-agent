@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import threading
@@ -20,6 +21,53 @@ from .models import *
 from .utils import compact_preview, strip_markdown_fence
 
 MAX_REASONING_RECORD_CHARS = 20000
+
+
+def profiles_for_served_models(served_models: list[str]) -> list[str]:
+    served = {str(model).strip() for model in served_models if str(model).strip()}
+    return sorted(
+        profile
+        for profile, default_model in MODEL_PROFILE_DEFAULT_MODELS.items()
+        if default_model in served
+    )
+
+
+def model_profile_compatibility(
+    profile: str,
+    requested_model: str,
+    served_models: list[str],
+) -> tuple[bool, str]:
+    normalized_profile = normalize_model_profile(profile)
+    if normalized_profile == "default":
+        return True, "default profile does not require a fixed served model"
+
+    served = [str(model).strip() for model in served_models if str(model).strip()]
+    if requested_model in served:
+        return True, f"profile model {requested_model!r} is served by /v1/models"
+
+    available = ", ".join(served) if served else "(none)"
+    matching_profiles = profiles_for_served_models(served)
+    suggestion = (
+        f" Matching profiles for the current runtime: {', '.join(matching_profiles)}."
+        if matching_profiles
+        else ""
+    )
+    return (
+        False,
+        f"model profile {normalized_profile!r} requests {requested_model!r}, but /v1/models exposes: "
+        f"{available}.{suggestion} Switch the externally managed resident model or select a matching "
+        "--model-profile. No generation request was sent.",
+    )
+
+
+def require_profile_model_compatibility(
+    profile: str,
+    requested_model: str,
+    served_models: list[str],
+) -> None:
+    compatible, detail = model_profile_compatibility(profile, requested_model, served_models)
+    if not compatible:
+        raise RunnerError(detail)
 
 class LocalLLMClient:
     def __init__(self, config: LLMConfig):
@@ -423,6 +471,7 @@ class LocalLLMClient:
             selected_model = models[0]
         settings = self.call_settings(agent_level, call_function, default_model=selected_model)
         model = settings.model or selected_model
+        require_profile_model_compatibility(self.config.model_profile, model, health_models)
 
         try:
             if self.config.stream:
@@ -829,7 +878,7 @@ def run_llm_capability_probes(client: LocalLLMClient, model: str, timeout: float
         "model": model,
         "messages": [{"role": "user", "content": "Reply exactly: OK"}],
         "temperature": 0.0,
-        "max_tokens": 16,
+        "max_tokens": 256,
         "chat_template_kwargs": None,
     }
 
@@ -900,7 +949,16 @@ def llm_role_recommendations(model: str) -> list[str]:
         "judge calls: use temperature=0 and evidence-only prompts",
         "coder calls: prefer larger max_tokens than PM/judge when generating patches or file artifacts",
     ]
-    if "nemotron" in model_key:
+    if "deepseek" in model_key:
+        recommendations.insert(
+            0,
+            "DeepSeek on the verified local llama.cpp endpoint: keep chat_template_kwargs.enable_thinking=false for strict artifacts; opt in to thinking only for analysis calls that return separate reasoning_content and content",
+        )
+        recommendations.insert(
+            1,
+            "size max_tokens for the server's active context window, not the model's training-context claim",
+        )
+    elif "nemotron" in model_key:
         recommendations.insert(
             0,
             "Nemotron reasoning models on vLLM: use --reasoning-parser nemotron_v3 and send chat_template_kwargs.enable_thinking=false for normal content",
@@ -953,6 +1011,9 @@ def llm_model_profile_manifest(args: argparse.Namespace) -> dict[str, object]:
         "profile": profile,
         "config_file": str(_app_config_for_args(args).path or ""),
         "default_model": MODEL_PROFILE_DEFAULT_MODELS.get(profile, ""),
+        "runtime_model_requirement": (
+            "listed_by_v1_models" if profile != "default" else "automatic"
+        ),
         "function_overrides": {
             name: {
                 "model": override.model,

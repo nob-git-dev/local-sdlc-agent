@@ -137,7 +137,7 @@ class AgentWebHandler(BaseHTTPRequestHandler):
                     "model": self.config.model,
                     "model_profile": self.config.model_profile,
                     "api_key_configured": self.config.api_key_configured,
-                    "model_profiles": sorted(MODEL_PROFILE_ALIASES),
+                    "model_profiles": sorted(set(MODEL_PROFILE_ALIASES.values())),
                     "budget_defaults": {
                         "max_goal_actions": DEFAULT_MAX_GOAL_ACTIONS,
                         "max_stage_actions": DEFAULT_MAX_STAGE_ACTIONS,

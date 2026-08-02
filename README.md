@@ -88,6 +88,28 @@ python3 local_sdlc.py doctor
 優先順位は `CLI引数 > project config > 環境変数 > 内蔵デフォルト` です。API call別の調整は
 設定ファイルの `api_profile` / `function_profiles` でも、従来通り `--api-profile` でも指定できます。
 
+### Qwen / DeepSeek の切り替え
+
+モデルサーバーの切り替えとエージェントのプロファイル選択は別の操作です。単一モデルだけを
+常駐させる環境では、先に外部のモデルサーバーを切り替え、その後に一致するプロファイルを選びます。
+エージェント自身がモデルやコンテナを起動・停止することはありません。
+
+```bash
+# DeepSeek安定版: 全API callでthinking off、生成上限8,192 tokens
+python3 local_sdlc.py doctor --model-profile deepseek-v4-flash-agent
+
+# DeepSeek分析版: 分析だけthinking on、生成物作成はthinking off
+python3 local_sdlc.py doctor --model-profile deepseek-v4-flash-agent-deep
+
+# Qwenへ戻した後
+python3 local_sdlc.py doctor --model-profile qwen-agent
+```
+
+`local_sdlc.json`を使う場合は、`llm.model`を空にしたまま`llm.model_profile`だけを変更します。
+名前付きプロファイルと`/v1/models`の実測モデルが一致しない場合、Doctorと生成処理はAPI call前に
+停止します。関数別の詳細設定と切り替え規則は
+[`docs/usage/model_profiles.md`](docs/usage/model_profiles.md)を参照してください。
+
 ### ブラウザ検証
 
 HTML の受け入れ検証では Chromium 互換ブラウザを使います。通常は利用可能なブラウザを自動検出して
@@ -288,7 +310,7 @@ python3 local_sdlc_learning.py cancel-work \
 明示的に無効化する場合は `--disable-learning-context` を使います。詳細契約は
 [`learning-runtime/SPEC.md`](learning-runtime/SPEC.md) を参照してください。
 
-Qwen / Ornith などのモデル差し替えは、散在する個別 flag ではなく `--model-profile` と
+Qwen / DeepSeek / Ornith などのモデル差し替えは、散在する個別 flag ではなく `--model-profile` と
 `--api-profile FUNCTION:key=value` で管理します。
 
 ---

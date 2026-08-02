@@ -133,7 +133,16 @@ def command_doctor(args: argparse.Namespace) -> int:
     print(f"llm_models: {', '.join(models) if models else '(none)'}")
     selected_model = config.model or (models[0] if models else '(none)')
     print(f"llm_selected_model: {selected_model}")
-    if config.model and config.model not in models and models:
+    compatible, compatibility_detail = model_profile_compatibility(
+        config.model_profile,
+        selected_model,
+        models,
+    )
+    compatibility_status = "PASS" if compatible else "FAIL"
+    print(f"llm_profile_compatibility: {compatibility_status} - {compatibility_detail}")
+    if not compatible:
+        return 1
+    if config.model_profile == "default" and config.model and config.model not in models and models:
         print(f"warning: configured model '{config.model}' was not listed by /v1/models")
     for recommendation in llm_role_recommendations(selected_model):
         print(f"llm_recommendation: {recommendation}")
