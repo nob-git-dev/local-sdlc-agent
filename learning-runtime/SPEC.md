@@ -710,33 +710,168 @@ Exit: `EL09` passes with malformed and hostile candidate outputs.
 
 ### L08 - Validation and Shadow Evaluation
 
+Status: planned.
+
 Implement replay, deterministic metamorphic variants, negative/holdout suites,
-and counterexample/challenge recording.
+and counterexample recording without changing candidate lifecycle state.
+
+Validation consumes explicit, schema-valid `ValidationCase` documents. A case
+contains an opaque case ID, suite kind, a validated Domain Map, optional episode
+ID, expected applicability, verification status, criticality, and whether it
+was used to author the candidate. It contains no source body or absolute path.
+
+```text
+suite = replay|metamorphic|negative|holdout|counterexample
+
+CasePass(k, c) =
+  c.verified
+  and Applicable(k, c.domain_map, c.episode_id) = c.expected_applies
+
+RequiredSuites(k) =
+  {replay, metamorphic, negative}
+  union {positive holdout when k.scope in structural|technology}
+
+ValidationPass(k, C) =
+  CandidateOnly(k)
+  and RequiredSuites(k) subset suites(C)
+  and every required c in C satisfies CasePass(k, c)
+  and CriticalRegressions(k, C) = 0
+  and UnresolvedCounterexamples(k, C) = 0
+  and EvidenceQuality(k) >= policy.minimum_evidence_quality
+  and IndependentSupport(k) >= policy.minimum_support(k.scope)
+```
+
+The validator generates rename-only metamorphic Domain Maps mechanically from
+positive replay/holdout cases. It never asks an LLM to decide pass/fail. An
+optional independent `counterexample_search` call may propose bounded
+falsification descriptions, but proposals are untrusted inputs and cannot count
+as passing evidence until represented by a verified case.
+
+Every report is immutable and hash-addressed in `evaluations/`; the shared DB
+stores its hash, suite coverage, counts, policy, and evidence references.
+Candidate records remain `candidate`; `shadow_pass` is a validation verdict,
+not an activation state.
 
 Exit: `EL10` passes, including rejection of a benchmark-specific general rule.
 
 ### L09 - Registry, Promotion, and Rollback
 
+Status: planned.
+
 Implement lifecycle transitions, approval policy, immutable hash-addressed
 snapshots, challenge, supersession, retirement, rollback, and provenance.
+
+The registry is append-only. Its events form a sequence and hash chain; current
+state and current snapshot are projections that can be rebuilt from events.
+
+```text
+candidate --validated--> shadow --promoted--> active
+active --challenged--> challenged --retired--> retired
+active --superseded--> retired
+
+Promotable(k, v) =
+  v.candidate_id = k.id
+  and v.candidate_version = k.version
+  and v.verdict = shadow_pass
+  and CriticalRegressions(v) = 0
+
+HighImpact(k) =
+  k.effect in {require, forbid}
+  or k.kind = normative
+  or ChangesSafetyOrPermission(k)
+
+Promote(k) ->
+  Promotable(k, v)
+  and (not HighImpact(k) or ConsumedOneTimeHumanApproval(k, v))
+```
+
+An LLM review, model identity, CLI text, confidence value, or successful
+benchmark is never human approval. High-impact promotion uses the parent
+SafetyDecision/one-time approval contract. Low-impact `observe`/`recommend`
+knowledge may use an explicitly configured mechanical policy.
+
+Promotion, challenge, retirement, supersession, and rollback append registry
+events. Publishing writes an immutable snapshot before the registry event
+points to it. Rollback appends a pointer-change event to an existing verified
+snapshot; it never rewrites or deletes history.
 
 Exit: `EL12` passes.
 
 ### L10 - Supervisor Retrieval Integration
 
-Select a snapshot at run start, retrieve only applicable knowledge, pass short
-structured conclusions, and record every retrieved item and effect.
+Status: planned.
+
+Select exactly one snapshot at run start, retrieve only active and mechanically
+applicable knowledge, pass short structured conclusions, and record every
+retrieved item and effect.
+
+The run binding is persisted as `knowledge-snapshot.json` before the first LLM
+call. If that file already exists, resume verifies and reuses it; it never
+reselects a newer snapshot. Missing registry, missing Domain Map, or no matching
+knowledge yields an explicit empty binding and does not block the run.
+
+```text
+Bind(run, s0) at run start
+RegistryPromotes(s1) while run is active
+Snapshot(run) = s0
+
+Retrieve(run, k) =
+  k in Snapshot(run).active_items
+  and Applicable(k, run.domain_map, run.episode_id)
+```
+
+The handoff contains only knowledge ID/version, scope, effect, antecedents,
+conclusion, confidence, snapshot ID/hash, and applicability decision. It cannot
+contain reasoning text, approval tokens, shell authority, or raw evidence. A
+`require`/`forbid` effect still cannot bypass Action Gate or Safety approval.
 
 Exit: `EL11` passes and an unknown-task regression receives no unrelated rule.
 
 ### L11 - Operations and UX
 
+Status: planned.
+
 Add `doctor`, `inspect`, `explain`, `challenge`, and `rollback` views. Report
 backlog, contract violations, candidate state, validation coverage, snapshot,
 and storage size through CLI and later the Web adapter.
 
+Every mutating command returns the resulting registry event and snapshot ID.
+Every read command returns structured JSON suitable for both CLI and a future
+Web adapter. `explain` distinguishes observed facts, LLM hypotheses, mechanical
+validation, human approval, current lifecycle state, and effective snapshot.
+No command exposes reasoning content, secrets, or raw project source.
+
 Exit: a user can understand and disable learned behavior without reading raw
 database tables.
+
+### L12 - Final Integration and Anti-overfitting Gate
+
+Status: planned.
+
+Run the complete lifecycle against at least two project families and an
+unrelated holdout. Fault-inject persistence boundaries, scan shared data for
+private/environment-specific values, verify cancellation checkpoints, and
+prove all Definition of Done conditions from structured evidence.
+
+The final benchmark must prove all of the following in one isolated data root:
+
+1. one structural candidate passes replay, rename metamorphic, negative, and
+   independent positive holdout suites;
+2. one technology or project candidate remains scoped;
+3. one deliberately over-broad candidate fails on an unrelated holdout;
+4. low-impact validated knowledge can produce a snapshot;
+5. high-impact knowledge cannot promote without one-time human approval;
+6. run A remains bound to its original snapshot while run B can bind a later
+   snapshot;
+7. challenge and rollback remove bad behavior from the effective snapshot
+   without rewriting registry history; and
+8. doctor/inspect/explain can account for every effective item and event.
+
+L12 adds no benchmark-name branches to production code. Fixtures express only
+domain roles, relations, technologies, scope, expected decisions, and evidence.
+
+Exit: `EL01` through `EL12`, all existing Supervisor tests, privacy scans, and
+the full lifecycle benchmark pass.
 
 ## Planned CLI
 
@@ -744,12 +879,14 @@ database tables.
 python3 local_sdlc_learning.py collect --run-dir <path>
 python3 local_sdlc_learning.py build-episodes --data-dir <path>
 python3 local_sdlc_learning.py audit --run-dir <path>
-python3 local_sdlc_learning.py consolidate
-python3 local_sdlc_learning.py validate --candidate <id>
-python3 local_sdlc_learning.py promote --candidate <id>
-python3 local_sdlc_learning.py challenge --knowledge <id>
-python3 local_sdlc_learning.py rollback --snapshot <id>
-python3 local_sdlc_learning.py inspect <id>
+python3 local_sdlc_learning.py validate --data-dir <path> --candidate <id> --case <file>...
+python3 local_sdlc_learning.py promote --data-dir <path> --candidate <id>
+python3 local_sdlc_learning.py approve-promotion --data-dir <path> --operation <id>
+python3 local_sdlc_learning.py challenge --data-dir <path> --knowledge <id> --reason <code>
+python3 local_sdlc_learning.py rollback --data-dir <path> --snapshot <id>
+python3 local_sdlc_learning.py inspect --data-dir <path> <id>
+python3 local_sdlc_learning.py explain --data-dir <path> <id>
+python3 local_sdlc_learning.py snapshots --data-dir <path>
 python3 local_sdlc_learning.py doctor
 ```
 
