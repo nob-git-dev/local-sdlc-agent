@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="local-sdlc-agent の実装、制御フロー、プロンプト、証拠モデル、既知の制約をコードに基づいて解説する日本語ビジュアルガイド">
+  <meta name="description" content="local-sdlc-agent の実装、制御フロー、プロンプト、証拠モデル、Experience Learning Runtime、既知の制約をコードに基づいて解説する日本語ビジュアルガイド">
   <title>local-sdlc-agent — 実装を読み解くビジュアルガイド</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -488,6 +488,8 @@
       white-space: pre-wrap;
     }
     .mermaid svg { max-width: 100% !important; height: auto !important; }
+    .learning-diagram .mermaid { min-width: 900px; text-align: left; }
+    .learning-mobile-flow { display: none; }
 
     .table-wrap {
       margin: 1rem 0;
@@ -678,6 +680,10 @@
     }
     .status-cell b { display: block; color: var(--navy-2); font: 600 1.2rem/1 var(--mono); }
     .status-cell span { display: block; margin-top: .35rem; color: var(--muted); font-size: .64rem; }
+    .status-strip.pass {
+      border-color: color-mix(in srgb, var(--green) 38%, var(--line));
+      background: var(--green-soft);
+    }
 
     .source-link {
       display: inline-flex;
@@ -744,6 +750,13 @@
       .pipe-step:nth-child(even)::after { display: none; }
       .status-strip { grid-template-columns: 1fr; }
       .status-cell:first-child { grid-column: auto; }
+      .learning-diagram .mermaid { display: none; }
+      .learning-mobile-flow { display: grid; gap: .8rem; padding: .35rem 0; }
+      .learning-flow-row { padding: .8rem 0 .8rem .85rem; border-left: 3px solid var(--cyan); }
+      .learning-flow-row:nth-child(2) { border-left-color: var(--violet); }
+      .learning-flow-row:nth-child(3) { border-left-color: var(--green); }
+      .learning-flow-row b { display: block; color: var(--navy); font-size: .8rem; }
+      .learning-flow-row span { display: block; margin-top: .28rem; color: var(--muted); font-size: .72rem; line-height: 1.65; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
@@ -772,7 +785,7 @@
         <div class="brand-mark">LS</div>
         <div>
           <strong>local-sdlc-agent</strong>
-          <small>VISUAL CODE GUIDE / 2026-07-25</small>
+          <small>VISUAL CODE GUIDE / 2026-08-03</small>
         </div>
       </div>
       <div class="sidebar-tools">
@@ -796,12 +809,13 @@
         <a href="#run-docs"><span>13</span><span>Run文書</span></a>
         <a href="#modules"><span>14</span><span>モジュールとルーチン</span></a>
         <a href="#cli"><span>15</span><span>CLIリファレンス</span></a>
-        <a href="#reality"><span>16</span><span>現行テストと制約</span></a>
-        <a href="#assessment"><span>17</span><span>評価と読解ガイド</span></a>
+        <a href="#learning-runtime"><span>16</span><span>学習ランタイム</span></a>
+        <a href="#reality"><span>17</span><span>現行テストと制約</span></a>
+        <a href="#assessment"><span>18</span><span>評価と読解ガイド</span></a>
       </nav>
       <div class="sidebar-note">
         <code>main</code> 向け作業ツリー / 製品非依存化版<br>
-        実装・プロンプト・テストを静的読解し、Python 3.13 / 3.11 で現状を検証。図は Mermaid、統計は Chart.js で描画します。
+        実装・プロンプト・テストを静的読解し、Python 3.12.3 で全テストを検証。図は Mermaid、統計は Chart.js で描画します。
       </div>
     </aside>
 
@@ -816,14 +830,15 @@
         </p>
         <div class="hero-actions">
           <a class="button" href="#architecture">全体像を見る ↓</a>
+          <a class="button secondary" href="#learning-runtime">新しい学習機構を見る</a>
           <a class="button secondary" href="#prompts">実プロンプトを見る</a>
           <a class="button secondary" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/main" target="_blank" rel="noreferrer">公開後の対象ソース ↗</a>
         </div>
         <div class="metrics" aria-label="コードベースの主要指標">
-          <div class="metric"><b>15,830</b><span>コアPython行数</span></div>
-          <div class="metric"><b>354</b><span>関数・メソッド</span></div>
+          <div class="metric"><b>31,826</b><span>3パッケージのPython行数</span></div>
+          <div class="metric"><b>985</b><span>関数・メソッド</span></div>
           <div class="metric"><b>12 + 4</b><span>Skill + Agent prompt資産</span></div>
-          <div class="metric"><b>0</b><span>Python外部ランタイム依存</span></div>
+          <div class="metric"><b>575</b><span>全テスト成功</span></div>
         </div>
       </header>
 
@@ -880,8 +895,8 @@
                 <tbody>
                   <tr><th>Repository</th><td><a href="https://github.com/nob-git-dev/local-sdlc-agent">nob-git-dev/local-sdlc-agent</a></td></tr>
                   <tr><th>Source</th><td><code>main</code> 向け作業ツリー / 源流資産を含む製品非依存化版</td></tr>
-                  <tr><th>Source state</th><td>2026-07-25 更新時点</td></tr>
-                  <tr><th>Report date</th><td>2026-07-25 / Asia/Tokyo</td></tr>
+                  <tr><th>Source state</th><td>2026-08-03 / Integration Gate I 完了時点</td></tr>
+                  <tr><th>Report date</th><td>2026-08-03 / Asia/Tokyo</td></tr>
                   <tr><th>Package</th><td><code>local-sdlc-agent 0.1.0</code> / Python <code>&gt;=3.10</code> を宣言</td></tr>
                   <tr><th>License</th><td>コードは PolyForm Noncommercial、文書・Promptは CC BY-NC-SA 4.0</td></tr>
                 </tbody>
@@ -891,12 +906,9 @@
           <div class="card">
             <h3>重要な現状注記</h3>
             <p><span class="badge limit">検証結果</span></p>
-            <p>Python 3.13 と実体パスの一時ディレクトリ <code>TMPDIR=/private/tmp</code> では
-              327テスト中 <strong>326 pass / 1 skip</strong>。製品名の再混入を検知する
-              リポジトリ横断テストも含みます。</p>
-            <p>macOSの既定一時パスでは、既存2テストが <code>/var</code> と
-              <code>/private/var</code> の正規化差の影響を受けます。</p>
-            <p>Python 3.11 では <code>agent_runner.py:1701</code> のf-string構文がimport時に失敗します。宣言上の <code>&gt;=3.10</code> と現行実装に互換性のずれがあります。</p>
+            <p>Python 3.12.3 で <strong>575テストすべて成功</strong>。そのうち103件が、経験収集から反例検証、昇格、snapshot固定、中断・予算までを扱う学習系テストです。</p>
+            <p>Python 3.10 / 3.11 の構文として静的解析済みで、3.12以上専用の構文・本体標準ライブラリAPIは確認されていません。実行確認済みの基準は3.12.3です。</p>
+            <p>Python 3.13 は検証matrixに未追加です。「動く見込み」と「検証済み」を区別し、対応保証には別環境での全テストを必要とします。</p>
             <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/pyproject.toml" target="_blank" rel="noreferrer">pyproject.toml</a>
           </div>
         </div>
@@ -907,7 +919,7 @@
           <div class="section-no">02 / ARCHITECTURE</div>
           <div>
             <h2>全体アーキテクチャ</h2>
-            <p class="section-kicker">制御面、生成面、検証面、証跡面を分けると、15,000行超のコードが一つのパイプラインとして見えてきます。</p>
+            <p class="section-kicker">実行制御、生成、検証、証跡、学習制御を分けると、31,000行超のコードが二つの連携するランタイムとして見えてきます。</p>
           </div>
         </div>
 
@@ -917,7 +929,7 @@
 flowchart LR
   U["利用者"]:::human
   W["Web UI<br/>127.0.0.1:8765"]:::edge
-  CLI["CLI<br/>14 commands"]:::edge
+  CLI["CLI<br/>20 commands"]:::edge
   SPEC[("SPEC.md")]:::doc
   ROUTE["Routing / Stage Queue<br/>決定論的ルール"]:::control
   PROMPT["Prompt Builder<br/>System + Role + Skill + Docs"]:::prompt
@@ -927,6 +939,9 @@ flowchart LR
   VERIFY["Verification<br/>commands / smoke / probes"]:::verify
   JUDGE["Judge<br/>evidence-only verdict"]:::prompt
   RUN[(".sdlc-runner/runs/<br/>documents + run.json")]:::doc
+  EVENTS[("Canonical events<br/>ledger + outbox")]:::doc
+  LEARN["Experience Learning Runtime<br/>episode → candidate → validation"]:::control
+  KNOWLEDGE[("Immutable knowledge<br/>snapshot")]:::doc
 
   U --> W --> CLI
   U --> CLI
@@ -944,6 +959,10 @@ flowchart LR
   JUDGE -->|FAIL + evidence| PROMPT
   VERIFY --> RUN
   APPLY --> RUN
+  RUN --> EVENTS
+  EVENTS --> LEARN
+  LEARN -->|validated + authorized| KNOWLEDGE
+  KNOWLEDGE -->|bind once at run start| PROMPT
 
   classDef human fill:#f9e6d9,stroke:#dd6b2c,color:#162027;
   classDef edge fill:#d9f0ef,stroke:#0b8793,color:#162027;
@@ -981,17 +1000,18 @@ flowchart LR
             <tbody>
               <tr><td><span class="badge infra">入口</span></td><td><code>cli.py</code>, <code>web_server.py</code>, <code>web_jobs.py</code></td><td>引数/APIを正規化し、用途別runnerへ委譲</td><td>Applicationへ</td></tr>
               <tr><td><span class="badge impl">Application</span></td><td><code>agent_runner.py</code>, <code>stage_runner.py</code>, <code>supervisor_runner.py</code>, <code>phase_runner.py</code></td><td>ユースケースと状態遷移を編成</td><td>Domain + Infrastructureへ</td></tr>
-              <tr><td><span class="badge rule">Domain / Control</span></td><td><code>routing.py</code>, <code>stages.py</code>, <code>artifacts.py</code>, <code>models.py</code></td><td>ルート、Stage、Artifact、失敗型、データ契約</td><td>標準ライブラリ中心</td></tr>
+              <tr><td><span class="badge rule">Domain / Control</span></td><td><code>routing.py</code>, <code>stages.py</code>, <code>artifact_*.py</code>, <code>models.py</code></td><td>ルート、Stage、Artifact、失敗型、データ契約</td><td>標準ライブラリ中心</td></tr>
               <tr><td><span class="badge infra">Infrastructure</span></td><td><code>llm_client.py</code>, <code>verification.py</code>, <code>workspace.py</code>, <code>run_state.py</code></td><td>HTTP、プロセス、ファイル文脈、Run永続化</td><td>OS / Local LLMへ</td></tr>
+              <tr><td><span class="badge impl">Learning control</span></td><td><code>learning_runtime/</code>, <code>sdlc_events/</code>, <code>learning_context.py</code></td><td>実行イベントを因果episodeへ変換し、反例検証済み知識を版管理</td><td>次のRun開始時だけExecutionへ</td></tr>
               <tr><td><span class="badge prompt">Prompt assets</span></td><td><code>sdlc-skills/skills/</code>, <code>sdlc-skills/agents/</code></td><td>12専門Skillと4 Agent定義</td><td>Prompt Builderが本文を埋め込む</td></tr>
             </tbody>
           </table>
         </div>
 
         <div class="callout">
-          依存方向は厳密なClean Architectureではありません。特に巨大な <code>artifacts.py</code> と
-          <code>agent_runner.py</code> が多くの規則を集約しています。ただし「LLM出力よりPython制御を上位に置く」
-          という境界は一貫しています。
+          Artifact処理は互換facadeとprotocol・lint・apply・probe・repairへ分割されました。<code>agent_runner.py</code> には
+          なお実行編成が集中していますが、「LLMは候補を作り、Pythonの検証器と権限境界が状態変更を決める」原則は
+          実行面と学習面の両方で共通です。
         </div>
       </section>
 
@@ -1994,8 +2014,8 @@ Judge自身はcodeを修正しない。</code></pre>
         <div class="section-head">
           <div class="section-no">11 / ARTIFACT CONTROL</div>
           <div>
-            <h2>最大モジュールは“出力防波堤”</h2>
-            <p class="section-kicker"><code>artifacts.py</code> は6,868行・140関数。生成そのものより、壊れた出力を分類・制限・回復するコード量が大きいことを示します。</p>
+            <h2>“出力防波堤”を責務別に分割</h2>
+            <p class="section-kicker">旧巨大moduleは10行の互換facadeになり、grammar・stream guard、lint、apply、probe、repairへ分割されました。生成そのものより、壊れた出力を分類・制限・回復する制御が厚い点は変わりません。</p>
           </div>
         </div>
 
@@ -2239,46 +2259,44 @@ flowchart LR
             <h3>モジュール別Python行数</h3>
             <div class="chart-shell"><canvas id="locChart" aria-label="モジュール別行数の棒グラフ" role="img"></canvas></div>
             <div class="chart-fallback table-wrap">
-              <table><tbody><tr><td>artifacts.py</td><td>6,868</td></tr><tr><td>agent_runner.py</td><td>3,381</td></tr><tr><td>verification.py</td><td>914</td></tr><tr><td>llm_client.py</td><td>675</td></tr><tr><td>stages.py</td><td>673</td></tr><tr><td>cli.py</td><td>625</td></tr></tbody></table>
+              <table><tbody><tr><td>agent_runner.py</td><td>3,525</td></tr><tr><td>artifact_lint.py</td><td>1,711</td></tr><tr><td>artifact_ops.py</td><td>1,250</td></tr><tr><td>repair_advice.py</td><td>1,102</td></tr><tr><td>llm_client.py</td><td>969</td></tr><tr><td>python_probes.py</td><td>960</td></tr></tbody></table>
             </div>
           </div>
           <div class="card">
             <h3>分布の読み方</h3>
-            <p><code>artifacts.py</code> と <code>agent_runner.py</code> だけでコアPythonの約65%を占めます。</p>
+            <p>旧 <code>artifacts.py</code> の集中は解消され、現在は10行の互換facadeです。処理はprotocol、lint、apply、probe、repairへ分かれました。</p>
             <ul>
-              <li><strong>6,868行:</strong> Artifact grammar、lint、semantic contract、probes、repair advice</li>
-              <li><strong>3,381行:</strong> Round状態、Prompt、予算、apply、Judge、manifest</li>
-              <li><strong>914行:</strong> command、smoke、failure signature</li>
+              <li><strong>3,525行:</strong> <code>agent_runner.py</code>。全Pythonの約11%を占める最大の実行編成module</li>
+              <li><strong>6,373行 / 37 files:</strong> 学習制御面。主要な新規moduleは300行以下</li>
+              <li><strong>998行 / 4 files:</strong> 実行面と学習面を結ぶcanonical event契約</li>
             </ul>
             <p>複雑性の中心は「生成」ではなく、<strong>不確実な生成を安全な状態遷移へ変換する部分</strong>です。</p>
             <div class="callout">
-              一方で、最大2モジュールへの集中は変更影響を広げます。将来はArtifact parser、stream guard、semantic probes、repair policyを明確なsubmoduleへ分割する余地があります。
+              分割は完了ではありません。<code>agent_runner.py</code>、artifact lint、repair policyにはなお1,000行超の集中があり、次の分割は責務とテスト境界を保った小さな移動として行う必要があります。
             </div>
           </div>
         </div>
 
-        <h3>全モジュール一覧</h3>
+        <h3>主要モジュールと境界</h3>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Module</th><th>LOC</th><th>Functions</th><th>Classes</th><th>責務</th></tr></thead>
             <tbody>
-              <tr><td><code>artifacts.py</code></td><td>6,868</td><td>140</td><td>0</td><td>Artifact parse/lint/apply、stream guard、意味契約、probe、repair</td></tr>
-              <tr><td><code>agent_runner.py</code></td><td>3,381</td><td>22</td><td>0</td><td>単一Agent run全体。大半はnested routine</td></tr>
-              <tr><td><code>verification.py</code></td><td>914</td><td>29</td><td>0</td><td>安全なcommand、failure分類、HTML/Redis smoke</td></tr>
-              <tr><td><code>llm_client.py</code></td><td>675</td><td>27</td><td>1</td><td>OpenAI互換HTTP、SSE、profile、doctor</td></tr>
-              <tr><td><code>stages.py</code></td><td>673</td><td>23</td><td>0</td><td>Stage template、agent args、acceptance matrix</td></tr>
-              <tr><td><code>cli.py</code></td><td>625</td><td>23</td><td>0</td><td>argparse、14 command dispatch</td></tr>
-              <tr><td><code>models.py</code></td><td>480</td><td>5</td><td>23</td><td>dataclass、constant、LLM profile</td></tr>
-              <tr><td><code>skills.py</code></td><td>385</td><td>12</td><td>0</td><td>Skill loader、System/User Prompt builder</td></tr>
-              <tr><td><code>supervisor_runner.py</code></td><td>372</td><td>2</td><td>0</td><td>route文書、Skill実行、legacy supervise</td></tr>
-              <tr><td><code>routing.py</code></td><td>296</td><td>11</td><td>0</td><td>task/risk分類、phase推薦、Judge文字列判定</td></tr>
-              <tr><td><code>web_jobs.py</code></td><td>275</td><td>18</td><td>4</td><td>安全argv、job/process/log state</td></tr>
-              <tr><td><code>stage_runner.py</code></td><td>185</td><td>2</td><td>0</td><td>Stage queueとS99統合の実行</td></tr>
-              <tr><td><code>web_server.py</code></td><td>178</td><td>10</td><td>2</td><td>HTTP endpoints、static UI配信</td></tr>
-              <tr><td><code>workspace.py</code></td><td>171</td><td>11</td><td>0</td><td>manifest、file context、path normalize</td></tr>
-              <tr><td><code>phase_runner.py</code></td><td>161</td><td>4</td><td>0</td><td>spec / phase / implement文書生成</td></tr>
-              <tr><td><code>run_state.py</code></td><td>120</td><td>8</td><td>0</td><td>run dir、resume、copy worktree</td></tr>
-              <tr><td><code>utils.py</code></td><td>49</td><td>7</td><td>0</td><td>共通文字列・ファイルutility</td></tr>
+              <tr><td><code>agent_runner.py</code></td><td>3,525</td><td>26</td><td>0</td><td>単一Agent runの状態遷移、適用、検証、Judge、回復</td></tr>
+              <tr><td><code>artifact_lint.py</code></td><td>1,711</td><td>31</td><td>0</td><td>出力形式・path・意味契約のlintとtyped failure</td></tr>
+              <tr><td><code>artifact_ops.py</code></td><td>1,250</td><td>50</td><td>0</td><td>Artifact抽出、正規化、機械適用</td></tr>
+              <tr><td><code>repair_advice.py</code></td><td>1,102</td><td>14</td><td>0</td><td>失敗型から局所修復指示を構成</td></tr>
+              <tr><td><code>llm_client.py</code></td><td>969</td><td>42</td><td>1</td><td>OpenAI互換HTTP、SSE、thinking分離、profile、doctor</td></tr>
+              <tr><td><code>harnesses/python_probes.py</code></td><td>960</td><td>11</td><td>1</td><td>Python成果物の構文・runtime・API probe</td></tr>
+              <tr><td><code>cli.py</code></td><td>944</td><td>31</td><td>0</td><td>20 commandの引数契約とdispatch</td></tr>
+              <tr><td><code>web_jobs.py</code></td><td>899</td><td>44</td><td>5</td><td>Web job、永続履歴、成果物preview、停止・承認</td></tr>
+              <tr><td><code>artifact_protocol.py</code></td><td>871</td><td>16</td><td>0</td><td>Artifact grammar、stream guard、形式契約</td></tr>
+              <tr><td><code>verification.py</code></td><td>822</td><td>29</td><td>0</td><td>command、smoke、failure family、観測証拠</td></tr>
+              <tr><td><code>progress_monitor.py</code></td><td>613</td><td>32</td><td>2</td><td>進行checkpoint、stall判定、再開診断</td></tr>
+              <tr><td><code>budget.py</code></td><td>613</td><td>28</td><td>2</td><td>永続化された実行予算と停止理由</td></tr>
+              <tr><td><code>learning_runtime/</code></td><td>6,373</td><td>249</td><td>30</td><td>episode、candidate、検証、registry、snapshot、学習作業制御</td></tr>
+              <tr><td><code>sdlc_events/</code></td><td>998</td><td>34</td><td>10</td><td>canonical event契約、ledger、outbox</td></tr>
+              <tr><td><code>artifacts.py</code></td><td>10</td><td>0</td><td>0</td><td>既存importを保つ互換facade</td></tr>
             </tbody>
           </table>
         </div>
@@ -2315,7 +2333,7 @@ flowchart LR
         <div class="section-head">
           <div class="section-no">15 / CLI REFERENCE</div>
           <div>
-            <h2>14コマンドの役割</h2>
+            <h2>20コマンドの役割</h2>
             <p class="section-kicker">CLIは診断、文書生成、実装、比較、Webのすべてを一つのentrypointにまとめます。</p>
           </div>
         </div>
@@ -2332,6 +2350,9 @@ flowchart LR
                 <tr class="searchable-card"><td><code>stage-plan</code></td><td>SPECからStage queueだけを表示・保存</td></tr>
                 <tr class="searchable-card"><td><code>run-stages</code></td><td>StageごとのAgentとfinal gateを実行</td></tr>
                 <tr class="searchable-card"><td><code>spec</code></td><td>spec SkillでSPEC案を生成</td></tr>
+                <tr class="searchable-card"><td><code>cancel</code></td><td>Runの永続cancel状態を記録し、次の安全境界で停止</td></tr>
+                <tr class="searchable-card"><td><code>safety-status</code></td><td>保留中の承認とaction gate監査を表示</td></tr>
+                <tr class="searchable-card"><td><code>approve</code></td><td>既存の一件の安全判断だけを明示承認</td></tr>
               </tbody>
             </table>
           </div>
@@ -2346,6 +2367,9 @@ flowchart LR
                 <tr class="searchable-card"><td><code>agent</code></td><td>apply/test/judge修復ループ</td></tr>
                 <tr class="searchable-card"><td><code>check-command</code></td><td>コマンド安全性と実行を単独確認</td></tr>
                 <tr class="searchable-card"><td><code>compare-runs</code></td><td>複数run.jsonのprofile・結果・予算を比較</td></tr>
+                <tr class="searchable-card"><td><code>budget-status</code></td><td>Runの永続予算、消費量、停止理由を表示</td></tr>
+                <tr class="searchable-card"><td><code>progress-status</code></td><td>最終checkpointとstall判定を表示</td></tr>
+                <tr class="searchable-card"><td><code>recovery-plan</code></td><td>停止Runの証拠から別Runへの回復計画を生成</td></tr>
               </tbody>
             </table>
           </div>
@@ -2374,43 +2398,263 @@ flowchart LR
         </div>
       </section>
 
+      <section id="learning-runtime" data-search-section>
+        <div class="section-head">
+          <div class="section-no">16 / EXPERIENCE LEARNING RUNTIME</div>
+          <div>
+            <h2>経験を、検証済みの知識へ育てる</h2>
+            <p class="section-kicker">L12 / EL12で追加されたのは、モデルを再学習する機能ではありません。実行結果を別の制御面で検証し、次のRunが安全に参照できる版管理済み知識へ変換する仕組みです。</p>
+          </div>
+        </div>
+
+        <div class="big-concept">
+          失敗や成功をそのまま「教訓」にしません。<br>
+          <code>観測事実 → 因果episode → LLMによる仮説 → 機械的反例検証 → 権限確認 → immutable snapshot</code>
+          の全境界を通過した知識だけを、次のRun開始時に固定して利用します。
+        </div>
+
+        <div class="status-strip pass" aria-label="Experience Learning Runtime verification status">
+          <div class="status-cell"><b>L12 / EL12</b><span>Definition of Done</span></div>
+          <div class="status-cell"><b>Gate I</b><span>integration pass</span></div>
+          <div class="status-cell"><b>103</b><span>learning tests</span></div>
+          <div class="status-cell"><b>575</b><span>full-suite pass</span></div>
+          <div class="status-cell"><b>4 + cancel</b><span>work limits</span></div>
+        </div>
+
+        <div class="diagram learning-diagram">
+          <div class="diagram-title">経験から次のRunまで <span>FIG 16.1 / learning lifecycle / scroll</span></div>
+          <pre class="mermaid">
+flowchart TB
+  subgraph CAPTURE["CAPTURE VERIFIED EXPERIENCE"]
+    direction LR
+    RUN["Supervisor Run<br/>verified outcome"]:::edge
+    EVENT[("Canonical event<br/>ledger + outbox")]:::doc
+    EP["Causal episode gate<br/>isolation + causation"]:::control
+    RUN --> EVENT --> EP
+  end
+  subgraph PROVE["PROPOSE AND DISPROVE"]
+    direction LR
+    CAND["Candidate mining<br/>LLM hypothesis only"]:::prompt
+    TEST["Mechanical validation<br/>replay / rename / negative / holdout"]:::verify
+    AUTH{"Impact and<br/>authority gate"}:::guard
+    CAND --> TEST -->|shadow_pass| AUTH
+    TEST -->|counterexample| CAND
+  end
+  subgraph PUBLISH["AUTHORIZE, PUBLISH, AND BIND"]
+    direction LR
+    LOW["Low impact<br/>mechanical gate"]:::control
+    HIGH["High impact<br/>require / forbid / safety / permission"]:::guard
+    HUMAN["One-time human approval<br/>high-impact only"]:::human
+    REG[("Append-only registry<br/>hash chain")]:::doc
+    SNAP[("Immutable snapshot")]:::doc
+    NEXT["Next Run<br/>bind once at start"]:::edge
+    LOW --> REG
+    HIGH --> HUMAN --> REG
+    REG --> SNAP --> NEXT
+  end
+
+  CAPTURE ==> PROVE ==> PUBLISH
+  NEXT -. never changes mid-run .-> NEXT
+
+  classDef human fill:#f9e6d9,stroke:#dd6b2c,color:#162027;
+  classDef edge fill:#d9f0ef,stroke:#0b8793,color:#162027;
+  classDef control fill:#e7edf0,stroke:#123d52,color:#162027;
+  classDef prompt fill:#e9e2f5,stroke:#6d52a1,color:#162027;
+  classDef guard fill:#f9dfe0,stroke:#b9383a,color:#162027;
+  classDef verify fill:#dcefe5,stroke:#287a56,color:#162027;
+  classDef doc fill:#fffefa,stroke:#617079,color:#162027;
+          </pre>
+          <div class="learning-mobile-flow">
+            <div class="learning-flow-row"><b>01 / Capture verified experience</b><span>検証済みRun → canonical event → 因果・隔離条件を満たすepisode</span></div>
+            <div class="learning-flow-row"><b>02 / Propose and disprove</b><span>LLM仮説 → replay・改名・negative・独立holdout → impact判定</span></div>
+            <div class="learning-flow-row"><b>03 / Authorize, publish, and bind</b><span>機械gateまたは人間承認 → append-only registry → immutable snapshot → 次のRun</span></div>
+          </div>
+        </div>
+
+        <div class="grid four">
+          <article class="card card-accent searchable-card">
+            <span class="mini-label">CAUSALITY</span>
+            <h3>相関を因果と呼ばない</h3>
+            <p>計画・開始・完了が一つの因果鎖を作り、検証成功、単一変更、隔離実行、同時変更なしを満たすepisodeだけが候補生成へ進みます。それ以外は消さずにcase記録として残します。</p>
+          </article>
+          <article class="card card-accent card-violet searchable-card">
+            <span class="mini-label">GENERALIZATION</span>
+            <h3>改名と反例で過剰適合を検出</h3>
+            <p>同じ事例の再生だけでなく、名称を変えた同型ケース、適用すべきでないnegative、独立projectのholdoutを要求します。広すぎる規則はcritical regressionとして拒否されます。</p>
+          </article>
+          <article class="card card-accent card-orange searchable-card">
+            <span class="mini-label">AUTHORITY</span>
+            <h3>LLMは提案者で、決裁者ではない</h3>
+            <p>LLMは仮説を構造化しますが、pass/failや有効化は決めません。低影響知識は機械条件、高影響知識は一回限りの人間承認を追加で満たして初めてactiveになります。</p>
+          </article>
+          <article class="card card-accent card-green searchable-card">
+            <span class="mini-label">ISOLATION</span>
+            <h3>実行中に判断基準を変えない</h3>
+            <p>Run Aは開始時のsnapshotを最後まで維持します。途中で新しい知識が昇格しても、それを使うのは次に始まるRun Bです。子Stageとresumeも親と同じbindingを継承します。</p>
+          </article>
+        </div>
+
+        <h3>判定可能な命題</h3>
+        <div class="codebox">
+          <div class="code-head"><span>logical contract / simplified</span><button class="copy-btn" type="button">COPY</button></div>
+          <pre><code>Eligible(e) = CausalChain(e)
+           AND VerifiedOutcome(e)
+           AND OneAttributedChange(e)
+           AND Isolated(e)
+           AND NOT ConcurrentChange(e)
+
+ShadowPass(k) = Replay(k)
+             AND RenameMetamorphic(k)
+             AND NegativeCases(k)
+             AND IndependentHoldout(k)
+             AND CriticalRegressionCount(k) = 0
+
+Active(k) = ShadowPass(k)
+         AND MechanicalPromotionPolicy(k)
+         AND (LowImpact(k) OR OneTimeHumanApproval(k))</code></pre>
+        </div>
+        <p class="small muted">実装ではさらにschema、scope anchor、evidence、privacy、registry integrityを検査します。上式は中核条件を読解用に短縮したものです。</p>
+
+        <h3>知識の適用範囲を機械的に狭める</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Scope</th><th>適用条件</th><th>過剰一般化を防ぐ境界</th></tr></thead>
+            <tbody>
+              <tr><td><code>case</code></td><td>一つのepisodeだけ</td><td>一件の成功から一般規則を作らない</td></tr>
+              <tr><td><code>project</code></td><td>同一projectで検証されたepisode群</td><td>別projectへ自動伝播しない</td></tr>
+              <tr><td><code>technology</code></td><td>Domain Mapに同じtechnologyの観測証拠がある</td><td>名称や推測ではなく、明示観測を要求</td></tr>
+              <tr><td><code>structural</code></td><td>改名不変の役割・関係が一致し、独立holdoutを通過</td><td>path、symbol、project名をsignatureから除外</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>API呼び出しを関数単位で分離</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>処理</th><th>API</th><th>出力の扱い</th><th>状態変更権限</th></tr></thead>
+            <tbody>
+              <tr><td>event収集・episode構築</td><td>なし</td><td>canonical eventと因果条件をPythonで検査</td><td>episode保存のみ</td></tr>
+              <tr><td>抽象化</td><td>独立call 1 / thinking on</td><td>検証済みJSONだけを次callへ渡す</td><td>なし</td></tr>
+              <tr><td>scope分類</td><td>独立call 2 / thinking on</td><td>scope ceilingをPythonで再検査</td><td>なし</td></tr>
+              <tr><td>candidate直列化</td><td>独立call 3 / thinking off</td><td>厳密schemaへ限定。reasoningはhandoffしない</td><td><code>candidate</code>保存のみ</td></tr>
+              <tr><td>反例検証・昇格</td><td>なし</td><td>決定論的verdictとhash付きreport</td><td>policyと必要時の人間承認だけ</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>人間による停止と有限予算</h3>
+        <div class="pipeline" aria-label="学習作業のcheckpoint順序">
+          <div class="pipe-step"><span class="step-no">01</span><b>Cancel</b><small>永続化された中止要求</small></div>
+          <div class="pipe-step"><span class="step-no">02</span><b>Wall clock</b><small>経過時間の上限</small></div>
+          <div class="pipe-step"><span class="step-no">03</span><b>API calls</b><small>外部call回数</small></div>
+          <div class="pipe-step"><span class="step-no">04</span><b>Cases</b><small>検証case数</small></div>
+          <div class="pipe-step"><span class="step-no">05</span><b>Tokens</b><small>予約出力token</small></div>
+          <div class="pipe-step"><span class="step-no">06</span><b>Consume</b><small>予算とcheckpointを原子的記録</small></div>
+          <div class="pipe-step"><span class="step-no">07</span><b>Work</b><small>次の一単位だけ実行</small></div>
+        </div>
+
+        <div class="grid two">
+          <article class="card card-accent card-green">
+            <h3>中止要求が先なら、新しい作業を始めない</h3>
+            <p><code>cancel-work</code> はoperation単位、または実行中すべてを対象にできます。checkpointより先にcancelが永続化された場合、次のAPI call、case評価、保存処理を開始しません。</p>
+          </article>
+          <article class="card card-accent card-orange">
+            <h3>すでに開始した一単位は強制終了しない</h3>
+            <p>現在の停止は協調的です。HTTP callなどがcheckpointを通過した直後なら、その一単位は完了し、次の境界で止まります。途中でprocessを破壊して永続状態を壊さないための選択です。</p>
+          </article>
+        </div>
+
+        <div class="codebox">
+          <div class="code-head"><span>shell / learner operations</span><button class="copy-btn" type="button">COPY</button></div>
+          <pre><code>export LOCAL_SDLC_LEARNING_HOME=/path/to/learning-data
+
+# 状態と整合性を確認
+python3 local_sdlc_learning.py doctor
+python3 local_sdlc_learning.py work-status --data-dir "$LOCAL_SDLC_LEARNING_HOME"
+
+# 次の安全なcheckpointで停止
+python3 local_sdlc_learning.py cancel-work \
+  --data-dir "$LOCAL_SDLC_LEARNING_HOME" --operation LW-example
+
+# 候補生成の作業量を4軸で制限
+python3 local_sdlc_learning.py mine-candidates \
+  --data-dir "$LOCAL_SDLC_LEARNING_HOME" \
+  --learner-max-api-calls 3 \
+  --learner-max-cases 20 \
+  --learner-max-tokens 24576 \
+  --learner-max-wall-seconds 900</code></pre>
+        </div>
+
+        <h3>障害復旧・履歴・privacy</h3>
+        <div class="grid three">
+          <article class="card searchable-card">
+            <span class="badge impl">Write ordering</span>
+            <h3>immutable fileを先に確定</h3>
+            <p>snapshotと評価reportは内容hashで識別し、ファイルを確定してからSQLite indexへ記録します。境界で障害が起きても、同一retryでindexを完成できます。</p>
+          </article>
+          <article class="card searchable-card">
+            <span class="badge impl">Append only</span>
+            <h3>無効化しても履歴を消さない</h3>
+            <p>challenge、retire、supersede、rollbackは新しいeventを追記します。過去の知識や承認を書き換えないため、何がいつ有効だったかを再構築できます。</p>
+          </article>
+          <article class="card searchable-card">
+            <span class="badge impl">Privacy gate</span>
+            <h3>共有知識へ環境情報を持ち込まない</h3>
+            <p>absolute home path、email、address、credential marker、source本文を正規化episodeから除外します。L12の隔離root全体に対するprivacy検査も通過しています。</p>
+          </article>
+        </div>
+
+        <div class="callout warn">
+          <strong>この完成が意味しないこと:</strong> モデルの重みが学習されるわけではなく、未知領域で正しい知識が必ず得られる保証もありません。現在の残課題は、in-flight通信の強制中断、実消費tokenとの精密照合、stale operation watchdog、長時間・複数projectでのlive soak検証です。
+        </div>
+
+        <h3>正本と実装</h3>
+        <div class="grid three">
+          <article class="card">
+            <h3>仕様</h3>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/learning-runtime/SPEC.md" target="_blank" rel="noreferrer">learning-runtime/SPEC.md</a></p>
+            <p>EL01〜EL12、各Integration Gate、論理条件、残る境界の正本です。</p>
+          </article>
+          <article class="card">
+            <h3>学習制御面</h3>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/main/learning_runtime" target="_blank" rel="noreferrer">learning_runtime/</a></p>
+            <p>候補化、反例検証、registry、snapshot、操作・作業制御を小さなmoduleへ分けています。</p>
+          </article>
+          <article class="card">
+            <h3>受け渡し境界</h3>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/learning_context.py" target="_blank" rel="noreferrer">learning_context.py</a></p>
+            <p>Run開始時のsnapshot固定と、権限を含まない短いknowledge handoffを担当します。</p>
+          </article>
+        </div>
+      </section>
+
       <section id="reality" data-search-section>
         <div class="section-head">
-          <div class="section-no">16 / CURRENT REALITY</div>
+          <div class="section-no">17 / CURRENT REALITY</div>
           <div>
             <h2>現行コミットのテスト実態</h2>
             <p class="section-kicker">READMEの設計説明だけでなく、基準コミットを実行した結果です。品質を評価する際はここを分離して見てください。</p>
           </div>
         </div>
 
-        <div class="status-strip" aria-label="Python 3.13 test status">
-          <div class="status-cell"><b>Python 3.13</b><span><code>python3.13 -m unittest discover -s tests</code></span></div>
-          <div class="status-cell"><b>321</b><span>pass</span></div>
-          <div class="status-cell"><b>1</b><span>failure</span></div>
-          <div class="status-cell"><b>1</b><span>error</span></div>
-          <div class="status-cell"><b>1</b><span>skipped</span></div>
+        <div class="status-strip pass" aria-label="Python 3.12 test status">
+          <div class="status-cell"><b>Python 3.12.3</b><span><code>python3 -m unittest discover -s tests</code></span></div>
+          <div class="status-cell"><b>575</b><span>pass</span></div>
+          <div class="status-cell"><b>0</b><span>failure</span></div>
+          <div class="status-cell"><b>0</b><span>error</span></div>
+          <div class="status-cell"><b>103</b><span>learning tests</span></div>
         </div>
 
         <div class="grid two" style="margin-top:1rem">
-          <article class="card card-accent card-red">
-            <span class="badge limit">Failure / Error</span>
-            <h3>macOS temp pathの正規化</h3>
-            <p>テストが作るpathは <code>/var/folders/...</code>、<code>Path.resolve()</code> 後は <code>/private/var/folders/...</code>。<code>relative_to(project)</code> が異なるroot表現を受けて失敗します。</p>
-            <ul>
-              <li><code>test_make_run_dir_avoids_double_project_prefix_for_cwd_relative_project_path</code></li>
-              <li><code>test_unittest_timeout_diagnostic_identifies_hanging_method</code></li>
-            </ul>
+          <article class="card card-accent card-green">
+            <span class="badge impl">Verified baseline</span>
+            <h3>現在の基準環境では全件green</h3>
+            <p>実行面、Web UI、安全・予算・停止・回復、canonical event、学習制御面を含む全575件が成功しています。L12の横断scenarioだけでなく、既存機能の回帰も同じsuiteで確認します。</p>
           </article>
-          <article class="card card-accent card-red">
-            <span class="badge limit">Import blocker</span>
-            <h3>Python 3.11ではSyntaxError</h3>
-            <p><code>agent_runner.py</code> のf-string expression内にbackslashを含む式があり、3.11のparserではimportできません。PEP 701後のparserでは通ります。</p>
-            <div class="codebox">
-              <div class="code-head"><span>observed</span><button class="copy-btn" type="button">COPY</button></div>
-              <pre><code>SyntaxError: f-string expression part cannot include a backslash
-  local_sdlc/agent_runner.py:1701</code></pre>
-            </div>
-            <p>したがって現行の <code>requires-python = "&gt;=3.10"</code> は実装と整合しません。</p>
+          <article class="card card-accent card-orange">
+            <span class="badge rule">Compatibility boundary</span>
+            <h3>最低宣言と実機確認を分ける</h3>
+            <p><code>requires-python = "&gt;=3.10"</code>。3.10 / 3.11構文として静的確認済みですが、ローカル全suiteの実機基準は3.12.3です。3.13を含む複数version保証はCI matrix追加後に主張します。</p>
           </article>
         </div>
 
@@ -2419,16 +2663,18 @@ flowchart LR
           <table>
             <thead><tr><th>領域</th><th>現状</th><th>影響</th><th>改善方向</th></tr></thead>
             <tbody>
-              <tr><td>Python互換</td><td>3.11 import不可、3.13で2件失敗</td><td>宣言通りの環境で導入できない</td><td>f-string式を事前変数化、path canonicalizationを統一、CI matrix</td></tr>
+              <tr><td>Python互換</td><td>3.10 / 3.11静的確認、3.12.3全suite成功</td><td>3.10 / 3.11 / 3.13の実機保証は未確定</td><td>CI version matrixを追加</td></tr>
               <tr><td>Stage汎用性</td><td>SQLite/Redis/HTML/fallback固定template</td><td>未知ドメインの分割精度が限定</td><td>明示Stage YAML/JSONまたは検証付きPlanner</td></tr>
               <tr><td>Acceptance</td><td>一部hard-coded mapping、Tetris知識が濃い</td><td>一般要件のcoverageが過不足</td><td>SPECにR/O relationを構造化記述</td></tr>
-              <tr><td>Supervisor</td><td>Skill文書とapply loopが別</td><td><code>--execute</code> の意味を誤解しやすい</td><td>明示handoff commandまたは名称整理</td></tr>
-              <tr><td>Command safety</td><td>denylist + shell operator拒否</td><td>完全なsandboxではない</td><td>container/OS sandbox、allowlist、resource limit</td></tr>
-              <tr><td>Secrets</td><td>明示的redaction layerが見当たらない</td><td>contextやlogsへ秘密が入る可能性</td><td>secret scanner・masking・include deny patterns</td></tr>
+              <tr><td>Supervisor</td><td>停止検知、予算、回復計画、canonical eventを永続化</td><td>未知障害の回復戦略は証拠量に依存</td><td>live scenarioとfailure familyを段階的に拡充</td></tr>
+              <tr><td>Command safety</td><td>action gate、deny policy、承認、cancel、予算を実装</td><td>ランナー単体は完全なOS sandboxではない</td><td>配備環境のcontainer / OS policyと併用</td></tr>
+              <tr><td>Secrets</td><td>学習共有面はredactionとprivacy検査済み</td><td>任意includeと一般Run logの秘密を完全保証しない</td><td>入口全体のsecret scanner・maskingを拡張</td></tr>
               <tr><td>Web auth</td><td>なし、loopback前提</td><td>外部bind時に危険</td><td>loopback強制または認証・CSRF</td></tr>
-              <tr><td>Web persistence</td><td>Jobファイルは残るがregistry再読込なし</td><td>再起動後UIに履歴が戻らない</td><td>startup recoveryとstale process処理</td></tr>
+              <tr><td>Web persistence</td><td>完了Jobを <code>job.json</code> から再表示</td><td>再起動前の実行中processへ再接続はしない</td><td>stale job分類とprocess再照合</td></tr>
               <tr><td>LLM latency</td><td><code>complete()</code>ごとにhealth preflight</td><td>多Agent runで往復増加</td><td>短期cache / failure時refresh</td></tr>
               <tr><td>Temp lifecycle</td><td>copy worktree cleanup不明確</td><td>一時容量が蓄積</td><td>成功/失敗両方のretention policy</td></tr>
+              <tr><td>Learner cancel</td><td>安全checkpointで協調停止</td><td>開始済みHTTP callはその一単位を完了</td><td>整合性を保つin-flight interrupt設計</td></tr>
+              <tr><td>Learner budget</td><td>API/case/予約token/時間の4軸</td><td>tokenは実消費でなく保守的な予約値</td><td>provider usageとの監査可能な照合</td></tr>
               <tr><td>Prompt portability</td><td>源流の憲法・Skill・Agent・hookを製品非依存化</td><td>実行時置換なしで同じ正本を利用</td><td>任意のmemory/tool機能はruntime adapterとして明示</td></tr>
               <tr><td>保証水準</td><td>Research preview / noncommercial</td><td>本番保証ではない</td><td>threat model、CI、versioning、migration policy</td></tr>
             </tbody>
@@ -2438,7 +2684,7 @@ flowchart LR
 
       <section id="assessment" data-search-section>
         <div class="section-head">
-          <div class="section-no">17 / ASSESSMENT</div>
+          <div class="section-no">18 / ASSESSMENT</div>
           <div>
             <h2>技術評価と次に読む場所</h2>
             <p class="section-kicker">このプログラムの価値は“賢いモデル”より“間違えるモデルを扱う制御設計”にあります。</p>
@@ -2456,6 +2702,11 @@ flowchart LR
               <li>transactional applyとrollback</li>
               <li>failure signatureからroot cause pathへ昇格</li>
               <li>強いruntime evidenceが弱いproxyを上書きするモデル</li>
+              <li>canonical eventから因果episodeを作り、confounded事例を学習対象外にする</li>
+              <li>反例・独立holdout・scope ceilingによる過剰適合防止</li>
+              <li>高影響知識に対する一回限り人間承認とappend-only registry</li>
+              <li>Run開始時のimmutable knowledge snapshot固定</li>
+              <li>実行面・学習面のcancel、有限予算、checkpoint</li>
               <li>Run文書による監査・再開・比較</li>
               <li>外部Python packageなしで起動できる小さな配布面</li>
             </ul>
@@ -2463,12 +2714,14 @@ flowchart LR
           <article class="card card-accent card-orange">
             <h3>設計負債になりやすいところ</h3>
             <ul>
-              <li>2巨大moduleに規則・例外・domain-specific heuristicが集中</li>
+              <li><code>agent_runner.py</code> と一部repair moduleにはなお1,000行超の責務集中がある</li>
               <li>Stage/acceptanceが特定デモ領域に寄る</li>
               <li>Prompt内のaspirational capabilityとruntime capabilityが混在</li>
-              <li>安全性がprocess isolationではなく主に文字列policy</li>
-              <li>現行テストが宣言Python範囲でgreenではない</li>
+              <li>ランナーの安全性だけでは完全なprocess isolationにならない</li>
+              <li>Python実機test matrixは現在3.12.3のみ</li>
               <li>一部のrepair grammarが増殖し、相互作用の理解コストが高い</li>
+              <li>学習中止はcheckpoint方式で、開始済み通信を即時停止しない</li>
+              <li>長時間・複数projectのlive soakとstale learner watchdogが未整備</li>
             </ul>
           </article>
         </div>
@@ -2480,7 +2733,7 @@ flowchart LR
           <div class="pipe-step"><span class="step-no">03</span><b>skills.py</b><small>Promptの不変部分</small></div>
           <div class="pipe-step"><span class="step-no">04</span><b>routing.py</b><small>Supervisor判断</small></div>
           <div class="pipe-step"><span class="step-no">05</span><b>agent_runner.py</b><small>ユースケース順序</small></div>
-          <div class="pipe-step"><span class="step-no">06</span><b>artifacts.py</b><small>失敗型ごとに必要箇所だけ</small></div>
+          <div class="pipe-step"><span class="step-no">06</span><b>artifact modules</b><small>protocol・lint・apply・probe</small></div>
           <div class="pipe-step"><span class="step-no">07</span><b>verification.py</b><small>“証拠”の実体</small></div>
         </div>
 
@@ -2500,7 +2753,7 @@ flowchart LR
           </article>
           <article class="card">
             <h3>境界を読む</h3>
-            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/artifacts.py#L2887" target="_blank" rel="noreferrer">artifact_stream_guard()</a></p>
+            <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/artifact_lint.py#L476" target="_blank" rel="noreferrer">artifact_stream_guard()</a></p>
             <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/verification.py#L266" target="_blank" rel="noreferrer">verification.py</a></p>
             <p><a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/local_sdlc/web_jobs.py#L88" target="_blank" rel="noreferrer">web_jobs.py</a></p>
           </article>
@@ -2521,6 +2774,11 @@ flowchart LR
               <tr><td>S99</td><td>全Stage後の最終Gate失敗を扱うintegration repair Stage。</td></tr>
               <tr><td>Document exchange</td><td>Agent間で隠れたmemoryを仮定せず、明示文書だけを渡す方式。</td></tr>
               <tr><td>Proxy observation</td><td>要件を直接証明せず、間接的に示すstatic scan等の弱い観測。</td></tr>
+              <tr><td>Causal episode</td><td>計画・介入・検証済み結果が追跡でき、同時変更などの交絡を除外した経験単位。</td></tr>
+              <tr><td>Shadow pass</td><td>候補知識がreplay、改名、negative、holdoutを通過した検証判定。まだactiveを意味しない。</td></tr>
+              <tr><td>Knowledge snapshot</td><td>その時点でactiveな知識集合をhashで固定した不変文書。Run開始時に一度だけ選ぶ。</td></tr>
+              <tr><td>Work checkpoint</td><td>中止・時間・API・case・token予算を検査し、次の一単位を始めてよいか決める永続境界。</td></tr>
+              <tr><td>High-impact knowledge</td><td><code>require</code> / <code>forbid</code>、安全、権限に影響し、機械検証後も人間承認を必要とする知識。</td></tr>
             </tbody>
           </table>
         </div>
@@ -2535,7 +2793,7 @@ flowchart LR
         <div class="foot-grid">
           <div>
             <strong>local-sdlc-agent — 実装を読み解くビジュアルガイド</strong>
-            <p>対象は <code>main</code> 向けの製品非依存化作業ツリー。本文はコードの静的読解とローカル実行結果に基づきます。推測は制約として明示しました。</p>
+            <p>対象は <code>main</code> 向けの製品非依存化作業ツリー。本文は2026-08-03時点のコード、L12 / EL12正本仕様、ローカル全テスト結果に基づきます。未検証範囲は制約として明示しました。</p>
           </div>
           <div>
             <strong>CDN / offline</strong>
@@ -2643,11 +2901,12 @@ flowchart LR
     const chartCanvas = document.getElementById("locChart");
     const chartData = {
       labels: [
-        "artifacts", "agent_runner", "verification", "llm_client", "stages",
-        "cli", "models", "skills", "supervisor_runner", "routing",
-        "web_jobs", "stage_runner", "web_server", "workspace", "phase_runner", "run_state"
+        "agent_runner", "artifact_lint", "artifact_ops", "repair_advice", "llm_client",
+        "python_probes", "cli", "web_jobs", "artifact_protocol", "verification",
+        "repair_rules/domain", "stages", "progress_monitor", "budget", "supervisor_runner",
+        "sdlc_events/ledger", "learning_runtime/legacy"
       ],
-      values: [6868, 3381, 914, 675, 673, 625, 480, 385, 372, 296, 275, 185, 178, 171, 161, 120]
+      values: [3525, 1711, 1250, 1102, 969, 960, 944, 899, 871, 822, 798, 667, 613, 613, 604, 531, 530]
     };
 
     function chartColors() {
