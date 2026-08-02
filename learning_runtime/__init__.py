@@ -23,6 +23,8 @@ from .knowledge_schema import (
 )
 from .legacy import import_legacy_run
 from .storage import ExperienceStore, learning_data_dir
+from .validation import validate_and_store, validate_candidate
+from .validation_models import ValidationCase, ValidationPolicy
 
 __all__ = [
     "Applicability",
@@ -36,6 +38,8 @@ __all__ = [
     "KnowledgeItem",
     "KnowledgeValidationError",
     "TechnologyObservation",
+    "ValidationCase",
+    "ValidationPolicy",
     "audit_run",
     "build_and_store_recovery_episodes",
     "build_recovery_episode_documents",
@@ -44,4 +48,6 @@ __all__ = [
     "import_legacy_run",
     "learning_data_dir",
     "validate_domain_map",
+    "validate_and_store",
+    "validate_candidate",
 ]

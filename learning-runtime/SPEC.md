@@ -2,13 +2,13 @@
 
 ## Status
 
-- Status: Candidate Mining implemented; Integration Gate D passed
+- Status: Validation and Shadow Evaluation implemented; Integration Gate E passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
   the repository root `SPEC.md` remains authoritative for the execution plane
-- Implemented propositions: `EL01` through `EL09`
-- Deferred propositions: `EL10` through `EL12`
+- Implemented propositions: `EL01` through `EL10`
+- Deferred propositions: `EL11` through `EL12`
 
 ## Decision and Development Order
 
@@ -173,6 +173,30 @@ Verification evidence:
 This result completes L07 and `EL09`. L08/`EL10` is the next learning slice;
 validation, activation, registry publication, snapshots, and Supervisor
 retrieval remain unavailable.
+
+### Integration Gate E Result
+
+Completed on 2026-08-02:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| Explicit validation cases | PASS | Strict replay, metamorphic, negative, holdout, and counterexample documents reject unknown fields, unverified evidence, unsafe paths, and duplicate IDs. |
+| Generalization checks | PASS | Positive replay and holdout cases receive deterministic rename variants; structural and technology candidates require independent positive holdout evidence. |
+| Overfitting rejection | PASS | A structurally matching rule is rejected when an unrelated verified holdout expects non-applicability; critical regressions and Wilson precision remain mechanical. |
+| Authority boundary | PASS | Validation writes an immutable hash-addressed report and `shadow_pass` verdict while the stored knowledge lifecycle remains `candidate`. No LLM call decides pass/fail. |
+| Repeatability and privacy | PASS | Repeating identical validation is idempotent, and persisted evaluation records omit component paths and source bodies. |
+
+Verification evidence:
+
+- `tests.test_learning_validation`: 7 tests passed, including the independent
+  CLI adapter;
+- all learning tests: 76 tests passed;
+- `python3 -B -m unittest discover -s tests`: 548 tests passed;
+- every L08 production and test module is below 300 lines.
+
+This result completes L08 and `EL10`. L09 is the next learning slice; no
+candidate is active, no snapshot is published, and Supervisor retrieval remains
+unavailable until its separate gates pass.
 
 ## Purpose
 
@@ -710,7 +734,7 @@ Exit: `EL09` passes with malformed and hostile candidate outputs.
 
 ### L08 - Validation and Shadow Evaluation
 
-Status: planned.
+Status: implemented; Integration Gate E passed on 2026-08-02.
 
 Implement replay, deterministic metamorphic variants, negative/holdout suites,
 and counterexample recording without changing candidate lifecycle state.

@@ -169,6 +169,25 @@ class CandidateStore:
             ).fetchall()
         return [json.loads(str(row["knowledge_json"])) for row in rows]
 
+    def get_candidate(
+        self,
+        knowledge_id: str,
+        version: int | None = None,
+    ) -> KnowledgeItem:
+        identifier = require_identifier(knowledge_id, "knowledge_id")
+        query = "SELECT knowledge_json FROM knowledge_candidates WHERE knowledge_id = ?"
+        parameters: tuple[object, ...] = (identifier,)
+        if version is not None:
+            query += " AND version = ?"
+            parameters += (int(version),)
+        query += " ORDER BY version DESC LIMIT 1"
+        with self._connect() as connection:
+            row = connection.execute(query, parameters).fetchone()
+        if row is None:
+            suffix = f" version {version}" if version is not None else ""
+            raise KeyError(f"candidate not found: {identifier}{suffix}")
+        return KnowledgeItem.from_dict(json.loads(str(row["knowledge_json"])))
+
     def attempts(self) -> list[dict[str, object]]:
         with self._connect() as connection:
             rows = connection.execute(

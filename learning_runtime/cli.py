@@ -28,6 +28,7 @@ from .episodes import build_and_store_recovery_episodes
 from .legacy import import_legacy_run
 from .inventory import validate_mutation_inventory
 from .storage import ExperienceStore, learning_data_dir
+from .validation_cli import add_validation_parser
 
 
 def _print(payload: object) -> None:
@@ -187,6 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--max-batches", type=int, default=10)
     _add_llm_arguments(candidates)
     candidates.set_defaults(func=command_mine_candidates)
+
+    add_validation_parser(sub)
 
     audit = sub.add_parser("audit", help="audit event and closure completeness")
     audit.add_argument("--run-dir", type=Path, required=True)
