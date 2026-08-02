@@ -22,6 +22,10 @@ from .knowledge_schema import (
     KnowledgeValidationError,
 )
 from .legacy import import_legacy_run
+from .promotion import PromotionService
+from .promotion_policy import is_high_impact
+from .registry_store import RegistryStore
+from .snapshots import SnapshotStore
 from .storage import ExperienceStore, learning_data_dir
 from .validation import validate_and_store, validate_candidate
 from .validation_models import ValidationCase, ValidationPolicy
@@ -37,6 +41,9 @@ __all__ = [
     "ExperienceStore",
     "KnowledgeItem",
     "KnowledgeValidationError",
+    "PromotionService",
+    "RegistryStore",
+    "SnapshotStore",
     "TechnologyObservation",
     "ValidationCase",
     "ValidationPolicy",
@@ -46,6 +53,7 @@ __all__ = [
     "collect_run",
     "evaluate_applicability",
     "import_legacy_run",
+    "is_high_impact",
     "learning_data_dir",
     "validate_domain_map",
     "validate_and_store",

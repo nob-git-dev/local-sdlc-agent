@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Validation and Shadow Evaluation implemented; Integration Gate E passed
+- Status: Registry, Promotion, and Rollback implemented; Integration Gate F passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
@@ -197,6 +197,29 @@ Verification evidence:
 This result completes L08 and `EL10`. L09 is the next learning slice; no
 candidate is active, no snapshot is published, and Supervisor retrieval remains
 unavailable until its separate gates pass.
+
+### Integration Gate F Result
+
+Completed on 2026-08-02:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| Append-only registry | PASS | Lifecycle events use contiguous sequence numbers, a previous-hash chain, content checks, idempotency conflict rejection, and rebuildable state projections. |
+| Immutable snapshots | PASS | Active sets are content-addressed, written before pointer events, and rejected when DB JSON, hash, identity, or snapshot file disagree. |
+| Promotion gate | PASS | Only a matching `shadow_pass` report with zero critical regressions can promote; candidate records remain unchanged and interrupted publication completes on retry. |
+| High-impact approval | PASS | Normative, require/forbid, safety, and permission knowledge stops before activation and consumes exactly one explicit human approval through the existing SafetyDecision contract; an LLM source is rejected. |
+| Reversibility | PASS | Challenge, retirement, supersession, and rollback append events and publish or select verified snapshots without deleting prior history. |
+
+Verification evidence:
+
+- `tests.test_learning_registry`: 9 tests passed;
+- all learning tests: 85 tests passed;
+- `python3 -B -m unittest discover -s tests`: 557 tests passed;
+- all new L09 production and test modules are below 300 lines.
+
+This result completes L09 mechanics required by `EL12`. The final `EL12` claim
+remains open until L10 run isolation and the L12 cross-family integration gate
+pass. Supervisor retrieval remains unavailable.
 
 ## Purpose
 
@@ -780,7 +803,8 @@ Exit: `EL10` passes, including rejection of a benchmark-specific general rule.
 
 ### L09 - Registry, Promotion, and Rollback
 
-Status: planned.
+Status: implemented; Integration Gate F passed on 2026-08-02. Final cross-family
+`EL12` integration remains assigned to L12.
 
 Implement lifecycle transitions, approval policy, immutable hash-addressed
 snapshots, challenge, supersession, retirement, rollback, and provenance.

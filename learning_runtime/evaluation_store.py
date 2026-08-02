@@ -94,12 +94,33 @@ class EvaluationStore:
         return report
 
     def get_report(self, evaluation_id: str) -> dict[str, object] | None:
+        identifier = require_identifier(evaluation_id, "evaluation_id")
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT report_json FROM validation_reports WHERE evaluation_id = ?",
-                (require_identifier(evaluation_id, "evaluation_id"),),
+                (identifier,),
             ).fetchone()
-        return json.loads(str(row["report_json"])) if row else None
+        if row is None:
+            return None
+        return self._verified_report(identifier, str(row["report_json"]))
+
+    def _verified_report(
+        self,
+        evaluation_id: str,
+        serialized: str,
+    ) -> dict[str, object]:
+        report = json.loads(serialized)
+        if report.get("evaluation_id") != evaluation_id:
+            raise ValueError(f"evaluation identity mismatch: {evaluation_id}")
+        expected_hash = str(report.get("report_hash") or "")
+        core = {key: value for key, value in report.items() if key != "report_hash"}
+        calculated = hashlib.sha256(canonical_json(core).encode("utf-8")).hexdigest()
+        if calculated != expected_hash:
+            raise ValueError(f"evaluation hash mismatch: {evaluation_id}")
+        path = self.report_path(evaluation_id)
+        if not path.is_file() or path.read_text(encoding="utf-8").strip() != serialized:
+            raise ValueError(f"evaluation file mismatch: {evaluation_id}")
+        return report
 
     def reports(self, knowledge_id: str = "") -> list[dict[str, object]]:
         query = "SELECT report_json FROM validation_reports"
@@ -110,7 +131,13 @@ class EvaluationStore:
         query += " ORDER BY rowid"
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
-        return [json.loads(str(row["report_json"])) for row in rows]
+        return [
+            self._verified_report(
+                str(json.loads(str(row["report_json"]))["evaluation_id"]),
+                str(row["report_json"]),
+            )
+            for row in rows
+        ]
 
     def latest_pass(
         self,
@@ -124,7 +151,11 @@ class EvaluationStore:
                 "AND verdict = 'shadow_pass' ORDER BY rowid DESC LIMIT 1",
                 (require_identifier(knowledge_id, "knowledge_id"), int(version)),
             ).fetchone()
-        return json.loads(str(row["report_json"])) if row else None
+        if row is None:
+            return None
+        serialized = str(row["report_json"])
+        identifier = str(json.loads(serialized)["evaluation_id"])
+        return self._verified_report(identifier, serialized)
 
     def report_count(self) -> int:
         with self._connect() as connection:
