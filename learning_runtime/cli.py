@@ -9,10 +9,21 @@ import sqlite3
 import sys
 from typing import Sequence
 
+from local_sdlc.llm_client import LocalLLMClient, build_config
+from local_sdlc.models import (
+    DEFAULT_BASE_URL,
+    DEFAULT_HEALTH_TIMEOUT,
+    DEFAULT_TIMEOUT,
+    MODEL_PROFILE_ALIASES,
+)
 from sdlc_events import RuntimeEventLedger, event_ledger_path, validate_contract_registry
 
 from .audit import audit_run
+from .candidate_llm import LocalCandidateLLM
+from .candidate_miner import mine_candidates
+from .candidate_store import CandidateStore
 from .collector import collect_run
+from .domain_map import DomainMap
 from .episodes import build_and_store_recovery_episodes
 from .legacy import import_legacy_run
 from .inventory import validate_mutation_inventory
@@ -50,6 +61,55 @@ def command_build_episodes(args: argparse.Namespace) -> int:
     return 0 if report.get("status") == "pass" else 1
 
 
+def _load_domain_maps(paths: Sequence[Path]) -> dict[str, DomainMap]:
+    result: dict[str, DomainMap] = {}
+    for path in paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Domain Map must be a JSON object: {path}")
+        domain_map = DomainMap.from_dict(payload)
+        if domain_map.project_fingerprint in result:
+            raise ValueError(
+                "duplicate Domain Map project_fingerprint: "
+                + domain_map.project_fingerprint
+            )
+        result[domain_map.project_fingerprint] = domain_map
+    return result
+
+
+def command_mine_candidates(args: argparse.Namespace) -> int:
+    config = build_config(args)
+    client = LocalLLMClient(config)
+    llm = LocalCandidateLLM(client)
+    experience = ExperienceStore(args.data_dir)
+    candidates = CandidateStore(args.data_dir)
+    report = mine_candidates(
+        experience,
+        candidates,
+        llm,
+        domain_maps=_load_domain_maps(args.domain_map),
+        max_batches=args.max_batches,
+    )
+    report["model_profile"] = config.model_profile
+    report["function_profiles"] = {
+        name: {
+            "model": settings.model or "(auto)",
+            "temperature": settings.temperature,
+            "max_tokens": settings.max_tokens,
+            "thinking": "off" if settings.disable_thinking else "on",
+        }
+        for name in (
+            "candidate_abstraction",
+            "scope_classification",
+            "candidate_serialization",
+        )
+        for settings in [client.call_settings("judge", name)]
+    }
+    report["reasoning_audit"] = llm.reasoning_audit()
+    _print(report)
+    return 0 if report.get("status") == "pass" else 1
+
+
 def command_import_legacy(args: argparse.Namespace) -> int:
     report = import_legacy_run(args.run_dir)
     _print(report)
@@ -83,8 +143,9 @@ def command_doctor(args: argparse.Namespace) -> int:
     sqlite_version = sqlite3.sqlite_version
     try:
         store = ExperienceStore(data_dir)
-        writable = store.path.is_file()
-    except OSError as exc:
+        candidate_store = CandidateStore(data_dir)
+        writable = store.path.is_file() and candidate_store.path.is_file()
+    except (OSError, sqlite3.Error) as exc:
         findings.append(f"shared_store_unavailable:{exc}")
         writable = False
     report = {
@@ -93,6 +154,7 @@ def command_doctor(args: argparse.Namespace) -> int:
         "sqlite_version": sqlite_version,
         "data_dir": str(data_dir),
         "shared_store_writable": writable,
+        "candidate_store_writable": candidate_store.path.is_file() if writable else False,
         "findings": findings,
     }
     _print(report)
@@ -116,6 +178,16 @@ def build_parser() -> argparse.ArgumentParser:
     episodes.add_argument("--data-dir", type=Path, required=True)
     episodes.set_defaults(func=command_build_episodes)
 
+    candidates = sub.add_parser(
+        "mine-candidates",
+        help="propose candidate-only knowledge from eligible episodes",
+    )
+    candidates.add_argument("--data-dir", type=Path, required=True)
+    candidates.add_argument("--domain-map", type=Path, action="append", default=[])
+    candidates.add_argument("--max-batches", type=int, default=10)
+    _add_llm_arguments(candidates)
+    candidates.set_defaults(func=command_mine_candidates)
+
     audit = sub.add_parser("audit", help="audit event and closure completeness")
     audit.add_argument("--run-dir", type=Path, required=True)
     audit.add_argument("--no-legacy", action="store_true")
@@ -134,6 +206,34 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--data-dir", type=Path, default=None)
     doctor.set_defaults(func=command_doctor)
     return parser
+
+
+def _add_llm_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", type=Path, default=Path.cwd())
+    parser.add_argument("--config-file", type=Path, default=None)
+    parser.add_argument("--base-url", default=None, help=f"OpenAI-compatible URL (default {DEFAULT_BASE_URL})")
+    parser.add_argument("--api-key", default=None)
+    parser.add_argument("--model", default=None)
+    parser.add_argument(
+        "--model-profile",
+        choices=sorted(MODEL_PROFILE_ALIASES),
+        default=None,
+    )
+    parser.add_argument("--timeout", type=float, default=None, help=f"request timeout (default {DEFAULT_TIMEOUT:g}s)")
+    parser.add_argument(
+        "--health-timeout",
+        type=float,
+        default=None,
+        help=f"health timeout (default {DEFAULT_HEALTH_TIMEOUT:g}s)",
+    )
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--max-tokens", type=int, default=None)
+    parser.set_defaults(enable_thinking=None, stream=None)
+    parser.add_argument("--enable-thinking", dest="enable_thinking", action="store_true")
+    parser.add_argument("--disable-thinking", dest="enable_thinking", action="store_false")
+    parser.add_argument("--stream", dest="stream", action="store_true")
+    parser.add_argument("--no-stream", dest="stream", action="store_false")
+    parser.add_argument("--api-profile", action="append", default=None)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

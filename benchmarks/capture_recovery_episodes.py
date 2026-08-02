@@ -8,7 +8,11 @@ import datetime as dt
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Mapping
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from learning_runtime.audit import audit_run
 from learning_runtime.collector import collect_run

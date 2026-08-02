@@ -2,13 +2,13 @@
 
 ## Status
 
-- Status: Domain Map and Knowledge Schema implemented; Integration Gate C passed
+- Status: Candidate Mining implemented; Integration Gate D passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
   the repository root `SPEC.md` remains authoritative for the execution plane
-- Implemented propositions: `EL01` through `EL08`
-- Deferred propositions: `EL09` through `EL12`
+- Implemented propositions: `EL01` through `EL09`
+- Deferred propositions: `EL10` through `EL12`
 
 ## Decision and Development Order
 
@@ -144,6 +144,35 @@ Verification evidence:
 This result completes L06 and `EL08`. L07/`EL09` is the next learning slice;
 candidate mining, activation, registry publication, and Supervisor retrieval
 remain unavailable.
+
+### Integration Gate D Result
+
+Completed on 2026-08-02:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| Isolated candidate functions | PASS | Abstraction, scope classification, and serialization use three independent system prompts and API calls; only each validated JSON document reaches the next call. |
+| Machine-readable output contracts | PASS | Enum values, bounded fields, exact episode IDs, and complete allowed scope/applicability pairs are supplied explicitly; malformed, fenced, drifting, or extra-field output fails closed. |
+| Scope ceiling | PASS | One episode is case-only, same-project episode groups are project-only, and cross-project structural or technology scope requires a verified Domain Map for every project. |
+| Candidate authority boundary | PASS | The deterministic assembler alone supplies ID, evidence, projects, version, creator, authority, and `candidate` state; the store has no activation or promotion operation. |
+| Privacy and hostile output | PASS | Local paths are redacted before calls, reasoning content is excluded from handoff/audit output, and rejected attempts retain only reason codes and response hashes. |
+
+Verification evidence:
+
+- focused learning, recovery, schema, Domain Map, and candidate selection:
+  72 tests passed;
+- `python3 -B -m unittest discover -s tests`: 541 tests passed;
+- a live `qwen3.5-122b` run accepted one eligible batch only after three
+  independent responses, stored three response hashes, and persisted exactly
+  one `case` candidate with `state=candidate`, `authority=llm_hypothesis`, and
+  `created_by=llm-assisted`;
+- the analysis functions used thinking-enabled profiles while final
+  serialization used thinking-disabled output; reasoning text was not handed
+  to another function or written to the candidate report.
+
+This result completes L07 and `EL09`. L08/`EL10` is the next learning slice;
+validation, activation, registry publication, snapshots, and Supervisor
+retrieval remain unavailable.
 
 ## Purpose
 
@@ -601,8 +630,81 @@ technology-specific fixture.
 
 ### L07 - Candidate Mining
 
+Status: completed on 2026-08-02.
+
 Add isolated LLM functions, require schema-valid short propositions and evidence
 references, retain exact incidents as cases, and forbid direct activation.
+
+L07 uses three independent calls. Each call has a distinct system prompt and no
+conversation history. A validated output document, never hidden reasoning, is
+the only data passed to the next call.
+
+```text
+eligible episode batch
+  -> candidate_abstraction   (analysis, thinking allowed)
+  -> scope_classification    (analysis, thinking allowed)
+  -> candidate_serialization (strict JSON, thinking disabled)
+  -> deterministic candidate assembler
+  -> candidate-only store
+```
+
+The LLM output contract does not contain `knowledge_id`, `version`, `state`,
+`authority`, `created_by`, `evidence_refs`, `supporting_projects`, or
+`supersedes`. The deterministic assembler owns those fields and fixes them to:
+
+```text
+version     = 1
+state       = candidate
+authority   = llm_hypothesis
+created_by  = llm-assisted
+```
+
+Evidence anchors and supporting project fingerprints are derived only from the
+selected normalized episodes. LLM-provided evidence, project, lifecycle, or
+activation fields are unknown fields and reject the attempt. Rejection records
+only reason codes and response hashes; raw hostile output is not shared
+persistence.
+
+Candidate batches are mechanically bounded before any LLM call:
+
+- only `eligibility=eligible` episodes may enter a batch;
+- one incident can propose only `case` scope;
+- multiple incidents with the same structure in one project form a
+  `project`-scope batch, while their original episodes remain exact case memory;
+- `structural` or `technology` scope requires independent projects plus an
+  explicit Domain Map for every project;
+- proposed applicability must be schema-valid and true for every source case
+  under the selected scope; and
+- case-only/confounded incidents remain unchanged in the episode store and are
+  never silently discarded.
+
+Short-proposition limits are mechanical: at most five antecedents, bounded JSON
+for each antecedent and conclusion, bounded rationale, bounded regression-test
+labels, a fixed three-call budget per batch, and a configured batch limit.
+
+For batch `b`, serialized LLM output `o`, and assembled knowledge `k`:
+
+```text
+Mineable(b) = nonempty(b)
+              and every episode in b is eligible
+              and scope_ceiling(b) is mechanically known
+
+PersistCandidate(k) ->
+  SchemaValid(k)
+  and k.state = candidate
+  and k.authority = llm_hypothesis
+  and k.created_by = llm-assisted
+  and Evidence(k) = DerivedEvidence(b)
+
+LLMProtectedField(o) or Malformed(o) or not ScopeAllowed(o, b)
+  -> RejectedAttempt and not PersistCandidate
+
+Activate(k) -> PromotionGateEvent(k)
+```
+
+L07 implements no promotion-gate event writer, active-state mutation, snapshot
+publisher, or Supervisor retrieval path. Therefore `Activate(k)` is false in
+this slice even if an LLM emits hostile activation text.
 
 Exit: `EL09` passes with malformed and hostile candidate outputs.
 

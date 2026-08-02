@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +10,22 @@ from learning_runtime.storage import ExperienceStore
 
 
 class RecoveryEpisodeCaptureTests(unittest.TestCase):
+    def test_direct_script_entrypoint_resolves_project_packages(self):
+        script = Path(__file__).resolve().parents[1] / "benchmarks" / (
+            "capture_recovery_episodes.py"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(
+                [sys.executable, str(script), "--help"],
+                cwd=temp,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--output", result.stdout)
+
     def test_capture_runs_two_distinct_failure_families_through_production_recovery(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "capture"

@@ -20,8 +20,8 @@ python3 local_sdlc_learning.py <command>
 The implemented runtime covers the event contract, durable run-local outbox,
 collection, completeness audit, redaction, causal recovery episodes,
 project-local Domain Maps, strict knowledge records, and mechanical
-applicability decisions. Knowledge mining and promotion are later slices and
-cannot bypass validation or human approval.
+applicability decisions, plus candidate-only LLM mining. Validation, promotion,
+and publication remain later slices and cannot be bypassed by a candidate call.
 
 ## Foundation Commands
 
@@ -31,6 +31,8 @@ python3 local_sdlc_learning.py import-legacy --run-dir <run-dir>
 python3 local_sdlc_learning.py audit --run-dir <run-dir>
 python3 local_sdlc_learning.py collect --run-dir <run-dir>
 python3 local_sdlc_learning.py build-episodes --data-dir <learning-data-dir>
+python3 local_sdlc_learning.py mine-candidates --data-dir <learning-data-dir> \
+  --model-profile <profile>
 python3 local_sdlc_learning.py status --run-dir <run-dir>
 ```
 
@@ -50,11 +52,20 @@ component IDs, project identity, and technologies. `KnowledgeItem.from_dict`
 rejects incomplete or ambiguous scope records, and `evaluate_applicability`
 returns a read-only decision without changing candidate state.
 
+`mine-candidates` processes only eligible causal episodes. It calls
+abstraction, scope classification, and serialization as three independent API
+requests with separate system prompts. Mechanical contracts bound every
+output, and the runtime derives evidence and lifecycle fields itself. A
+successful result is written only as `state=candidate` with
+`authority=llm_hypothesis`; this command has no activation operation. Use
+`--domain-map <file>` repeatedly when cross-project structural or technology
+scope is intended.
+
 The foundation is deliberately useful without an LLM. The execution process
 commits events to `<run-dir>/runtime-events.sqlite3`; the separate collector can
 be stopped and restarted without blocking a coding run or duplicating events.
 
 Integration Gate A (`EL01`-`EL06`) passed on 2026-08-01; Integration Gates B
-(`EL07`) and C (`EL08`) passed on 2026-08-02. Candidate mining, cross-project
+(`EL07`), C (`EL08`), and D (`EL09`) passed on 2026-08-02. Cross-project
 validation, promotion, snapshots, and rollback remain planned under
-`EL09`-`EL12` and are not presented as implemented features.
+`EL10`-`EL12` and are not presented as implemented features.

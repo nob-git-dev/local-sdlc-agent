@@ -101,6 +101,21 @@ class LLMRoleOverride:
     model: str | None = None
 
 
+LEARNING_FUNCTION_PROFILES_REASONING: dict[str, LLMRoleOverride] = {
+    "episode_review": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
+    "candidate_abstraction": LLMRoleOverride(temperature=0.1, max_tokens=8192, disable_thinking=False),
+    "scope_classification": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
+    "counterexample_search": LLMRoleOverride(temperature=0.1, max_tokens=8192, disable_thinking=False),
+    "candidate_serialization": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+    "promotion_review": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
+}
+
+LEARNING_FUNCTION_PROFILES_NO_THINKING: dict[str, LLMRoleOverride] = {
+    name: dataclasses.replace(profile, disable_thinking=True)
+    for name, profile in LEARNING_FUNCTION_PROFILES_REASONING.items()
+}
+
+
 @dataclasses.dataclass(frozen=True)
 class LLMCallSettings:
     agent_level: str
@@ -140,6 +155,7 @@ DEFAULT_FUNCTION_PROFILES: dict[str, LLMRoleOverride] = {
     # Review and verification should be evidence-only.
     "judge_review": LLMRoleOverride(temperature=0.0, max_tokens=DEFAULT_JUDGE_MAX_TOKENS, disable_thinking=True),
     "verify_acceptance": LLMRoleOverride(temperature=0.0, max_tokens=DEFAULT_JUDGE_MAX_TOKENS, disable_thinking=True),
+    **LEARNING_FUNCTION_PROFILES_REASONING,
 }
 
 MODEL_PROFILE_ALIASES: dict[str, str] = {
@@ -177,6 +193,7 @@ MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
     # disabled for every call until the runner intentionally consumes
     # reasoning fields; otherwise message.content can be null.
     "nemotron3-super-agent": {
+        **LEARNING_FUNCTION_PROFILES_NO_THINKING,
         "route_task": LLMRoleOverride(temperature=0.1, max_tokens=8192, disable_thinking=True),
         "plan_work": LLMRoleOverride(temperature=0.1, max_tokens=12288, disable_thinking=True),
         "explore_code": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
@@ -200,6 +217,7 @@ MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
     # artifact budgets below the generic Nemotron profile and rely on staged
     # repair rounds instead of one very long response.
     "nemotron-labs-puzzle-75b-agent": {
+        **LEARNING_FUNCTION_PROFILES_NO_THINKING,
         "route_task": LLMRoleOverride(temperature=0.1, max_tokens=8192, disable_thinking=True),
         "plan_work": LLMRoleOverride(temperature=0.1, max_tokens=12288, disable_thinking=True),
         "explore_code": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
@@ -222,6 +240,7 @@ MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
     # reasoning_content from content; artifact-producing calls stay no-thinking
     # so patch protocols remain machine-parseable.
     "qwen-agent": {
+        **LEARNING_FUNCTION_PROFILES_REASONING,
         "route_task": LLMRoleOverride(temperature=0.1, max_tokens=8192, disable_thinking=False),
         "plan_work": LLMRoleOverride(temperature=0.1, max_tokens=12288, disable_thinking=False),
         "explore_code": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
@@ -242,6 +261,7 @@ MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
     # reasoning only for non-artifact diagnostic calls. Artifact-producing calls
     # remain no-thinking so patch protocols stay machine-parseable.
     "qwen-agent-deep": {
+        **LEARNING_FUNCTION_PROFILES_REASONING,
         "route_task": LLMRoleOverride(temperature=0.1, max_tokens=12288, disable_thinking=False),
         "plan_work": LLMRoleOverride(temperature=0.1, max_tokens=16384, disable_thinking=False),
         "failure_analysis": LLMRoleOverride(temperature=0.0, max_tokens=24576, disable_thinking=False),
@@ -261,6 +281,7 @@ MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
     # Qwen/Ornith comparisons change only one CLI switch and remain visible in
     # run manifests.
     "ornith-agent": {
+        **LEARNING_FUNCTION_PROFILES_NO_THINKING,
         "route_task": LLMRoleOverride(temperature=0.2, max_tokens=8192, disable_thinking=True),
         "plan_work": LLMRoleOverride(temperature=0.2, max_tokens=8192, disable_thinking=True),
         "explore_code": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
@@ -278,6 +299,7 @@ MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
         "verify_acceptance": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
     },
     "ornith-agent-deep": {
+        **LEARNING_FUNCTION_PROFILES_REASONING,
         "route_task": LLMRoleOverride(temperature=0.2, max_tokens=12288, disable_thinking=False),
         "plan_work": LLMRoleOverride(temperature=0.2, max_tokens=12288, disable_thinking=False),
         "failure_analysis": LLMRoleOverride(temperature=0.0, max_tokens=16384, disable_thinking=False),

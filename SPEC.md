@@ -92,7 +92,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 発見命題を一般規則に昇格する場合は、根拠となる evidence、適用範囲、既知の反例、汎用化理由、回帰テストを持たせる。
 - 過去 benchmark から得た個別修復規則は、core runner に直接ハードコードせず、まず発見命題または scope 付き regression memory として保存する。
 - Experience Learning Runtime の詳細仕様は `learning-runtime/SPEC.md` を正本とする。Supervisor は状態遷移を直接学習規則へ変換せず、共通イベント契約へ永続化するだけとし、別プロセスが候補化、反例検証、昇格、版管理を行う。
-- 学習基盤は L01〜L04（EL01〜EL06）、Integration Gate A、P04/P05 の実 recovery capture、L05（EL07）、Integration Gate B、L06（EL08）、Integration Gate C の順に実装する。次の学習 slice は L07（EL09）とし、その後も証拠を蓄積しながら Supervisor Runtime と交互に進める。
+- 学習基盤は L01〜L04（EL01〜EL06）、Integration Gate A、P04/P05 の実 recovery capture、L05（EL07）/Gate B、L06（EL08）/Gate C、L07（EL09）/Gate D の順に完了した。次の学習 slice は L08（EL10）とし、その後も証拠を蓄積しながら Supervisor Runtime と交互に進める。
 
 ## 受け入れ条件
 
@@ -155,6 +155,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] EL-GA: `learning-runtime/SPEC.md` の L01〜L04（EL01〜EL06）が完了し、共通イベント契約、transactional outbox、完全性監査、既存 P01/P02/P03/P09 証拠の移行互換性を満たす
 - [x] EL-GB: L05（EL07）が完了し、完全な因果鎖・承認済み検証・単一変更・明示的隔離・同時変更なしを満たす recovery だけを学習適格とし、交絡ケースを理由付き `case_only` で保存する
 - [x] EL-GC: L06（EL08）が完了し、scope・authority・applicability・evidence・effect を独立した必須項目として検証し、改名不変な構造条件と証拠付きtechnology条件を機械判定する
+- [x] EL-GD: L07（EL09）が完了し、候補抽象化・scope分類・serializationを独立API callで実行し、LLM出力から有効化権限を除外したまま機械検証済みの `candidate` だけを保存する
 
 ## スコープ（やらないこと）
 
@@ -385,6 +386,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | P05: newest consecutive failure familyだけを系列として数え、閾値到達時は通常retryをfailure analysisへ、分析済みならroot cause recoveryへ強制する | `test_failure_plateau_forces_analysis_then_root_cause`, `test_different_failure_families_do_not_trigger_plateau`, `test_plateau_recovery_runs_failure_analysis_before_any_patch_call` | PASS |
 | EL07: P04/P05 recovery event を正規化・秘匿化した因果 episode に変換し、交絡のない verified isolated single-change だけを適格化する | `tests.test_learning_episodes`, `tests.test_recovery_episode_capture`, full suite (478 tests) | PASS |
 | EL08: scope と authority を独立させ、改名不変な構造条件・証拠付きtechnology条件・project/case境界を機械判定する | `tests.test_learning_domain_map`, `tests.test_learning_knowledge_schema`, full suite (494 tests) | PASS |
+| EL09: 3つの独立LLM関数を機械可読契約とscope ceilingで拘束し、ID・evidence・authority・stateをdeterministic assemblerだけが付与してcandidate-only storeへ保存する | `tests.test_learning_candidate_protocol`, `tests.test_learning_candidate_mining`, `tests.test_learning_candidate_scope`, `tests.test_learning_candidate_llm`, focused learning selection (72 tests), live Qwen call, full suite (541 tests) | PASS |
 | S07a: artifact extraction/apply primitives を `artifact_ops.py` へ分離しても `artifacts.py` 経由の既存 API が維持される | `test_extract_json_file_and_search_replace_artifacts`, `test_extracts_fenced_file_artifact`, `test_extracts_fenced_search_replace_artifact`, `test_agent_applies_patch_and_runs_test_command`, full suite | PASS |
 | S07b: 巨大化した `tests/test_local_sdlc.py` から safety / cancel control / artifact_ops の焦点テストを分離しても既存挙動が維持される | `tests.test_safety`, `tests.test_cancel_control`, `tests.test_artifact_ops`, `tests.test_local_sdlc`, full suite | PASS |
 | S07c: `stage-plan` / `run-stages` / stage queue の焦点テストを分離しても段階実行の既存挙動が維持される | `tests.test_stage_runner`, `tests.test_local_sdlc`, full suite | PASS |
