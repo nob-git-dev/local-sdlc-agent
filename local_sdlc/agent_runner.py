@@ -38,6 +38,12 @@ from .budget import *
 from .progress_monitor import *
 from .action_gate import *
 from .recovery import *
+from .learning_context import (
+    bind_learning_snapshot_from_args,
+    knowledge_binding_manifest,
+    knowledge_binding_path,
+    knowledge_context_document,
+)
 
 
 def attach_regression_memory(
@@ -208,6 +214,12 @@ def command_agent(args: argparse.Namespace) -> int:
         )
         raise
 
+    knowledge_binding = bind_learning_snapshot_from_args(
+        args,
+        original_project,
+        run_dir,
+    )
+
     resume_worktree_source: Path | None = None
     if args.resume_worktree_path:
         resume_worktree_source = args.resume_worktree_path.resolve()
@@ -249,8 +261,10 @@ def command_agent(args: argparse.Namespace) -> int:
         if path.startswith("tests/") and path not in existing_project_paths
     )
 
-    written: list[Path] = []
-    documents: list[tuple[str, str]] = []
+    written: list[Path] = [knowledge_binding_path(run_dir)]
+    documents: list[tuple[str, str]] = [
+        ("Run-bound validated knowledge", knowledge_context_document(knowledge_binding))
+    ]
     api_calls = int(resume_manifest.get("api_calls", 0)) if resume_manifest else 0
     final_verdict = "not_judged"
     recovery_strategy = str(recovery_plan.get("strategy") or "")
@@ -448,6 +462,7 @@ def command_agent(args: argparse.Namespace) -> int:
         partial_doc: dict[str, object] = {
             "brief": args.brief,
             "command": "agent",
+            "knowledge_snapshot": knowledge_binding_manifest(knowledge_binding),
             "status": status,
             "apply": bool(args.apply),
             "requested_max_rounds": args.max_rounds,
@@ -3443,6 +3458,7 @@ def command_agent(args: argparse.Namespace) -> int:
         "model_profile": llm_model_profile_manifest(args),
         "llm_settings": llm_settings_manifest(client),
         "reasoning_records": llm_reasoning_manifest(client),
+        "knowledge_snapshot": knowledge_binding_manifest(knowledge_binding),
         "domain_modeling": domain_modeling_state,
         "streaming": dict(latest_stream_status) if latest_stream_status else None,
         "repair_advice": dict(latest_repair_advice) if latest_repair_advice else None,

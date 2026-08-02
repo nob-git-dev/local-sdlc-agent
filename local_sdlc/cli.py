@@ -503,6 +503,23 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         help="project config file; defaults to local_sdlc.json/yaml/yml when present",
     )
     parser.add_argument("--skills-dir", type=Path, default=DEFAULT_SKILLS_DIR, help="directory containing */SKILL.md")
+    parser.add_argument(
+        "--learning-data-dir",
+        type=Path,
+        default=None,
+        help="shared validated-knowledge store (defaults to LOCAL_SDLC_LEARNING_HOME)",
+    )
+    parser.add_argument(
+        "--domain-map",
+        type=Path,
+        default=None,
+        help="validated project Domain Map JSON; defaults to project/DOMAIN_MAP.json",
+    )
+    parser.add_argument(
+        "--disable-learning-context",
+        action="store_true",
+        help="bind an explicit empty knowledge snapshot for this run",
+    )
     parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
     parser.add_argument("--api-key", default=None, help="API key for the configured endpoint")
     parser.add_argument("--model", default=None, help="model name")

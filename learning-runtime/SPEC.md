@@ -2,13 +2,13 @@
 
 ## Status
 
-- Status: Registry, Promotion, and Rollback implemented; Integration Gate F passed
+- Status: Supervisor Retrieval Integration implemented; Integration Gate G passed
 - Created: 2026-08-01
 - Parent system: Local SDLC Agent
 - Authority: this document is authoritative for the learning control plane;
   the repository root `SPEC.md` remains authoritative for the execution plane
-- Implemented propositions: `EL01` through `EL10`
-- Deferred propositions: `EL11` through `EL12`
+- Implemented propositions: `EL01` through `EL11`
+- Deferred proposition: `EL12` final integration
 
 ## Decision and Development Order
 
@@ -220,6 +220,31 @@ Verification evidence:
 This result completes L09 mechanics required by `EL12`. The final `EL12` claim
 remains open until L10 run isolation and the L12 cross-family integration gate
 pass. Supervisor retrieval remains unavailable.
+
+### Integration Gate G Result
+
+Completed on 2026-08-03:
+
+| Slice | Result | Mechanical evidence |
+|---|---|---|
+| Run-start binding | PASS | `knowledge-snapshot.json` is written after setup admission and before the first API call; an existing valid binding is reused exactly and a tampered binding fails closed. |
+| Snapshot isolation | PASS | Run A retains its original snapshot after promotion while run B selects the later snapshot; child stages inherit the exact parent binding. |
+| Scoped retrieval | PASS | Only active items whose explicit predicates match the run Domain Map are selected; an unrelated map receives zero learned rules. |
+| Bounded handoff | PASS | The user-role document contains only ID/version, scope, effect, antecedents, conclusion, confidence, snapshot identity, and applicability; evidence, authority, reasoning, approval, path, and command authority are absent. |
+| Execution availability | PASS | Missing or unavailable learning storage produces an explicit diagnostic empty binding without creating a registry or stopping execution. |
+
+Verification evidence:
+
+- `tests.test_learning_retrieval`: 6 tests passed, including a real
+  `supervise` first-call integration check;
+- supervisor, agent, stage, recovery, and cancellation integration selection:
+  329 tests passed;
+- all learning tests: 91 tests passed;
+- `python3 -B -m unittest discover -s tests`: 563 tests passed;
+- new binding/retrieval modules and their test module remain below 300 lines.
+
+This result completes L10 and `EL11`. L11 operations and the final L12
+cross-family anti-overfitting gate remain.
 
 ## Purpose
 
@@ -847,7 +872,7 @@ Exit: `EL12` passes.
 
 ### L10 - Supervisor Retrieval Integration
 
-Status: planned.
+Status: implemented; Integration Gate G passed on 2026-08-03.
 
 Select exactly one snapshot at run start, retrieve only active and mechanically
 applicable knowledge, pass short structured conclusions, and record every

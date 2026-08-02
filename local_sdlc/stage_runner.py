@@ -23,6 +23,12 @@ from .stages import *
 from .history import *
 from .action_gate import *
 from .agent_runner import command_agent
+from .learning_context import (
+    bind_learning_snapshot_from_args,
+    inherit_learning_binding,
+    knowledge_binding_manifest,
+    knowledge_binding_path,
+)
 
 
 def command_stage_plan(args: argparse.Namespace) -> int:
@@ -75,7 +81,8 @@ def command_run_stages(args: argparse.Namespace) -> int:
         action_type="orchestration",
         risk_class="read_only",
     )
-    written: list[Path] = []
+    knowledge_binding = bind_learning_snapshot_from_args(args, project, run_dir)
+    written: list[Path] = [knowledge_binding_path(run_dir)]
     completed: list[StageRunSummary] = []
     final_checks: list[dict[str, object]] = []
     recovery_plan: dict[str, object] | None = None
@@ -119,6 +126,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         manifest["documents"] = [display_path(path, project) for path in written]
         manifest["budget"] = budget_status(run_dir)
         manifest["progress"] = progress_status(run_dir, evaluate=False)
+        manifest["knowledge_snapshot"] = knowledge_binding_manifest(knowledge_binding)
         manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         written.append(manifest_path)
         print(f"run_dir: {run_dir}")
@@ -148,6 +156,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
             final_status = "stalled"
             break
         stage_dir = run_dir / f"{stage.stage_id.lower()}-{slugify(stage.title)}"
+        inherit_learning_binding(run_dir, stage_dir)
         stage_args = build_stage_agent_args(args, stage, stage_dir, completed, prior_changed_paths)
         stage_args.control_dir = [run_dir]
         print(f"stage: {stage.stage_id} {stage.title}")
@@ -182,6 +191,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         manifest["budget"] = budget_status(run_dir)
         manifest["child_budget_stops"] = list(child_budget_stops)
         manifest["progress"] = progress_status(run_dir, evaluate=False)
+        manifest["knowledge_snapshot"] = knowledge_binding_manifest(knowledge_binding)
         manifest["child_stalls"] = list(child_stalls)
         write_run_document(run_dir, "run.partial.json", json.dumps(manifest, ensure_ascii=False, indent=2))
 
@@ -305,6 +315,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
             )
             print("stage: S99 Final integration repair")
             repair_args = build_integration_repair_args(args, stages, completed, run_dir)
+            inherit_learning_binding(run_dir, repair_args.run_dir)
             repair_args.control_dir = [run_dir]
             exit_code, repair_pending, repair_blocked, repair_budget_stop, repair_stall = run_child_agent(
                 repair_args,
@@ -390,6 +401,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
     manifest["progress"] = progress_status(run_dir, evaluate=False)
     manifest["child_stalls"] = child_stalls
     manifest["action_gate_audit"] = action_gate_audit(run_dir)
+    manifest["knowledge_snapshot"] = knowledge_binding_manifest(knowledge_binding)
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     written.append(manifest_path)
 

@@ -21,6 +21,12 @@ from .safety import *
 from .budget import *
 from .progress_monitor import *
 from .action_gate import *
+from .learning_context import (
+    bind_learning_snapshot_from_args,
+    knowledge_binding_manifest,
+    knowledge_binding_path,
+    knowledge_context_document,
+)
 
 
 def _write_supervisor_budget_stop(run_dir: Path, stop: dict[str, object]) -> None:
@@ -165,8 +171,11 @@ def command_supervisor(args: argparse.Namespace) -> int:
         action_type="orchestration",
         risk_class="read_only",
     )
-    written: list[Path] = []
-    documents: list[tuple[str, str]] = []
+    knowledge_binding = bind_learning_snapshot_from_args(args, project, run_dir)
+    written: list[Path] = [knowledge_binding_path(run_dir)]
+    documents: list[tuple[str, str]] = [
+        ("Run-bound validated knowledge", knowledge_context_document(knowledge_binding))
+    ]
     api_calls = 0
 
     deterministic_route_doc = route_document(route)
@@ -284,6 +293,7 @@ def command_supervisor(args: argparse.Namespace) -> int:
         "blocked_safety_decisions": blocked_safety_decisions(run_dir),
         "budget": budget_status(run_dir),
         "progress": progress_status(run_dir, evaluate=False),
+        "knowledge_snapshot": knowledge_binding_manifest(knowledge_binding),
         "documents": [display_path(path, project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
@@ -322,9 +332,12 @@ def command_supervise(args: argparse.Namespace) -> int:
         action_type="orchestration",
         risk_class="read_only",
     )
+    knowledge_binding = bind_learning_snapshot_from_args(args, project, run_dir)
     manifest = project_manifest(project)
-    documents: list[tuple[str, str]] = []
-    written: list[Path] = []
+    documents: list[tuple[str, str]] = [
+        ("Run-bound validated knowledge", knowledge_context_document(knowledge_binding))
+    ]
+    written: list[Path] = [knowledge_binding_path(run_dir)]
     call_count = 0
     final_verdict = "not_judged"
     completed_rounds = 0
@@ -578,6 +591,7 @@ def command_supervise(args: argparse.Namespace) -> int:
         "blocked_safety_decisions": blocked_safety_decisions(run_dir),
         "budget": budget_status(run_dir),
         "progress": progress_status(run_dir, evaluate=False),
+        "knowledge_snapshot": knowledge_binding_manifest(knowledge_binding),
         "documents": [display_path(path, project) for path in written],
     }
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest_doc, ensure_ascii=False, indent=2))
