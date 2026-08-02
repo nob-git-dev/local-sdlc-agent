@@ -54,7 +54,9 @@ from . import agent_runner as _agent_runner
 from . import phase_runner as _phase_runner
 from . import stage_runner as _stage_runner
 from . import supervisor_runner as _supervisor_runner
+from . import browser_worker as _browser_worker
 from . import web_server as _web_server
+from .harnesses.browser_runtime import browser_backend_status
 
 
 def command_doctor(args: argparse.Namespace) -> int:
@@ -81,6 +83,11 @@ def command_doctor(args: argparse.Namespace) -> int:
         print(f"git: {dirty}")
     else:
         print("git: unavailable")
+
+    browser = browser_backend_status(project=project)
+    print(f"browser_backend: {browser['backend']}")
+    print(f"browser_status: {browser['status']}")
+    print(f"browser_available: {'yes' if browser['browser_available'] else 'no'}")
 
     print(f"llm_base_url: {config.base_url}")
     print(f"llm_config_file: {config.config_file or '(none)'}")
@@ -604,6 +611,8 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--entrypoint", type=Path, default=_web_server._repo_entrypoint(), help="local_sdlc.py entrypoint")
     web.add_argument("--open-browser", action="store_true", help="open the UI in the default browser")
     web.set_defaults(func=command_web)
+
+    _browser_worker.add_browser_worker_parser(sub)
 
     list_skills = sub.add_parser("list-skills", help="list available skills")
     add_common_arguments(list_skills)

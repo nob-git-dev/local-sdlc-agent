@@ -14,5 +14,10 @@
       "generate_artifact:max_tokens=49152,temperature=0.05,thinking=off",
       "repair_artifact:max_tokens=24576,temperature=0,thinking=off"
     ]
+  },
+  "browser": {
+    "worker_url": "",
+    "worker_token_env": "LOCAL_SDLC_BROWSER_WORKER_TOKEN",
+    "executable": ""
   }
 }

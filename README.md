@@ -88,6 +88,44 @@ python3 local_sdlc.py doctor
 優先順位は `CLI引数 > project config > 環境変数 > 内蔵デフォルト` です。API call別の調整は
 設定ファイルの `api_profile` / `function_profiles` でも、従来通り `--api-profile` でも指定できます。
 
+### ブラウザ検証
+
+HTML の受け入れ検証では Chromium 互換ブラウザを使います。通常は利用可能なブラウザを自動検出して
+直接実行します。workspace sandbox などからブラウザを直接起動できない場合だけ、認証付きローカル
+ワーカーへ分離できます。ワーカーは任意コマンドや任意URLを受け付けず、登録済み検証と許可した
+プロジェクト配下だけを扱います。
+
+同じ秘密値をワーカーとエージェントの環境へ渡し、ワーカーを先に起動します。秘密値は
+`local_sdlc.json` や Git へ保存しないでください。
+
+```bash
+export LOCAL_SDLC_BROWSER_WORKER_TOKEN="十分に長いランダムな秘密値"
+python3 local_sdlc.py browser-worker \
+  --allowed-root /path/to/projects \
+  --host 127.0.0.1 \
+  --port 8766
+```
+
+エージェント側では次の接続先を設定します。接続先を明示した場合、ワーカー停止時に直接実行へ
+暗黙に切り替わらず、検証基盤の障害として停止します。
+
+```bash
+export LOCAL_SDLC_BROWSER_WORKER_URL="http://127.0.0.1:8766"
+export LOCAL_SDLC_BROWSER_WORKER_TOKEN="ワーカーと同じ秘密値"
+python3 local_sdlc.py doctor --skip-llm
+```
+
+設定ファイルには秘密値そのものではなく、秘密値を保持する環境変数名だけを指定できます。
+
+```json
+{
+  "browser": {
+    "worker_url": "http://127.0.0.1:8766",
+    "worker_token_env": "LOCAL_SDLC_BROWSER_WORKER_TOKEN"
+  }
+}
+```
+
 ブラウザからチャット形式で使う場合:
 
 ```bash

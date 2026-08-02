@@ -201,6 +201,8 @@ def classify_failure(returncode: int | None, stdout: str = "", stderr: str = "",
         return "missing_artifact"
     if "required path is empty" in text:
         return "empty_artifact"
+    if "verification infrastructure:" in text:
+        return "verification_infrastructure"
     if returncode == 124 or "timed out" in text or "timeouterror" in text:
         return "timeout"
     if "syntaxerror" in text or "indentationerror" in text:

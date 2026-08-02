@@ -1273,3 +1273,112 @@ S07 の巨大分割は重要だが、S01-S04 の domain boundary が定義され
 - 変更した shell script 5 件: `bash -n` 成功。両 installer の一時ディレクトリ導入、
   3 hook の実行権限、write guard の block / allow 分岐を確認。hook 設定 JSON: parse 成功。
 - 説明 HTML: HTML parse と inline JavaScript 構文検査に成功。
+
+---
+
+## 2026-08-02 追記: 制限環境対応ブラウザ検証境界
+
+### 目的
+
+一部の workspace sandbox 内では Snap 版 Chromium が systemd の transient scope を
+作れず、ブラウザ検証だけが実行不能になる場合がある。この問題をフルアクセス常用や
+テスト省略で隠さず、ブラウザ実行を認証済み・機能限定のローカル能力として分離する。
+
+この境界は Tetris 専用の例外ではなく、将来追加される DOM、アクセシビリティ、画面状態の
+検証も同じ allowlist 型プロトコルへ追加できる構造とする。
+
+### 固定要件
+
+- browser smoke が必要な受け入れ条件は、ブラウザ実行不能時に PASS や skip として扱わない。
+- 外部ブラウザワーカーは任意 shell command、任意 Chromium 引数、任意 URL を受け付けない。
+- 実行可能な検証は worker 側の check allowlist に登録されたものだけとする。
+- project と entrypoint は canonical path へ解決し、起動時に指定した allowed root の外を拒否する。
+- worker は既定で `127.0.0.1` のみに bind し、Bearer token 認証を必須とする。
+- request body、ブラウザ出力、timeout、同時実行数に機械的上限を設ける。
+- worker で起動する Chromium の内部 sandbox は無効化しない。`--no-sandbox` を既定引数に含めない。
+- worker endpoint が明示設定された場合、接続失敗時に local browser へ暗黙 fallback しない。
+- worker が生成する evidence は既存 `HarnessEvidence` と command result document に投影できる。
+- core CLI は Python 標準ライブラリのみという既存要件を維持する。
+- token、個人環境の絶対パス、環境変数の秘密値を run document やエラーログへ保存しない。
+
+### 判定命題
+
+記号を次のように定義する。
+
+- `A`: request の Bearer token が一致する
+- `C`: check 名が worker allowlist に含まれる
+- `P`: project と entrypoint が allowed root 内にあり、entrypoint が通常ファイルである
+- `B`: 固定された browser executable が利用可能である
+- `R`: worker endpoint が明示設定されている
+- `E`: browser 出力から schema-valid な検証結果を取得できる
+
+実行許可は次の命題で決める。
+
+```text
+ExecuteBrowser <-> A and C and P and B
+PassEvidence    <-> ExecuteBrowser and E and probe_result.ok
+R and not Reachable(worker) -> infrastructure failure and not LocalFallback
+not PassEvidence -> approval blocker
+```
+
+LLM は `A/C/P/B/E` の真偽を決定しない。認証、allowlist、path canonicalization、
+process exit code、schema validation からプログラムが機械的に判定する。
+
+### アーキテクチャ
+
+```text
+HtmlBrowserHarness
+  -> BrowserRunner protocol
+       -> LocalBrowserRunner
+       -> RemoteBrowserRunner (HTTP client, fail closed)
+            -> BrowserWorker HTTP API (localhost + Bearer token)
+                 -> CheckRegistry
+                 -> AllowedRootPathGate
+                 -> Fixed Chromium ProcessRunner
+                 -> Browser check result
+  -> HarnessEvidence
+```
+
+責務分割:
+
+- `harnesses/browser_protocol.py`: request/result 型、check 名、上限、path validation
+- `harnesses/browser_runtime.py`: 固定 probe、local/remote runner 選択、HTTP client
+- `browser_worker.py`: localhost HTTP server、認証、同時実行制御、固定 Chromium 起動
+- `harnesses/html_browser.py`: HTML 静的検証、runner request、Evidence 変換
+
+### 実行モード
+
+- worker URL 未設定: 既存互換の local browser runner を使用する。
+- worker URL 設定済み: remote browser runner のみを使用する。
+- remote worker が未到達、未認証、invalid response、timeout: 検証失敗として evidence を残す。
+- worker の health endpoint は browser executable と protocol version を返すが、token は返さない。
+
+### 受け入れ条件
+
+- [x] local browser runner の Chromium 引数に `--no-sandbox` が含まれない。
+- [x] worker は token 不在・不一致を HTTP 401 で拒否する。
+- [x] worker は unknown check、allowed root 外 project、path traversal、通常ファイルでない entrypoint を拒否する。
+- [x] worker は request size、output size、timeout、同時実行数の上限を強制する。
+- [x] remote runner は worker 成功結果を既存 browser smoke document と同じ意味の Evidence に変換する。
+- [x] remote runner は worker 接続失敗時に local browser を実行しない。
+- [x] worker 経由でも visible active piece 不在の Tetris fixture は同じ理由で FAIL する。
+- [x] 正常な Tetris fixture は worker 経由で PASS する。
+- [x] `doctor` または worker health により、browser backend の生存状態を LLM call 前に確認できる。
+- [x] 通常実行の全 unit/integration test と benchmark regression が成功する。
+- [x] `workspace-write` の独立タスクから worker を利用した browser smoke が成功する。
+
+### 検証結果
+
+- Browser protocol / runtime / worker の専用テスト: `20 tests ... OK`
+- 全 unit / integration / benchmark regression: `514 tests ... OK`
+- worker 経由の正常 fixture、active piece 不在 fixture、既知 false positive fixture: `3 tests ... OK`
+- 独立した `workspace-write` 実行から同じ3ケース: `3 tests ... OK`
+- remote worker 稼働時の `doctor --skip-llm --skip-probes`: `browser_status: ok`、`browser_available: yes`
+- Python 構文検査、設定 JSON parse、product-neutral asset scan、`git diff --check`: 成功
+
+### 非スコープ
+
+- 任意サイトを巡回する汎用ブラウザエージェント
+- worker からの shell command 実行
+- インターネット検索、ログイン済みブラウザプロファイル、ユーザー Cookie の利用
+- Docker socket を coding agent sandbox へ公開すること
