@@ -99,6 +99,7 @@ class LLMRoleOverride:
     max_tokens: int | None = None
     disable_thinking: bool | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
 
 
 LEARNING_FUNCTION_PROFILES_REASONING: dict[str, LLMRoleOverride] = {
@@ -124,6 +125,7 @@ class LLMCallSettings:
     temperature: float
     max_tokens: int
     disable_thinking: bool
+    reasoning_effort: str | None = None
 
 
 DEFAULT_FUNCTION_PROFILES: dict[str, LLMRoleOverride] = {
@@ -229,28 +231,30 @@ MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
     # DeepSeek can return reasoning_content separately from content on the
     # verified local llama.cpp endpoint. Opt in only for non-artifact analysis;
     # every machine-readable artifact path stays identical to the stable preset.
+    # The active 16K server context caps output at 8192, so harder analysis uses
+    # the model's explicit high/max effort rather than unsafe Qwen-sized limits.
     "deepseek-v4-flash-agent-deep": {
         "default": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
-        "episode_review": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=False),
-        "candidate_abstraction": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
-        "scope_classification": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=False),
-        "counterexample_search": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
+        "episode_review": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "candidate_abstraction": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "scope_classification": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "counterexample_search": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
         "candidate_serialization": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
-        "promotion_review": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=False),
-        "route_task": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=False),
-        "plan_work": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
-        "explore_code": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=False),
-        "failure_analysis": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
-        "patch_planner": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
-        "project_policy_triage": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=False),
+        "promotion_review": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
+        "route_task": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "plan_work": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
+        "explore_code": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "failure_analysis": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
+        "patch_planner": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
+        "project_policy_triage": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
         "generate_artifact": LLMRoleOverride(temperature=0.05, max_tokens=8192, disable_thinking=True),
         "repair_artifact": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
-        "root_cause_analysis": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=False),
+        "root_cause_analysis": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
         "root_cause_patch": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
         "artifact_writer": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
         "semantic_repair": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
         "format_repair": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
-        "judge_review": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=False),
+        "judge_review": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
         "verify_acceptance": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
     },
     # Nemotron-3-Super on vLLM exposes reasoning separately. Keep thinking

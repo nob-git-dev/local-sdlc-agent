@@ -2564,6 +2564,48 @@ AssertionError: 1 != 3
         codes = {finding.code for finding in findings}
         self.assertNotIn("unknown_self_attribute_reference", codes)
 
+    def test_artifact_lint_allows_dataclass_field_self_reference(self):
+        output = json.dumps(
+            {
+                "artifacts": [
+                    {
+                        "type": "search_replace",
+                        "path": "ast_nodes.py",
+                        "search": (
+                            "@dataclass(frozen=True)\n"
+                            "class ColumnDef:\n"
+                            "    column_type: str\n"
+                        ),
+                        "replace": (
+                            "@dataclass(frozen=True)\n"
+                            "class ColumnDef:\n"
+                            "    column_type: str\n"
+                            "\n"
+                            "    @property\n"
+                            "    def type_name(self):\n"
+                            "        return self.column_type\n"
+                        ),
+                    }
+                ]
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "ast_nodes.py").write_text(
+                "from dataclasses import dataclass\n"
+                "\n"
+                "@dataclass(frozen=True)\n"
+                "class ColumnDef:\n"
+                "    column_type: str\n",
+                encoding="utf-8",
+            )
+
+            findings = self.local_sdlc.lint_artifact_output(output, [], [], project=project)
+
+        codes = {finding.code for finding in findings}
+        self.assertNotIn("unknown_self_attribute_reference", codes)
+
     def test_artifact_lint_blocks_product_path_with_test_body(self):
         output = json.dumps(
             {

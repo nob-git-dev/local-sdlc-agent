@@ -41,7 +41,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | Acceptance Evidence Gate | SPEC.md の受け入れ条件を実行証拠の `covers` / 直接コマンド対応と照合し、未証明のまま承認されることを防ぐ | Coder/Judge の文章上の自己申告だけで完了扱いにしない |
 | Browser Behavior Smoke | HTML/ブラウザ成果物を headless Chromium で実際に操作し、DOM/API 存在だけでなく可視状態変化を観測する | 静的な見た目や関数名だけで「動作する」と判定しない |
 | Function API Profile | API 設定を実際の認知処理単位で最適化する | ロール責務を曖昧にせず、関数別 profile を role の下位実行設定として扱う |
-| Model/API Preset Profile | Qwen/DeepSeek/Ornith/Nemotron などモデル特性ごとの既定 model・temperature・max_tokens・thinking を名前付き preset として管理する | モデル差し替えを散在 CLI flag ではなく `--model-profile` と function-level override で行い、選択 profile と API が実際に提供する model の不一致を生成前に拒否する |
+| Model/API Preset Profile | Qwen/DeepSeek/Ornith/Nemotron などモデル特性ごとの既定 model・temperature・max_tokens・thinking・reasoning effort を名前付き preset として管理する | モデル差し替えを散在 CLI flag ではなく `--model-profile` と function-level override で行い、選択 profile と API が実際に提供する model の不一致を生成前に拒否する |
 | Local Web Chat UI | ブラウザから chat 形式で `agent` / `run-stages` / `spec` / `doctor` / `health` を投入・監視・停止する | Web UI は薄い presentation adapter に留め、既存 CLI harness の実行規律を迂回しない |
 | Autonomous Supervisor Runtime | 長時間実行、停滞、失敗、再開、stage split を goal 単位で管理し、完了または理由付き blocked へ到達させる | 停止した agent 自身に自己観測を任せず、外側の親制御層が観測・判断・再投入を行う |
 | Experience Learning Runtime | 複数プロジェクトの検証済み経験を別制御面で収集・抽象化・反例検証し、次回以降の run が利用できる知識へ育てる | 実行中の run を変更せず、LLM 候補を直接有効化せず、scope・authority・evidence・counterexample を持つ版管理済みスナップショットだけを読み取り利用させる |
@@ -77,8 +77,8 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - `--model` は model profile の既定 model を上書きするが、`--api-profile FUNCTION:model=...` は特定 function/API call だけの model を上書きできる。
 - 名前付き model profile を使う場合、runner は各生成 request の直前に `/v1/models` の実測一覧と request model を照合する。実測一覧に存在しない model は request を送らず、現在の常駐 model と切替候補を示して停止する。
 - 単一モデルだけを常駐できる環境では、function-level model override は `/v1/models` にその model が存在する場合だけ実行可能とする。複数モデル対応機能自体は維持し、単一常駐環境向けの暗黙なモデル起動・停止は行わない。
-- `deepseek-v4-flash-agent` は 16K 級のローカル llama.cpp 構成を安全側の基準とし、全 function を thinking off、生成上限を 8,192 tokens 以下にする。`deepseek-v4-flash-agent-deep` は同じ生成物設定を維持し、`reasoning_content` と `content` の分離が確認済みの分析 function だけ thinking on にする。
-- `local_sdlc.py doctor` と `run.json` は、有効な `model_profile`、role/function 別の model、temperature、max_tokens、thinking を表示・保存する。
+- `deepseek-v4-flash-agent` は 16K 級のローカル llama.cpp 構成を安全側の基準とし、全 function を thinking off、生成上限を 8,192 tokens 以下にする。`deepseek-v4-flash-agent-deep` は同じ生成物設定を維持し、`reasoning_content` と `content` の分離が確認済みの分析 function だけ thinking on にする。分析上限は 8,192 tokens、軽量分析は `reasoning_effort=high`、計画・障害解析・反例探索・審査は `reasoning_effort=max` とし、thinking 時の temperature は 1.0 にする。
+- `local_sdlc.py doctor` と `run.json` は、有効な `model_profile`、role/function 別の model、temperature、max_tokens、thinking、reasoning effort を表示・保存する。
 - 書き込みやパッチ適用は `--apply` が指定されたときだけ行う。デフォルトは標準出力またはパッチファイルへの保存に留める。
 - `local_sdlc.py web --host 127.0.0.1 --port 8765` は、Python 標準ライブラリのみで軽量HTTPサーバーを起動し、ブラウザ用の単一HTMLチャットUIを返す。
 - Web UI からの実行は既存 CLI コマンドをローカル子プロセスとして起動し、stdout/stderr と job metadata を `.sdlc-runner/web/jobs/` に保存する。
@@ -122,7 +122,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] 生成テストハーネス編集のようなプロジェクト依存判断では Project Policy Triage を独立 API call として保存し、LLM 分類を runner の機械検証に通してから次行動へ反映する
 - [x] `--model-profile qwen-agent` / `--model-profile ornith-agent` / `--model-profile nemotron3-super-agent` で名前付き model/API preset を切り替えられる
 - [x] `--model-profile deepseek-v4-flash-agent` が `deepseek-v4-flash-0731` と 16K 向けの bounded function profile を選択し、Qwen profile を変更しない
-- [x] `--model-profile deepseek-v4-flash-agent-deep` は分析 function だけ thinking on、生成物 function は thinking off を維持する
+- [x] `--model-profile deepseek-v4-flash-agent-deep` は分析 function だけ thinking on とし、役割に応じて `reasoning_effort=high|max` と 8,192 tokens を送信し、生成物 function は thinking off を維持する
 - [x] 名前付き profile の request model が `/v1/models` に存在しない場合、chat completion を送信する前に理由付きで拒否する
 - [x] DeepSeek が常駐中に Qwen profile、Qwen が常駐中に DeepSeek profile を選んだ誤操作を `doctor` が検出できる
 - [x] `--api-profile failure_analysis:model=...` で、生成物作成とは別モデルを特定 function/API call に割り当てられる
@@ -201,7 +201,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 自動反復は `--auto-fix` 明示時のみ行い、`--max-rounds` で必ず上限を設ける
 - Qwen/DeepSeek/Ornith 等のモデル別最適化は名前付き `model_profile` preset として管理し、散在する個別 flag やハードコードされたモデル名へ退化させない
 - 実効 API 設定は `model_profile default -> global --model -> role override -> function profile -> --api-profile FUNCTION overrides` の階層で合成する
-- model、temperature、max_tokens、thinking は API call 単位で監査可能にし、単一グローバル設定だけに閉じ込めない
+- model、temperature、max_tokens、thinking、reasoning effort は API call 単位で監査可能にし、単一グローバル設定だけに閉じ込めない
 - 分析系 API call は、サービング層が `reasoning_content` と `content` を分離できる場合に thinking on を許可する
 - 成果物生成系 API call は、patch / JSON / `BEGIN_FILE` の機械可読性を守るため thinking off を維持する
 - `reasoning_content` は監査用 metadata として保存するが、後続スキルに渡す本文・artifact・handoff document にはそのまま混ぜない
@@ -328,7 +328,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 
 #### ADR-9: モデル差し替えは名前付き model profile preset と function-level model override で扱う
 **状況:** Qwen と Ornith のように、同じ OpenAI 互換 API でもモデルごとに得意な処理、推奨 max_tokens、thinking 制御、応答速度、生成物形式の安定性が異なる。単一の `--model` や散在する CLI flag だけで調整すると、比較実験や将来の mixed-model 運用で設定が失われやすい。
-**判断:** `--model-profile` を first-class preset とし、preset は既定 model と function profile を持つ。`--model` は preset の既定 model を上書きし、`--api-profile FUNCTION:model=...` は特定 function/API call だけの model を上書きする。
+**判断:** `--model-profile` を first-class preset とし、preset は既定 model と function profile を持つ。`--model` は preset の既定 model を上書きし、`--api-profile FUNCTION:model=...` は特定 function/API call だけの model を上書きする。モデル固有の reasoning effort も function profile の値として保持し、モデル名による散在した条件分岐にはしない。
 **理由:** ロールは責務、function は認知処理、model profile はモデル特性、api profile は実行設定を表す。これらを分離すると、Qwen/Ornith の比較や、生成物作成だけ Qwen・失敗分析だけ Ornith のような mixed-model 実験を安全に行える。
 **影響:** `doctor` と `run.json` は `model_profile` と role/function 別の有効 model/API 設定を必ず表示・保存する。将来モデルや function が増えても、preset table と function profile table に追加し、散在する条件分岐やハードコードで管理しない。
 

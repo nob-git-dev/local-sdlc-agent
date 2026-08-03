@@ -38,6 +38,7 @@ class ModelProfileTests(unittest.TestCase):
         self.assertTrue(client.call_settings("coder").disable_thinking)
         self.assertEqual(client.call_settings("coder", "generate_artifact").max_tokens, 8192)
         self.assertEqual(client.call_settings("coder", "repair_artifact").max_tokens, 4096)
+        self.assertIsNone(client.call_settings("coder").reasoning_effort)
         for function_name in (
             "route_task",
             "plan_work",
@@ -55,16 +56,26 @@ class ModelProfileTests(unittest.TestCase):
             config = self._config(Path(temp), "deepseek-v4-flash-agent-deep")
 
         client = LocalLLMClient(config)
-        for function_name in (
+        high_functions = (
             "route_task",
+            "explore_code",
+            "project_policy_triage",
+        )
+        max_functions = (
             "plan_work",
             "failure_analysis",
             "patch_planner",
             "root_cause_analysis",
             "judge_review",
-        ):
+        )
+        for function_name in high_functions + max_functions:
             with self.subTest(function_name=function_name):
-                self.assertFalse(client.call_settings("default", function_name).disable_thinking)
+                settings = client.call_settings("default", function_name)
+                self.assertFalse(settings.disable_thinking)
+                self.assertEqual(settings.max_tokens, 8192)
+                self.assertEqual(settings.temperature, 1.0)
+                expected_effort = "high" if function_name in high_functions else "max"
+                self.assertEqual(settings.reasoning_effort, expected_effort)
         for function_name in (
             "generate_artifact",
             "repair_artifact",
@@ -75,7 +86,45 @@ class ModelProfileTests(unittest.TestCase):
             "verify_acceptance",
         ):
             with self.subTest(function_name=function_name):
-                self.assertTrue(client.call_settings("default", function_name).disable_thinking)
+                settings = client.call_settings("default", function_name)
+                self.assertTrue(settings.disable_thinking)
+                self.assertIsNone(settings.reasoning_effort)
+
+    def test_deepseek_deep_profile_sends_effort_in_chat_template_kwargs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self._config(Path(temp), "deepseek-v4-flash-agent-deep")
+
+        client = LocalLLMClient(config)
+        payloads = []
+
+        def fake_request(method, path, payload=None, timeout=None):
+            if path == "/models":
+                return {"data": [{"id": DEEPSEEK_MODEL}]}
+            payloads.append(payload)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "reasoning_content": "checked",
+                            "content": "done",
+                        }
+                    }
+                ]
+            }
+
+        client._request = fake_request
+        result = client.complete(
+            [{"role": "user", "content": "analyze"}],
+            call_function="failure_analysis",
+        )
+
+        self.assertEqual(result, "done")
+        self.assertEqual(payloads[0]["max_tokens"], 8192)
+        self.assertEqual(payloads[0]["temperature"], 1.0)
+        self.assertEqual(
+            payloads[0]["chat_template_kwargs"],
+            {"enable_thinking": True, "reasoning_effort": "max"},
+        )
 
     def test_qwen_profile_remains_unchanged(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -87,6 +136,7 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual(generated.max_tokens, 49152)
         self.assertTrue(generated.disable_thinking)
         self.assertFalse(client.call_settings("judge", "judge_review").disable_thinking)
+        self.assertIsNone(client.call_settings("judge", "judge_review").reasoning_effort)
 
     def test_named_profile_rejects_unserved_model_before_generation(self):
         config = LLMConfig(

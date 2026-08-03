@@ -96,22 +96,26 @@ def command_doctor(args: argparse.Namespace) -> int:
     for role in ("pm", "coder", "judge"):
         settings = client.call_settings(role)
         thinking = "off" if settings.disable_thinking else "on"
+        effort = settings.reasoning_effort or "default"
         print(
             f"llm_role.{role}: "
             f"model={settings.model or '(auto)'} "
             f"temperature={settings.temperature:g} "
             f"max_tokens={settings.max_tokens} "
-            f"thinking={thinking}"
+            f"thinking={thinking} "
+            f"reasoning_effort={effort}"
         )
     for function_name in sorted(DEFAULT_FUNCTION_PROFILES):
         settings = client.call_settings("default", function_name)
         thinking = "off" if settings.disable_thinking else "on"
+        effort = settings.reasoning_effort or "default"
         print(
             f"llm_function.{function_name}: "
             f"model={settings.model or '(auto)'} "
             f"temperature={settings.temperature:g} "
             f"max_tokens={settings.max_tokens} "
-            f"thinking={thinking}"
+            f"thinking={thinking} "
+            f"reasoning_effort={effort}"
         )
     profile_manifest = llm_model_profile_manifest(args)
     if profile_manifest["function_overrides"]:
@@ -122,7 +126,8 @@ def command_doctor(args: argparse.Namespace) -> int:
                 f"model={override['model'] or '(inherit)'} "
                 f"temperature={override['temperature']} "
                 f"max_tokens={override['max_tokens']} "
-                f"thinking={override['thinking']}"
+                f"thinking={override['thinking']} "
+                f"reasoning_effort={override['reasoning_effort'] or 'default'}"
             )
 
     if args.skip_llm:

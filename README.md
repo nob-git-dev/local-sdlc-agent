@@ -98,7 +98,7 @@ python3 local_sdlc.py doctor
 # DeepSeek安定版: 全API callでthinking off、生成上限8,192 tokens
 python3 local_sdlc.py doctor --model-profile deepseek-v4-flash-agent
 
-# DeepSeek分析版: 分析だけthinking on、生成物作成はthinking off
+# DeepSeek分析版: 分析は役割別high/max・最大8,192、生成物作成はthinking off
 python3 local_sdlc.py doctor --model-profile deepseek-v4-flash-agent-deep
 
 # Qwenへ戻した後

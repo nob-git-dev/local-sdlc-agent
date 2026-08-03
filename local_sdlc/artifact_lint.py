@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast as py_ast
 from collections import Counter
 import json
 import re
@@ -15,6 +16,32 @@ from .models import *
 from .python_project_analysis import *
 from .utils import markdown_fenced_blocks, strip_markdown_fence, unique_ordered
 from .workspace import normalize_project_relative_paths, resolve_project_path
+
+
+def python_declared_class_attributes(source: str) -> set[str]:
+    """Return attributes declared directly in Python class bodies.
+
+    Dataclass fields are annotations rather than ``self`` assignments, but
+    generated properties may still reference them through ``self``.
+    """
+    try:
+        tree = py_ast.parse(textwrap.dedent(source))
+    except (IndentationError, SyntaxError):
+        return set()
+
+    attributes: set[str] = set()
+    for node in py_ast.walk(tree):
+        if not isinstance(node, py_ast.ClassDef):
+            continue
+        for statement in node.body:
+            if isinstance(statement, py_ast.AnnAssign) and isinstance(statement.target, py_ast.Name):
+                attributes.add(statement.target.id)
+            elif isinstance(statement, py_ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, py_ast.Name):
+                        attributes.add(target.id)
+    return attributes
+
 
 def json_generated_blocks(text: str) -> list[tuple[str | None, str]]:
     blocks: list[tuple[str | None, str]] = []
@@ -1416,6 +1443,7 @@ def lint_artifact_output(
             )
     if project is not None:
         block_assignments_by_path: dict[str, set[str]] = {}
+        block_declared_attrs_by_path: dict[str, set[str]] = {}
         block_defined_methods_by_path: dict[str, set[str]] = {}
         for path, block in generated_blocks:
             if not path:
@@ -1423,6 +1451,9 @@ def lint_artifact_output(
             normalized_path = normalize_legacy_file_artifact_path(path)
             block_assignments_by_path.setdefault(normalized_path, set()).update(
                 re.findall(r"\bself\.([A-Za-z_][A-Za-z0-9_]*)\s*=", block)
+            )
+            block_declared_attrs_by_path.setdefault(normalized_path, set()).update(
+                python_declared_class_attributes(block)
             )
             block_defined_methods_by_path.setdefault(normalized_path, set()).update(
                 re.findall(r"(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", block)
@@ -1436,8 +1467,10 @@ def lint_artifact_output(
                 continue
             source = target.read_text(encoding="utf-8", errors="replace")
             known_attrs = set(re.findall(r"\bself\.([A-Za-z_][A-Za-z0-9_]*)\b", source))
+            known_attrs.update(python_declared_class_attributes(source))
             known_methods = set(re.findall(r"(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", source))
             assigned_attrs = block_assignments_by_path.get(normalized_path, set())
+            assigned_attrs.update(block_declared_attrs_by_path.get(normalized_path, set()))
             defined_methods = block_defined_methods_by_path.get(normalized_path, set())
             for attr in sorted(set(re.findall(r"\bself\.([A-Za-z_][A-Za-z0-9_]*)\b", block))):
                 if attr.startswith("__") and attr.endswith("__"):

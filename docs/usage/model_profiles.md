@@ -25,14 +25,28 @@ container start, or second model launch occurs.
 
 ## Available DeepSeek Profiles
 
-| Profile | Intended use | Thinking | Output budget |
+| Profile | Intended use | Thinking / effort | Output budget |
 |---|---|---|---:|
 | `deepseek-v4-flash-agent` | First run and artifact-sensitive work | Off for every function | Up to 8192 |
-| `deepseek-v4-flash-agent-deep` | Explicit analysis experiment | On for analysis; off for artifacts | Up to 8192 |
+| `deepseek-v4-flash-agent-deep` | Deliberate reasoning work | High or max for analysis; off for artifacts | Up to 8192 |
 
 The stable profile is the default recommendation. The deep profile should be
 used only after Doctor confirms that the serving stack returns reasoning in
 `reasoning_content` and the final answer in `content`.
+
+The deep profile keeps all effective policy values in the profile table:
+
+- `high`, 8192 tokens, temperature 1.0: routing, code exploration, scope and
+  project-policy classification, episode review, and candidate abstraction.
+- `max`, 8192 tokens, temperature 1.0: work planning, failure/root-cause and
+  patch analysis, counterexample search, promotion review, and judge review.
+- thinking off: artifact generation/repair, serialization, semantic/format
+  repair, root-cause patch output, and acceptance-result formatting.
+
+The active GX10 llama.cpp deployment has a total context of 16384 tokens.
+Raising output above 8192 in this client profile would not create a real larger
+budget because prompt and output must share that context. A larger limit should
+only be introduced together with a separately verified server-context change.
 
 ## Returning to Qwen
 

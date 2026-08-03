@@ -145,6 +145,7 @@ class LocalLLMClient:
         temperature = self.config.temperature
         max_tokens = self.config.max_tokens
         disable_thinking = self.config.disable_thinking
+        reasoning_effort = None
         for override in (role_override, function_override):
             if not override:
                 continue
@@ -156,6 +157,10 @@ class LocalLLMClient:
                 max_tokens = override.max_tokens
             if override.disable_thinking is not None:
                 disable_thinking = override.disable_thinking
+            if override.reasoning_effort is not None:
+                reasoning_effort = override.reasoning_effort
+        if disable_thinking:
+            reasoning_effort = None
         return LLMCallSettings(
             agent_level=normalized,
             call_function=normalized_function,
@@ -163,7 +168,19 @@ class LocalLLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
             disable_thinking=disable_thinking,
+            reasoning_effort=reasoning_effort,
         )
+
+    @staticmethod
+    def _chat_template_kwargs(settings: LLMCallSettings) -> dict | None:
+        if settings.disable_thinking:
+            return {"enable_thinking": False}
+        if settings.reasoning_effort:
+            return {
+                "enable_thinking": True,
+                "reasoning_effort": settings.reasoning_effort,
+            }
+        return None
 
     def _request(
         self,
@@ -480,7 +497,7 @@ class LocalLLMClient:
                     model=model,
                     temperature=settings.temperature,
                     max_tokens=settings.max_tokens,
-                    chat_template_kwargs={"enable_thinking": False} if settings.disable_thinking else None,
+                    chat_template_kwargs=self._chat_template_kwargs(settings),
                     partial_output_path=stream_output_path,
                     progress_callback=stream_callback,
                     stream_guard=stream_guard,
@@ -499,7 +516,7 @@ class LocalLLMClient:
                 model=model,
                 temperature=settings.temperature,
                 max_tokens=settings.max_tokens,
-                chat_template_kwargs={"enable_thinking": False} if settings.disable_thinking else None,
+                chat_template_kwargs=self._chat_template_kwargs(settings),
             )
         except LLMTimeoutError as exc:
             health = self.health_probe()
@@ -993,6 +1010,7 @@ def llm_settings_manifest(client: LocalLLMClient) -> dict[str, dict[str, object]
             "temperature": settings.temperature,
             "max_tokens": settings.max_tokens,
             "thinking": "off" if settings.disable_thinking else "on",
+            "reasoning_effort": settings.reasoning_effort,
         }
     for function_name in sorted(DEFAULT_FUNCTION_PROFILES):
         settings = client.call_settings("default", function_name)
@@ -1002,6 +1020,7 @@ def llm_settings_manifest(client: LocalLLMClient) -> dict[str, dict[str, object]
             "temperature": settings.temperature,
             "max_tokens": settings.max_tokens,
             "thinking": "off" if settings.disable_thinking else "on",
+            "reasoning_effort": settings.reasoning_effort,
         }
     return result
 
@@ -1024,6 +1043,7 @@ def llm_model_profile_manifest(args: argparse.Namespace) -> dict[str, object]:
                     if override.disable_thinking is None
                     else ("off" if override.disable_thinking else "on")
                 ),
+                "reasoning_effort": override.reasoning_effort,
             }
             for name, override in sorted(profile_function_overrides(profile).items())
         },
