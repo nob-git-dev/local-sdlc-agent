@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import io
 import json
@@ -10,6 +11,13 @@ from tests.helpers import LocalSDLCTestCase
 
 
 class StageRunnerTests(LocalSDLCTestCase):
+    def test_run_stages_defaults_to_isolated_autonomous_recovery(self):
+        args = self.local_sdlc.build_parser().parse_args(["run-stages", "task"])
+
+        self.assertEqual(args.worktree_mode, "copy")
+        self.assertTrue(args.autonomous_recovery)
+        self.assertEqual(args.max_stage_recoveries, 3)
+
     def test_run_stages_parser_accepts_adaptive_rounds(self):
         args = self.local_sdlc.build_parser().parse_args(
             ["run-stages", "task", "--adaptive-rounds", "5", "--domain-modeling", "never"]
@@ -609,6 +617,7 @@ class StageRunnerTests(LocalSDLCTestCase):
                     "--to-stage",
                     "S03",
                     "--apply",
+                    "--no-autonomous-recovery",
                     "--run-dir",
                     str(run_dir),
                 ]
@@ -656,6 +665,266 @@ class StageRunnerTests(LocalSDLCTestCase):
             memory_doc["records"][0]["required_future_observables"],
             action["required_observables"],
         )
+
+    def test_run_stages_parent_runtime_recovers_without_external_intervention(self):
+        calls = []
+
+        def fake_command_agent(stage_args):
+            calls.append(stage_args)
+            stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+            if len(calls) == 1:
+                payload = {
+                    "api_calls": 1,
+                    "final_verdict": "test_failed",
+                    "failure_summary": {"failure_type": "command_failed"},
+                }
+                exit_code = 1
+            else:
+                payload = {"api_calls": 1, "final_verdict": "approved"}
+                exit_code = 0
+            (stage_args.run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+            return exit_code
+
+        spec = """
+# Generic Project
+## Implementation Stages
+```json
+{
+  "stage_plan_schema": 1,
+  "stages": [{
+    "stage_id": "S01",
+    "title": "Core behavior",
+    "goal": "Implement one bounded behavior.",
+    "writable_paths": ["src/core.py"],
+    "readonly_evidence_paths": [],
+    "test_commands": [],
+    "required_observables": []
+  }]
+}
+```
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, spec)
+            run_dir = project / "run"
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "build generic project",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            actions = [
+                item["action"]
+                for item in self.local_sdlc.read_autonomy_decisions(run_dir)
+            ]
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1].resume, calls[0].run_dir)
+        self.assertTrue(calls[1].small_patch)
+        self.assertTrue(calls[1].skip_pm)
+        self.assertEqual(manifest["status"], "approved")
+        self.assertTrue(manifest["autonomy"]["zero_unauthorized_external_interventions"])
+        self.assertIn("root_cause_recovery", actions)
+        self.assertIn("complete", actions)
+
+    def test_cli_parent_runtime_restarts_a_persistently_stalled_goal(self):
+        calls = []
+
+        def fake_stage_runner(run_args):
+            calls.append(argparse.Namespace(**vars(run_args)))
+            run_dir = Path(run_args.run_dir)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            run_args.completed_run_dir = run_dir
+            if len(calls) == 1:
+                (run_dir / "stall.json").write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "status": "STALLED",
+                            "reason": "no observable progress",
+                            "scope_run_dir": str(run_dir.resolve()),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                payload = {
+                    "status": "stalled",
+                    "stages": [{"stage_id": "S02"}],
+                    "child_stalls": [{"stage_id": "S02"}],
+                }
+                result = 1
+            else:
+                payload = {"status": "approved"}
+                result = 0
+            (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+            return result
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Generic Project\n")
+            source = project / "run"
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "build generic project",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--run-dir",
+                    str(source),
+                ]
+            )
+            original = self.local_sdlc._stage_runner.command_run_stages
+            self.local_sdlc._stage_runner.command_run_stages = fake_stage_runner
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc._stage_runner.command_run_stages = original
+            decisions = self.local_sdlc.read_autonomy_decisions(source)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1].resume_run, source.resolve())
+        self.assertEqual(calls[1].from_stage, "S02")
+        self.assertTrue(Path(calls[1].recovery_plan).is_absolute())
+        self.assertIn("resume", [item["action"] for item in decisions])
+
+    def test_run_stages_protocol_failure_forces_format_repair(self):
+        calls = []
+
+        def fake_command_agent(stage_args):
+            calls.append(stage_args)
+            stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+            payload = (
+                {
+                    "api_calls": 1,
+                    "final_verdict": "patch_failed",
+                    "failure_summary": {
+                        "failure_type": "format_repair_malformed_search_replace"
+                    },
+                }
+                if len(calls) == 1
+                else {"api_calls": 1, "final_verdict": "approved"}
+            )
+            (stage_args.run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+            return 1 if len(calls) == 1 else 0
+
+        spec = """
+# Generic Project
+## Implementation Stages
+```json
+{"stage_plan_schema":1,"stages":[{"stage_id":"S01","title":"One file","goal":"Write it.","writable_paths":["app.py"],"readonly_evidence_paths":[],"test_commands":[],"required_observables":[]}]}
+```
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, spec)
+            run_dir = project / "run"
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "build generic project",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+            actions = [
+                item["action"]
+                for item in self.local_sdlc.read_autonomy_decisions(run_dir)
+            ]
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1].artifact_format, "legacy")
+        self.assertIn("format_repair", actions)
+
+    def test_run_stages_does_not_complete_with_unverified_acceptance(self):
+        def fake_command_agent(stage_args):
+            stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+            target = stage_args.project / "app.py"
+            target.write_text("print('ok')\n", encoding="utf-8")
+            (stage_args.run_dir / "run.json").write_text(
+                json.dumps({"api_calls": 0, "final_verdict": "approved"}),
+                encoding="utf-8",
+            )
+            return 0
+
+        spec = """
+# Generic Project
+## Acceptance Criteria
+- A user can observe the complete domain result.
+## Implementation Stages
+```json
+{"stage_plan_schema":1,"stages":[{"stage_id":"S01","title":"One file","goal":"Write it.","writable_paths":["app.py"],"readonly_evidence_paths":[],"test_commands":[],"required_observables":[]}]}
+```
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, spec)
+            run_dir = project / "run"
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "build generic project",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--apply",
+                    "--final-repair-rounds",
+                    "0",
+                    "--worktree-mode",
+                    "off",
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 1)
+        self.assertEqual(manifest["status"], "acceptance_failed")
+        self.assertEqual(manifest["acceptance_matrix"][0]["status"], "unverified")
+        self.assertFalse(manifest["completion_gate"]["completed"])
 
     def test_run_stages_uses_stage_tests_before_final_gate(self):
         calls = []

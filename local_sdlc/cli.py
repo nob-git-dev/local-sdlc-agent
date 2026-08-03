@@ -49,6 +49,8 @@ from .requirements import *
 from .evidence import *
 from .history import *
 from .stages import *
+from .stage_planning import *
+from .autonomy_runtime import *
 from .action_gate import *
 from . import agent_runner as _agent_runner
 from . import phase_runner as _phase_runner
@@ -203,7 +205,69 @@ def command_stage_plan(args: argparse.Namespace) -> int:
 
 def command_run_stages(args: argparse.Namespace) -> int:
     _sync_runner_dependencies()
-    return _stage_runner.command_run_stages(args)
+    automatic = bool(getattr(args, "autonomous_recovery", False))
+    max_stalled_recoveries = int(getattr(args, "max_stalled_recoveries", 0) or 0)
+    current = args
+    stalled_recoveries = 0
+    while True:
+        result = _stage_runner.command_run_stages(current)
+        source = Path(current.completed_run_dir).resolve()
+        args.completed_run_dir = source
+        manifest_path = source / "run.json"
+        manifest: dict[str, object] = {}
+        if manifest_path.exists():
+            try:
+                parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    manifest = parsed
+            except json.JSONDecodeError:
+                manifest = {}
+        if not automatic or str(manifest.get("status") or "") != "stalled":
+            return result
+        if stalled_recoveries >= max_stalled_recoveries:
+            record_autonomy_decision(
+                source,
+                scope="goal",
+                action="fail_closed",
+                reason_code="autonomous_recovery_exhausted",
+                rationale="The bounded stalled-goal recovery count is exhausted.",
+                evidence_paths=(display_path(source / "stall.json", current.project.resolve()),),
+            )
+            return result
+
+        plan = plan_stalled_recovery(source, requested_strategy="auto")
+        target = Path(str(plan["target_run_dir"])).resolve()
+        record_autonomy_decision(
+            source,
+            scope="goal",
+            action=str(plan["strategy"]),
+            reason_code="stalled_recovery",
+            rationale=str(plan["rationale"]),
+            evidence_paths=(display_path(source / "stall.json", current.project.resolve()),),
+            metadata={"target_run_dir": str(target), "plan_id": plan["plan_id"]},
+        )
+        next_args = argparse.Namespace(**vars(current))
+        next_args.resume_run = source
+        next_args.recovery_plan = recovery_plan_file_path(source)
+        next_args.run_dir = target
+        child_stalls = manifest.get("child_stalls")
+        if isinstance(child_stalls, list) and child_stalls:
+            latest = child_stalls[-1]
+            if isinstance(latest, dict):
+                failed_stage = str(latest.get("stage_id") or "").split(".", 1)[0]
+                planned_ids = {
+                    str(item.get("stage_id") or "")
+                    for item in manifest.get("stages", [])
+                    if isinstance(item, dict)
+                }
+                if failed_stage and failed_stage in planned_ids:
+                    next_args.from_stage = failed_stage
+        current = next_args
+        stalled_recoveries += 1
+        args.completed_run_dir = target
+        print(f"parent_recovery_plan: {recovery_plan_file_path(source)}")
+        print(f"parent_recovery_strategy: {plan['strategy']}")
+        print(f"parent_recovery_target: {target}")
 
 
 def command_spec(args: argparse.Namespace) -> int:
@@ -685,6 +749,30 @@ def build_parser() -> argparse.ArgumentParser:
     run_stages.add_argument("--adaptive-rounds", type=int, default=2, help="extra functional rounds allowed when executable failure counts shrink")
     run_stages.add_argument("--root-cause-patch-rounds", type=int, default=2, help="extra stage-local root-cause patch rounds after repeated same functional failures")
     run_stages.add_argument("--final-repair-rounds", type=int, default=2, help="maximum final integration repair rounds after all stages pass but final checks fail")
+    run_stages.add_argument(
+        "--autonomous-recovery",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="let the parent runtime repair, split, or fail closed after a child stage failure",
+    )
+    run_stages.add_argument(
+        "--max-stage-recoveries",
+        type=int,
+        default=3,
+        help="maximum parent-runtime recovery decisions for one original stage",
+    )
+    run_stages.add_argument(
+        "--max-stalled-recoveries",
+        type=int,
+        default=3,
+        help="maximum evidence-bound new parent runs after persistent STALLED state",
+    )
+    run_stages.add_argument(
+        "--max-stage-writable-paths",
+        type=int,
+        default=4,
+        help="pre-split a planned stage that owns more writable paths than this limit",
+    )
     run_stages.add_argument("--max-context-chars", type=int, default=40000, help="max included file chars per stage")
     run_stages.add_argument("--document-window", type=int, default=6, help="recent run documents to pass to each stage coder")
     run_stages.add_argument("--allow-no-context", action="store_true", help="allow a stage without inferred file targets")
@@ -696,6 +784,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_stages.add_argument("--stage-test-command", action="append", default=[], help="command to run inside each stage instead of the auto py_compile stage check")
     run_stages.add_argument("--no-auto-stage-test", action="store_true", help="disable automatic per-stage py_compile checks")
     run_stages.add_argument("--test-command", action="append", default=[], help="final gate command to run after all stages pass")
+    run_stages.add_argument(
+        "--spec-verification",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="use explicit commands from SPEC.md verification sections when --test-command is omitted",
+    )
     run_stages.add_argument("--command-timeout", type=float, default=60.0, help="timeout seconds for each test command")
     run_stages.add_argument(
         "--redis-smoke",
@@ -712,11 +806,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_stages.add_argument(
         "--worktree-mode",
         choices=("off", "copy"),
-        default="off",
-        help="run each stage in an isolated temporary copy and copy allowed files back only after approval",
+        default="copy",
+        help="run each stage in an isolated temporary copy and copy allowed files back only after approval (default: copy)",
     )
     run_stages.add_argument("--stop-on-failure", action=argparse.BooleanOptionalAction, default=True, help="stop the queue when a stage fails")
     run_stages.add_argument("--dry-run", action="store_true", help="write the stage queue without executing stages")
+    run_stages.add_argument("--resume-run", type=Path, default=None, help="stalled parent run being recovered")
+    run_stages.add_argument("--recovery-plan", type=Path, default=None, help="validated recovery plan for --resume-run")
     run_stages.add_argument("--run-dir", type=Path, default=None, help="directory for staged run documents")
     run_stages.set_defaults(func=command_run_stages)
 

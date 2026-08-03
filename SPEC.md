@@ -152,11 +152,11 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] P03: progress vector が一定時間変化しない場合、goal または stage が `STALLED` に遷移する
 - [x] P04: `STALLED` 後、許可された recovery が存在する場合は `RECOVERY_PLANNED` を記録し、resume / retry / split / profile switch のいずれかへ遷移できる
 - [x] P05: 同一 failure family が閾値以上続く場合、通常 retry ではなく failure analysis または root cause recovery へ遷移する
-- [ ] P06: artifact 生成中に形式違反が確定した場合、stream guard が早期停止し、次 action を format repair または blocked に限定する
-- [ ] P07: `COMPLETED` は acceptance matrix の全条件が pass した場合だけ成立する
-- [ ] P08: `BLOCKED` は reason、supporting evidence、next required human input を持つ
+- [x] P06: artifact 生成中に形式違反が確定した場合、stream guard が早期停止し、次 action を format repair または fail-closed に限定する
+- [x] P07: `COMPLETED` は acceptance matrix の全条件が pass した場合だけ成立する
+- [x] P08: `BLOCKED` は reason、supporting evidence、next required human input を持つ
 - [x] P09: 自律 loop は goal / stage / recovery / API call / wall-clock の予算上限を持ち、上限到達時に理由付きで停止する
-- [ ] P10: 自律 mode のファイル変更は既定で隔離 worktree 上で行われ、承認済み成果物だけが元 project へ copy back される
+- [x] P10: 自律 mode のファイル変更は既定で隔離 worktree 上で行われ、承認済み成果物だけが元 project へ copy back される
 - [ ] P11: 発見命題は evidence、scope、counterexamples、generalization_rationale、regression_tests を持たない限り中核規則へ昇格されない
 - [ ] P12: Tetris、Mini SQLite、Redis など既存 benchmark 固有の失敗規則は、未知小課題に対する regression で過剰発火しないことを確認する
 - [x] EL-GA: `learning-runtime/SPEC.md` の L01〜L04（EL01〜EL06）が完了し、共通イベント契約、transactional outbox、完全性監査、既存 P01/P02/P03/P09 証拠の移行互換性を満たす
@@ -1409,3 +1409,75 @@ HtmlBrowserHarness
 - worker からの shell command 実行
 - インターネット検索、ログイン済みブラウザプロファイル、ユーザー Cookie の利用
 - Docker socket を coding agent sandbox へ公開すること
+
+## Supervisor-owned Autonomous Completion Loop (2026-08-03)
+
+### 目的
+
+強い外部エージェントが停止や失敗に気づいて再実行方法を選ぶ構造をやめ、
+内部的かつ可逆な判断を Supervisor Runtime 自身に所有させる。一方で、仕様の
+価値判断、安全上の高影響操作、外部資源、予算拡張だけは人間へ返す。
+
+### 判定命題
+
+```text
+HumanRequired(d) :=
+  SpecConflict(d)
+  or ExternalValueChoice(d)
+  or IrreversibleHighImpact(d)
+  or ExternalResourceRequired(d)
+  or BudgetExtensionRequired(d)
+
+Complete :=
+  ForAll(acceptance_item, status = pass)
+  and SafetyPass
+  and BudgetPass
+  and not STALLED
+
+AutonomyPass :=
+  ProductPass
+  and EvidenceComplete
+  and SafetyPass
+  and UnauthorizedExternalInterventions = 0
+```
+
+### 実装契約
+
+- SPEC.md の `Implementation Stages` は versioned JSON contract として検証し、
+  不正な stage ID、危険な相対 path、空の writable scope を実行前に拒否する。
+- 1 stage の writable path 数が上限を超える場合は、API call 前に機械的に分割する。
+- artifact protocol failure の次 action は concise legacy format repair とする。
+- multi-path stage の functional failure は stage split、1 path まで縮小済みなら
+  root-cause recovery とし、同じ通常 retry を繰り返さない。
+- persistent STALLED は元 run を変更せず、`recovery_plan.json` に結びついた新しい
+  parent run へ遷移する。
+- final integration repair 後は同じ acceptance check を再実行する。
+- acceptance matrix で required cover を推定できなかった条件も `unverified` blocker
+  とし、goal completion から除外しない。
+- `BLOCKED` は HumanRequired の場合だけ使い、`blocked_reason`、
+  `supporting_evidence`、`required_human_input` を必須にする。
+- autonomous `run-stages` は既定で copy-worktree を使う。
+- Supervisor の選択は `autonomy_decisions.jsonl` へ追記し、manifest に
+  unauthorized external intervention 件数を出す。
+
+### 受け入れ条件
+
+- [x] artifact protocol failure の次 attempt は format repair に限定される。
+- [x] multi-path stage failure はユーザー質問なしで分割される。
+- [x] single-path stage failure は root-cause evidence を引き継いだ新 attempt になる。
+- [x] persistent STALLED parent は evidence-bound な別 run へ再開できる。
+- [x] unmapped acceptance item が unverified のまま approved にならない。
+- [x] approval-required / safety-blocked / budget-exhausted は actionable blocked data を持つ。
+- [x] `run-stages` の既定 worktree mode は `copy` である。
+- [x] autonomy audit が unauthorized external intervention を区別して数える。
+- [x] 既存 unit/integration test 597件が成功する。
+
+### 検証
+
+- `tests.test_autonomy_runtime`: HumanRequired、stage contract、recovery selector、
+  strict completion、intervention audit の直接テスト。
+- `tests.test_stage_runner`: 自動 root-cause recovery、format repair、goal stall recovery、
+  unverified completion rejection、default isolation の結合テスト。
+- `python3 -m unittest discover -s tests`: `Ran 597 tests ... OK`。
+- 次の汎化検証は、harness を commit で固定した後の Mini Git、再固定後の
+  held-out DAG job engine の順に行う。

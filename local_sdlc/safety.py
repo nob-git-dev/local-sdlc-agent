@@ -52,7 +52,12 @@ class SafetyDecision:
 
 
 def safety_timestamp() -> str:
-    return _datetime.datetime.now(_datetime.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        _datetime.datetime.now(_datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def safety_decisions_file_path(run_dir: Path) -> Path:

@@ -248,6 +248,57 @@ python3 local_sdlc.py agent "停止原因を分析して修正" \
 分析済みでも同じ系列が続けばroot cause recoveryへ進みます。元runのcancel状態と回復予算は引き継ぎ、
 新しいrunの進捗時計だけを新しく始めます。
 
+### 仕様書からの自律段階実行
+
+`run-stages` は既定で、一時コピー上での隔離実行、工程内の形式修復・分割・原因修復、停滞した
+親runの証拠付き再開を行います。各判断は `autonomy_decisions.jsonl`、最終判定は `run.json` に残り、
+仕様の衝突、外部価値判断、不可逆な高影響操作、外部資源、予算追加だけを人間へ問い合わせます。
+
+```bash
+python3 local_sdlc.py run-stages "SPEC.mdを実装して受け入れ条件を満たす" \
+  --project /path/to/project \
+  --apply
+```
+
+工程を曖昧な推測に任せたくない場合は、`SPEC.md` の `## Implementation Stages` に次の
+機械検証可能なJSONを置きます。`S01`から連番にし、工程ごとの変更許可範囲と読み取り専用の証拠を
+分離してください。
+
+```json
+{
+  "stage_plan_schema": 1,
+  "stages": [
+    {
+      "stage_id": "S01",
+      "title": "Core model",
+      "goal": "Implement the smallest domain model required by the acceptance criteria.",
+      "writable_paths": ["src/model.py", "tests/test_model.py"],
+      "readonly_evidence_paths": ["SPEC.md", "tests/acceptance/"],
+      "test_commands": ["python3 -m unittest tests.test_model"],
+      "required_observables": ["unit tests pass"],
+      "api_profile": ["plan_stage", "generate_artifact"],
+      "max_rounds": 4
+    }
+  ]
+}
+```
+
+`## Verification Commands` に実行可能なコマンドをコードフェンスで記載すると、明示的な
+`--test-command` がない場合の最終受け入れゲートとして実行されます。安全判定を通らないコマンドは
+実行されません。受け入れ条件が一つでも未検証または不合格なら、runは完了扱いになりません。
+
+````markdown
+## Verification Commands
+
+```bash
+python3 -m unittest discover -s tests
+```
+````
+
+自律回復を意図的に無効にする場合だけ `--no-autonomous-recovery` を指定します。工程あたりの回復回数、
+停滞後の親run再開回数、分割前の最大変更path数は、それぞれ `--max-stage-recoveries`、
+`--max-stalled-recoveries`、`--max-stage-writable-paths` で制限できます。
+
 ### 検証済み経験の再利用
 
 Experience Learning Runtime は、成功・失敗の記録からいきなり規則を有効化しません。まず知識案を

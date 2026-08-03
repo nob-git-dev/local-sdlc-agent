@@ -367,6 +367,106 @@ Verified:
 P01 and P02 are complete. Later propositions must call `begin_action()` rather
 than adding an independent execution preflight.
 
+### 2026-08-03 P06-P10 Supervisor-owned Autonomy Loop
+
+The parent staged runtime now owns reversible implementation decisions that
+were previously made by an outside operator. The decision boundary is fixed as:
+
+```text
+HumanRequired(d) :=
+  SpecConflict(d)
+  or ExternalValueChoice(d)
+  or IrreversibleHighImpact(d)
+  or ExternalResourceRequired(d)
+  or BudgetExtensionRequired(d)
+
+Autonomous(d) := Internal(d) and Reversible(d) and not HumanRequired(d)
+```
+
+Task sizing, artifact-format repair, missing-context collection, repeated
+failure analysis, generated-test provenance, safe evidence collection, model
+function routing, and acceptance closure are internal decisions. They must not
+be sent to a person merely because the runtime has reached a failed attempt.
+
+The parent recovery selector is bounded and changes strategy:
+
+```text
+Recover(stage, failure, history) :=
+  format_repair       if ArtifactProtocolFailure and not Tried(format_repair)
+  split_stage         if WritablePathCount > 1 and not Tried(split_stage)
+  root_cause_recovery if a smaller split is unavailable
+  fail_closed         if RecoveryBudgetExhausted
+```
+
+Persistent `STALLED` goal runs remain immutable evidence. The CLI parent
+creates an evidence-bound recovery plan and starts a new parent run rather than
+deleting `stall.json` or reviving the old liveness clock.
+
+Completion is decided only by the goal-level gate:
+
+```text
+Complete :=
+  every acceptance item has status=pass
+  and no pending or blocked safety decision exists
+  and no budget stop exists
+  and no persistent stall exists
+```
+
+An acceptance item with no mechanically mapped coverage is still a blocker.
+The former behavior, where unmapped conditions could be ignored, is retained
+only inside stage-local repair and cannot authorize goal completion.
+
+`BLOCKED` is reserved for a real human decision boundary. Its manifest must
+contain `blocked_reason`, `supporting_evidence`, and
+`required_human_input`. Internal recovery exhaustion is `fail_closed`, not a
+manufactured request for a person to choose an implementation tactic.
+
+Autonomous staged work now defaults to isolated copy-worktree execution. A
+child run copies back only paths from an approved attempt.
+
+#### External intervention migration map
+
+The 18 operator decisions observed during the DeepSeek Mini SQLite run are
+represented as general runtime responsibilities, not SQLite-specific rules:
+
+| # | Former external decision | Runtime owner |
+|---:|---|---|
+| 1 | Start the next bounded stage | stage queue controller |
+| 2 | Reduce an oversized task | stage-plan contract and pre-splitter |
+| 3 | Split a failed multi-path stage | parent recovery selector |
+| 4 | Preserve successful earlier work | isolated copy-back and prior-path context |
+| 5 | Resume from failed attempt evidence | child run resume contract |
+| 6 | Detect malformed artifact output | stream guard and artifact lint |
+| 7 | Force a stricter artifact format | format-repair transition |
+| 8 | Avoid repeating an identical patch | failure-family/root-cause transition |
+| 9 | Add explicitly requested missing context | agent context collector |
+| 10 | Distinguish product failure from generated-test error | project-policy triage |
+| 11 | Keep fixed tests read-only | artifact path policy |
+| 12 | Reject unsafe or risky probes | Action Gate safety policy |
+| 13 | Select a safe replacement check | executable evidence planner |
+| 14 | Re-run the fixed final suite | goal acceptance gate |
+| 15 | Repair final integration failure | S99 bounded integration repair |
+| 16 | Re-run evidence after final repair | post-repair acceptance cycle |
+| 17 | Refuse completion with evidence gaps | strict completion predicate |
+| 18 | Escalate only true human decisions | HumanRequired policy and actionable BLOCKED state |
+
+Every Supervisor choice is appended to `autonomy_decisions.jsonl`. The final
+manifest includes an audit with `unauthorized_external_intervention_count`.
+The autonomy benchmark passes only when:
+
+```text
+AutonomyPass :=
+  ProductPass
+  and EvidenceComplete
+  and SafetyPass
+  and UnauthorizedExternalInterventions = 0
+```
+
+Verified by `tests.test_autonomy_runtime`, `tests.test_stage_runner`, and the
+full 597-test suite. Cross-domain validation still follows the frozen sequence:
+freeze the harness, run Mini Git, generalize only supported findings, freeze
+again, then run the held-out DAG job engine without mid-run intervention.
+
 ### 2026-08-01 P09 Persistent Runtime Budget Gate
 
 P09 models one autonomous run with the usage vector:

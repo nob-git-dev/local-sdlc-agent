@@ -19,7 +19,11 @@ from .safety import *
 from .budget import *
 from .progress_monitor import *
 from .run_state import *
+from .recovery_plan import validate_recovery_plan
+from .recovery_runtime import begin_stalled_recovery, complete_stalled_recovery
 from .stages import *
+from .stage_planning import *
+from .autonomy_runtime import *
 from .history import *
 from .action_gate import *
 from .agent_runner import command_agent
@@ -51,36 +55,76 @@ def command_run_stages(args: argparse.Namespace) -> int:
     spec = read_text_if_exists(spec_path)
     if not spec:
         raise RunnerError("SPEC.md is required before running staged agent work")
+    if not list(getattr(args, "test_command", []) or []) and bool(
+        getattr(args, "spec_verification", True)
+    ):
+        args.test_command = verification_commands_from_spec(spec)
     if args.stage_max_rounds < 1:
         raise RunnerError("--stage-max-rounds must be at least 1")
     if args.protocol_repair_rounds < 0:
         raise RunnerError("--protocol-repair-rounds must be zero or greater")
+    if args.max_stage_recoveries < 0:
+        raise RunnerError("--max-stage-recoveries must be zero or greater")
+    if args.max_stalled_recoveries < 0:
+        raise RunnerError("--max-stalled-recoveries must be zero or greater")
+    if args.max_stage_writable_paths < 1:
+        raise RunnerError("--max-stage-writable-paths must be at least 1")
 
     stored_regression_memories = load_regression_memories(project)
     planned = apply_regression_memories_to_stages(
         synthesize_stage_queue(spec, listed_project_files(project)),
         stored_regression_memories,
     )
-    stages = selected_stage_queue(planned, args.from_stage, args.to_stage)
-    selected_ids = {stage.stage_id for stage in stages}
+    selected = selected_stage_queue(planned, args.from_stage, args.to_stage)
+    stages = split_oversized_stage_queue(
+        selected,
+        max_writable_paths=args.max_stage_writable_paths,
+    )
+    selected_ids = {stage.stage_id for stage in selected}
     prior_context_paths: list[str] = []
     for stage in planned:
         if stage.stage_id in selected_ids:
             break
         prior_context_paths.extend(stage_required_paths(stage))
-    run_dir = make_run_dir(project, args.run_dir)
+    recovery_source: Path | None = None
+    recovery_document: dict[str, object] = {}
+    if getattr(args, "resume_run", None) is not None:
+        recovery_source = Path(args.resume_run).resolve()
+        raw_plan = getattr(args, "recovery_plan", None)
+        if raw_plan is None:
+            raise RunnerError("--resume-run requires --recovery-plan")
+        recovery_document = validate_recovery_plan(recovery_source, Path(raw_plan))
+        planned_target = Path(str(recovery_document["target_run_dir"])).resolve()
+        if args.run_dir is not None and resolve_run_dir(project, args.run_dir).resolve() != planned_target:
+            raise RunnerError("--run-dir does not match the parent recovery plan target")
+        run_dir = make_run_dir(project, planned_target)
+    else:
+        if getattr(args, "recovery_plan", None) is not None:
+            raise RunnerError("--recovery-plan requires --resume-run")
+        run_dir = make_run_dir(project, args.run_dir)
+    args.completed_run_dir = run_dir
     initialize_budget(run_dir, budget_limits_from_args(args), scope_kind="goal")
     initialize_progress_monitor(
         run_dir,
         progress_policy_from_args(args),
         scope_kind="goal",
     )
-    begin_action(
-        run_dir,
-        "run_stages_setup",
-        action_type="orchestration",
-        risk_class="read_only",
-    )
+    if recovery_source is not None:
+        begin_stalled_recovery(
+            recovery_source,
+            run_dir,
+            recovery_document,
+            cancel_dirs=(recovery_source,),
+            budget_dirs=(recovery_source,),
+            progress_dirs=(),
+        )
+    else:
+        begin_action(
+            run_dir,
+            "run_stages_setup",
+            action_type="orchestration",
+            risk_class="read_only",
+        )
     knowledge_binding = bind_learning_snapshot_from_args(args, project, run_dir)
     written: list[Path] = [knowledge_binding_path(run_dir)]
     completed: list[StageRunSummary] = []
@@ -90,6 +134,31 @@ def command_run_stages(args: argparse.Namespace) -> int:
     child_blocked_safety_decisions: list[dict[str, object]] = []
     child_budget_stops: list[dict[str, object]] = []
     child_stalls: list[dict[str, object]] = []
+    runtime_stages: list[StageWorkItem] = list(stages)
+    stage_recovery_counts: dict[str, int] = {}
+    stage_recovery_actions: dict[str, list[str]] = {}
+
+    for original in selected:
+        slices = [
+            stage
+            for stage in stages
+            if stage.stage_id == original.stage_id
+            or stage.stage_id.startswith(original.stage_id + ".")
+        ]
+        if len(slices) <= 1:
+            continue
+        record_autonomy_decision(
+            run_dir,
+            scope=f"stage:{original.stage_id}",
+            action="split_stage",
+            reason_code="stage_split",
+            rationale=(
+                f"The planned stage owns more than {args.max_stage_writable_paths} writable paths; "
+                "the runtime split it before code generation."
+            ),
+            evidence_paths=("00-stage-queue.md",),
+            metadata={"child_stage_ids": [stage.stage_id for stage in slices]},
+        )
 
     def run_child_agent(
         child_args: argparse.Namespace,
@@ -141,13 +210,29 @@ def command_run_stages(args: argparse.Namespace) -> int:
         for path in prior_context_paths
         if (project / path).is_file()
     )
-    for stage in stages:
+    execution_queue: list[tuple[StageWorkItem, Path | None, StageRecoveryDecision | None]] = [
+        (stage, None, None) for stage in stages
+    ]
+    stage_attempts: dict[str, int] = {}
+    while execution_queue:
+        stage, resume_stage_dir, recovery_decision = execution_queue.pop(0)
+        root_stage_id = stage.stage_id.split(".", 1)[0]
+        stage_attempts[stage.stage_id] = stage_attempts.get(stage.stage_id, 0) + 1
+        attempt_number = stage_attempts[stage.stage_id]
         try:
             begin_action(
                 run_dir,
-                f"stage_{stage.stage_id}_start",
-                action_type="stage_start",
+                f"stage_{stage.stage_id}_attempt_{attempt_number}_start",
+                action_type="recovery" if recovery_decision else "stage_start",
                 risk_class="read_only",
+                metadata=(
+                    {
+                        "recovery_action": recovery_decision.action,
+                        "recovery_reason_code": recovery_decision.reason_code,
+                    }
+                    if recovery_decision
+                    else None
+                ),
             )
         except BudgetExceeded:
             final_status = "budget_exhausted"
@@ -155,15 +240,51 @@ def command_run_stages(args: argparse.Namespace) -> int:
         except ProgressStalled:
             final_status = "stalled"
             break
-        stage_dir = run_dir / f"{stage.stage_id.lower()}-{slugify(stage.title)}"
+        stage_dir_name = f"{stage.stage_id.lower()}-{slugify(stage.title)}"
+        if attempt_number > 1:
+            stage_dir_name += f"-recovery-{attempt_number - 1:02d}"
+        stage_dir = run_dir / stage_dir_name
         inherit_learning_binding(run_dir, stage_dir)
         stage_args = build_stage_agent_args(args, stage, stage_dir, completed, prior_changed_paths)
         stage_args.control_dir = [run_dir]
-        print(f"stage: {stage.stage_id} {stage.title}")
+        if resume_stage_dir is not None and recovery_decision is not None:
+            stage_args.resume = resume_stage_dir
+            source_manifest_path = resume_stage_dir / "run.json"
+            if not source_manifest_path.exists():
+                source_manifest_path = resume_stage_dir / "run.partial.json"
+            source_manifest: dict[str, object] = {}
+            if source_manifest_path.exists():
+                try:
+                    parsed_source = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+                    if isinstance(parsed_source, dict):
+                        source_manifest = parsed_source
+                except json.JSONDecodeError:
+                    source_manifest = {}
+            source_worktree = str(source_manifest.get("worktree_path") or "")
+            stage_args.resume_worktree = bool(
+                args.worktree_mode == "copy"
+                and source_worktree
+                and Path(source_worktree).is_dir()
+            )
+            stage_args.skip_pm = True
+            stage_args.small_patch = bool(stage_args.small_patch or recovery_decision.small_patch)
+            if recovery_decision.artifact_format:
+                stage_args.artifact_format = recovery_decision.artifact_format
+            stage_args.brief += (
+                "\n\n## Supervisor Recovery Contract\n"
+                f"- action: {recovery_decision.action}\n"
+                f"- reason: {recovery_decision.rationale}\n"
+                "- ordinary unchanged retry is forbidden\n"
+                "- use the resumed executable evidence and produce one smaller falsifiable change"
+            )
+        print(f"stage: {stage.stage_id} {stage.title} (attempt {attempt_number})")
         exit_code, stage_pending, stage_blocked, stage_budget_stop, stage_stall = run_child_agent(stage_args, stage_dir)
         summary = read_stage_agent_manifest(stage, stage_dir, exit_code, project)
         completed.append(summary)
-        prior_changed_paths = unique_ordered([*prior_changed_paths, *summary.changed_paths, *summary.required_paths])
+        if exit_code == 0:
+            prior_changed_paths = unique_ordered(
+                [*prior_changed_paths, *summary.changed_paths, *summary.required_paths]
+            )
         if stage_pending:
             child_pending_safety_decisions.extend(
                 {**item, "run_dir": str(stage_dir.resolve()), "stage_id": stage.stage_id}
@@ -183,7 +304,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
                 {**stage_stall, "run_dir": str(stage_dir.resolve()), "stage_id": stage.stage_id}
             )
 
-        manifest = stage_run_manifest(args.brief, stages, completed, "running", args.test_command or [], project)
+        manifest = stage_run_manifest(args.brief, runtime_stages, completed, "running", args.test_command or [], project)
         manifest["model_profile"] = llm_model_profile_manifest(args)
         manifest["documents"] = [display_path(path, project) for path in written]
         manifest["pending_safety_decisions"] = list(child_pending_safety_decisions)
@@ -207,20 +328,62 @@ def command_run_stages(args: argparse.Namespace) -> int:
         if stage_pending:
             final_status = "approval_required"
             break
+        if (
+            exit_code == 0
+            and args.autonomous_recovery
+            and stage_recovery_counts.get(root_stage_id, 0) > 0
+        ):
+            final_status = "approved"
         if exit_code != 0:
             final_status = "stage_failed"
             if recovery_plan is None:
-                recovery_plan = stage_failure_recovery_plan(stage, summary, stages, completed)
+                recovery_plan = stage_failure_recovery_plan(stage, summary, runtime_stages, completed)
                 recovery_path = write_run_document(
                     run_dir,
                     "01-stage-recovery-plan.json",
                     json.dumps(recovery_plan, ensure_ascii=False, indent=2),
                 )
                 written.append(recovery_path)
+            if args.autonomous_recovery:
+                previous_actions = tuple(stage_recovery_actions.get(root_stage_id, []))
+                decision = decide_stage_recovery(
+                    stage,
+                    summary,
+                    recovery_count=stage_recovery_counts.get(root_stage_id, 0),
+                    max_recoveries=args.max_stage_recoveries,
+                    previous_actions=previous_actions,
+                )
+                record_autonomy_decision(
+                    run_dir,
+                    scope=f"stage:{stage.stage_id}",
+                    action=decision.action,
+                    reason_code=decision.reason_code,
+                    rationale=decision.rationale,
+                    evidence_paths=(
+                        display_path(stage_dir / "run.json", project),
+                        display_path(stage_dir / "run.partial.json", project),
+                    ),
+                    metadata=stage_recovery_decision_manifest(decision),
+                )
+                if decision.action == "fail_closed":
+                    break
+                stage_recovery_counts[root_stage_id] = stage_recovery_counts.get(root_stage_id, 0) + 1
+                stage_recovery_actions.setdefault(root_stage_id, []).append(decision.action)
+                if decision.action == "split_stage":
+                    children = split_stage_work_item(stage, parts=2)
+                    if len(children) == 1:
+                        final_status = "stage_failed"
+                        break
+                    runtime_stages.extend(children)
+                    execution_queue[0:0] = [(child, None, None) for child in children]
+                    continue
+                execution_queue.insert(0, (stage, stage_dir, decision))
+                continue
             if args.stop_on_failure:
                 break
 
-    if final_status == "approved" and args.apply:
+    def run_final_acceptance_checks(*, cycle: int, filename_prefix: str, action_prefix: str) -> bool:
+        nonlocal final_status
         final_ok = True
         for index, command in enumerate(args.test_command or [], start=1):
             try:
@@ -229,7 +392,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
                     command,
                     args.command_timeout,
                     run_dir,
-                    action=f"final_command_{index}",
+                    action=f"{action_prefix}_command_{index}",
                 )
             except BudgetExceeded:
                 final_status = "budget_exhausted"
@@ -239,12 +402,14 @@ def command_run_stages(args: argparse.Namespace) -> int:
                 final_status = "stalled"
                 final_ok = False
                 break
-            path = write_run_document(run_dir, f"99-final-command-{index:02d}.md", doc)
+            path = write_run_document(run_dir, f"{filename_prefix}-command-{index:02d}.md", doc)
             written.append(path)
             final_checks.append(
                 {
                     "kind": "command",
                     "name": f"Final command {index}",
+                    "command": command,
+                    "cycle": cycle,
                     "status": "pass" if ok else "fail",
                     "document": display_path(path, project),
                 }
@@ -266,7 +431,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
             try:
                 begin_action(
                     run_dir,
-                    "final_required_path_checks",
+                    f"{action_prefix}_required_path_checks",
                     action_type="harness",
                     risk_class="read_only",
                 )
@@ -277,13 +442,18 @@ def command_run_stages(args: argparse.Namespace) -> int:
                 final_status = "stalled"
                 final_ok = False
         if final_status not in {"approval_required", "safety_blocked", "budget_exhausted", "stalled"}:
-            for index, (doc, ok) in enumerate(run_required_path_checks(project, final_required_paths), start=1):
-                path = write_run_document(run_dir, f"99-final-required-path-{index:02d}.md", doc)
+            for index, ((doc, ok), required_path) in enumerate(
+                zip(run_required_path_checks(project, final_required_paths), final_required_paths),
+                start=1,
+            ):
+                path = write_run_document(run_dir, f"{filename_prefix}-required-path-{index:02d}.md", doc)
                 written.append(path)
                 final_checks.append(
                     {
                         "kind": "required_path",
                         "name": f"Final required path {index}",
+                        "path": required_path,
+                        "cycle": cycle,
                         "status": "pass" if ok else "fail",
                         "document": display_path(path, project),
                     }
@@ -291,6 +461,14 @@ def command_run_stages(args: argparse.Namespace) -> int:
                 final_ok = final_ok and ok
         if not final_ok and final_status not in {"approval_required", "safety_blocked", "budget_exhausted", "stalled"}:
             final_status = "final_check_failed"
+        return final_ok
+
+    if final_status == "approved" and args.apply:
+        run_final_acceptance_checks(
+            cycle=1,
+            filename_prefix="99-final",
+            action_prefix="final",
+        )
 
     integration_repair: StageRunSummary | None = None
     if final_status == "final_check_failed" and args.apply and args.final_repair_rounds > 0:
@@ -346,10 +524,146 @@ def command_run_stages(args: argparse.Namespace) -> int:
                 final_status = "approval_required"
             elif exit_code == 0:
                 final_status = "approved"
+                run_final_acceptance_checks(
+                    cycle=2,
+                    filename_prefix="99-post-repair",
+                    action_prefix="post_repair",
+                )
 
-    manifest = stage_run_manifest(args.brief, stages, completed, final_status, args.test_command or [], project, recovery_plan)
+    final_acceptance_criteria = parse_acceptance_criteria(spec)
+    latest_check_cycle = max(
+        (int(item.get("cycle", 0) or 0) for item in final_checks),
+        default=0,
+    )
+    active_final_checks = [
+        item
+        for item in final_checks
+        if int(item.get("cycle", 0) or 0) == latest_check_cycle
+    ]
+    final_evidence: list[dict[str, object]] = []
+    for index, check in enumerate(active_final_checks, start=1):
+        evidence_item: dict[str, object] = {
+            "id": f"FE{index:03d}",
+            "kind": check.get("kind"),
+            "name": check.get("name"),
+            "status": check.get("status"),
+            "command": check.get("command") or check.get("name"),
+            "document": check.get("document"),
+        }
+        if check.get("kind") == "command":
+            evidence_item["covers"] = ["external_test_suite"]
+        elif check.get("kind") == "required_path" and check.get("path"):
+            evidence_item["covers"] = [f"required_path:{check['path']}"]
+        final_evidence.append(evidence_item)
+    final_acceptance_matrix = build_acceptance_matrix(
+        final_acceptance_criteria,
+        final_evidence,
+    )
+    completion_gate = evaluate_completion_gate(
+        final_acceptance_matrix,
+        pending_safety=[
+            *pending_safety_decisions(run_dir),
+            *child_pending_safety_decisions,
+        ],
+        blocked_safety=[
+            *blocked_safety_decisions(run_dir),
+            *child_blocked_safety_decisions,
+        ],
+        budget_stop=read_budget_stop(run_dir) or (child_budget_stops[-1] if child_budget_stops else None),
+        stall=read_stall_state(run_dir) or (child_stalls[-1] if child_stalls else None),
+    )
+    if final_status in {"approved", "final_check_failed"}:
+        final_status = str(completion_gate["status"])
+        record_autonomy_decision(
+            run_dir,
+            scope="goal",
+            action="complete" if final_status == "approved" else "withhold_completion",
+            reason_code=(
+                "acceptance_evidence_complete"
+                if final_status == "approved"
+                else "acceptance_evidence_incomplete"
+            ),
+            rationale=(
+                "Every declared acceptance item has passing executable evidence."
+                if final_status == "approved"
+                else "At least one declared acceptance item lacks passing executable evidence."
+            ),
+            evidence_paths=tuple(
+                str(item.get("document"))
+                for item in active_final_checks
+                if item.get("document")
+            ),
+            metadata={"completion_gate": completion_gate},
+        )
+    else:
+        completion_gate = {
+            **completion_gate,
+            "status": final_status,
+            "completed": False,
+            "not_evaluated_reason": "an earlier runtime gate prevented goal completion",
+        }
+
+    blocked_state: dict[str, object] | None = None
+    if final_status in {"approval_required", "safety_blocked", "budget_exhausted"}:
+        if final_status == "budget_exhausted":
+            blocked_reason_code = "budget_extension_required"
+            blocked_summary = "The immutable autonomous action budget has been exhausted."
+            required_input = (
+                "Review the budget evidence and explicitly authorize a new run with a larger budget, "
+                "or reduce the requested scope."
+            )
+            blocked_evidence = (display_path(run_dir / "budget_stop.json", project),)
+        else:
+            blocked_reason_code = "irreversible_high_impact"
+            blocked_summary = (
+                "The next action is outside the autonomous safety authority."
+                if final_status == "approval_required"
+                else "The requested action is blocked by the fixed safety policy."
+            )
+            if final_status == "approval_required":
+                pending = [
+                    *pending_safety_decisions(run_dir),
+                    *child_pending_safety_decisions,
+                ]
+                decision_id = str(pending[-1].get("decision_id") or "") if pending else ""
+                required_input = (
+                    f"Approve safety decision {decision_id} through the CLI or Web approval control."
+                    if decision_id
+                    else "Review and explicitly approve the pending safety decision."
+                )
+            else:
+                required_input = (
+                    "Change the requested operation so it no longer requires a blocked action; "
+                    "blocked decisions cannot be approved."
+                )
+            blocked_evidence = (display_path(safety_decisions_file_path(run_dir), project),)
+        blocked_state = actionable_blocked_state(
+            reason_code=blocked_reason_code,
+            summary=blocked_summary,
+            evidence_paths=blocked_evidence,
+            required_human_input=required_input,
+        )
+        record_human_decision_request(
+            run_dir,
+            scope="goal",
+            action="resume_after_human_decision",
+            reason_code=blocked_reason_code,
+            rationale=blocked_summary,
+            evidence_paths=blocked_evidence,
+            required_human_input=required_input,
+        )
+
+    manifest = stage_run_manifest(args.brief, runtime_stages, completed, final_status, args.test_command or [], project, recovery_plan)
     manifest["model_profile"] = llm_model_profile_manifest(args)
     manifest["final_checks"] = final_checks
+    manifest["final_evidence"] = final_evidence
+    manifest["acceptance_matrix"] = final_acceptance_matrix
+    manifest["completion_gate"] = completion_gate
+    if blocked_state:
+        manifest["blocked_state"] = blocked_state
+        manifest["blocked_reason"] = blocked_state["blocked_reason"]
+        manifest["supporting_evidence"] = blocked_state["supporting_evidence"]
+        manifest["required_human_input"] = blocked_state["required_human_input"]
     if integration_repair:
         manifest["integration_repair"] = {
             "stage_id": integration_repair.stage_id,
@@ -401,13 +715,30 @@ def command_run_stages(args: argparse.Namespace) -> int:
     manifest["progress"] = progress_status(run_dir, evaluate=False)
     manifest["child_stalls"] = child_stalls
     manifest["action_gate_audit"] = action_gate_audit(run_dir)
+    manifest["autonomy"] = autonomy_audit(run_dir)
     manifest["knowledge_snapshot"] = knowledge_binding_manifest(knowledge_binding)
     manifest_path = write_run_document(run_dir, "run.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     written.append(manifest_path)
+    if recovery_source is not None:
+        complete_stalled_recovery(
+            recovery_source,
+            run_dir,
+            outcome="completed" if final_status == "approved" else "failed",
+            changed_paths=unique_ordered(
+                path
+                for item in completed
+                if item.exit_code == 0
+                for path in item.changed_paths
+            ),
+            change_isolation="isolated" if args.worktree_mode == "copy" else "unisolated",
+        )
 
     print(f"run_dir: {run_dir}")
     print(f"final_status: {final_status}")
-    print(f"completed_stages: {len(completed)}/{len(stages)}")
+    approved_stage_ids = {item.stage_id for item in completed if item.exit_code == 0}
+    print(f"approved_stage_runs: {len(approved_stage_ids)}")
+    print(f"execution_attempts: {len(completed)}")
+    print(f"planned_stages: {len(stages)}")
     print(f"api_calls: {sum(item.api_calls for item in completed)}")
     for path in written:
         print(f"wrote: {path}")

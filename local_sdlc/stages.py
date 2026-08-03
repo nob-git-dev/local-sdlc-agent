@@ -29,6 +29,7 @@ from .requirements import (
     acceptance_required_covers as _acceptance_required_covers,
     parse_acceptance_criteria as _parse_acceptance_criteria,
 )
+from .stage_planning import stage_plan_from_spec
 from .utils import display_path, unique_ordered
 from .workspace import listed_project_files, normalize_new_files, read_text_if_exists, resolve_spec_path
 
@@ -37,6 +38,9 @@ def parse_acceptance_criteria(spec: str) -> list[dict[str, str]]:
     return _parse_acceptance_criteria(spec)
 
 def synthesize_stage_queue(spec: str, project_files: Sequence[str] = ()) -> list[StageWorkItem]:
+    contracted = stage_plan_from_spec(spec)
+    if contracted is not None:
+        return contracted
     text = spec.lower()
     stages: list[StageWorkItem] = []
 
@@ -218,6 +222,17 @@ def stage_brief(base_brief: str, stage: StageWorkItem, completed: Sequence[Stage
     ).strip()
 
 def stage_test_paths(stage: StageWorkItem) -> tuple[str, ...]:
+    if (
+        stage.writable_paths
+        or stage.readonly_evidence_paths
+        or stage.test_commands
+        or stage.required_observables
+    ):
+        return tuple(
+            path
+            for path in stage.suggested_paths
+            if path.startswith("tests/")
+        )
     title = stage.title.lower()
     if "core errors" in title:
         return ("tests/test_core.py",)
@@ -603,8 +618,12 @@ def stage_run_manifest(
         "brief": brief,
         "command": "run-stages",
         "status": final_status,
+        "final_verdict": final_status,
         "stage_count": len(stages),
-        "completed_stage_count": len(completed),
+        "completed_stage_count": len(
+            {item.stage_id for item in completed if item.exit_code == 0}
+        ),
+        "execution_attempt_count": len(completed),
         "api_calls": sum(item.api_calls for item in completed),
         "final_test_commands": list(test_commands),
         "stages": [stage_work_item_manifest(stage) for stage in stages],
