@@ -1468,6 +1468,7 @@ AutonomyPass :=
 - `BEGIN_SEARCH_REPLACE` の次行が単一の安全な相対 path で、その直後が `<<<<<<< SEARCH` の場合だけ、path header を機械的に結合する。SEARCH/REPLACE 本文を推測せず、補正後も通常の writable/readonly path policy を必ず適用する。
 - artifact transport failure 後も required writable path が未作成なら、既存 file 用 search/replace へ送らず、runner が選んだ一つの authorized missing path に限定した JSON `replace_file` recovery を使う。
 - stage split では export surface、package entry point、manifest、README 等の integration boundary を含む slice を最後に並べ、親 stage の joint test command をその slice で実行する。compile-only で integration boundary を完了扱いにしない。
+- `/v1/models` の connection reset 等は一度で API 死亡と判定せず、固定回数だけ短い間隔で再確認する。各再試行と回復を manifest に残し、全 probe 失敗時だけ明示的な unreachable として停止する。
 - candidate regression の rollback は active strategy だけを更新し、既存の mechanical evidence、forbidden hypothesis、owner-file focus を上書き消去してはならない。
 - candidate regression の failure score は初期 precheck と各 repair round で同一の verification vector から算出する。required-path、smoke、configured test command は両方へ含め、他の check から導出される Acceptance Evidence Gate 自体は二重計上しない。
 - 欠落 test harness の生成で raw failure score が増えた候補は、copy-worktree、required path の真の減少、変更済み test path の新規充足がすべて成立する場合だけ暫定保持する。元 project への copy back は全 gate 合格後に限る。
@@ -1505,6 +1506,7 @@ AutonomyPass :=
 - [x] 次行 path 形式の search/replace header は正規 SEARCH marker が続く場合だけ補正され、曖昧な本文は拒否される。
 - [x] protocol failure 中の authorized missing file は、一つの path に固定した JSON file artifact で作成される。
 - [x] stage split 後の integration boundary slice は最後に実行され、親 stage の joint command を継承する。
+- [x] 一時的な models probe の connection reset は有限回の再試行で回復でき、連続失敗は無限再試行せず明示的に停止する。
 - [x] candidate regression 後も以前の mechanical API evidence と owner-file focus が manifest に残る。
 - [x] initial precheck と repair round は同じ verification vector で比較され、derived acceptance gate は failure score に二重計上されない。
 - [x] 隔離環境で欠落 test harness を実行可能にした候補は `candidate_provisional_progress` として保持され、全 gate 合格前には copy back されない。
@@ -1528,7 +1530,7 @@ AutonomyPass :=
 - [x] approval-required / safety-blocked / budget-exhausted は actionable blocked data を持つ。
 - [x] `run-stages` の既定 worktree mode は `copy` である。
 - [x] autonomy audit が unauthorized external intervention を区別して数える。
-- [x] unit/integration test 677件が成功する。
+- [x] unit/integration test 679件が成功する。
 
 ### 検証
 
@@ -1537,7 +1539,7 @@ AutonomyPass :=
 - `tests.test_stage_runner`: 自動 root-cause recovery、format repair、goal stall recovery、
   unverified completion rejection、default isolation の結合テスト。
 - `tests.test_local_sdlc.LocalSDLCTest.test_patch_planner_escalation_routes_only_generated_test_to_independent_triage`: 製品修正、zero-effect拒否、root cause、独立triage、生成テスト限定修正、合格までの結合経路が成功。
-- `python3 -m unittest discover -s tests`: `Ran 677 tests ... OK`。
+- `python3 -m unittest discover -s tests`: `Ran 679 tests ... OK`。
 - 次の汎化検証は、harness を commit で固定した後の Mini Git、再固定後の
   held-out DAG job engine の順に行う。
 

@@ -231,6 +231,69 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual(client.generation_request_count, 1)
         self.assertEqual(client.completion_recovery_records, [])
 
+    def test_request_wraps_connection_reset_as_expected_runner_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self._config(Path(temp), "deepseek-v4-flash-agent")
+
+        client = LocalLLMClient(config)
+        with mock.patch(
+            "local_sdlc.llm_client.urllib.request.urlopen",
+            side_effect=ConnectionResetError(104, "connection reset by peer"),
+        ):
+            with self.assertRaisesRegex(RunnerError, "connection interrupted"):
+                client._request("GET", "/models", timeout=0.1)
+
+    def test_health_check_retries_transient_failure_and_fails_boundedly(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self._config(Path(temp), "deepseek-v4-flash-agent")
+
+        client = LocalLLMClient(config)
+        responses = iter(
+            [
+                RunnerError("reset once"),
+                {"data": [{"id": DEEPSEEK_MODEL}]},
+            ]
+        )
+
+        def transient_request(method, path, payload=None, timeout=None):
+            response = next(responses)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        client._request = transient_request
+        alive, detail, models = client.health_check(attempts=3, retry_delay_seconds=0)
+
+        self.assertTrue(alive)
+        self.assertIn(DEEPSEEK_MODEL, detail)
+        self.assertEqual(models, [DEEPSEEK_MODEL])
+        self.assertEqual(
+            [record["action"] for record in client.health_recovery_records],
+            ["retry_models_probe", "models_probe_recovered"],
+        )
+
+        failed_client = LocalLLMClient(config)
+        calls = []
+
+        def failed_request(method, path, payload=None, timeout=None):
+            calls.append(path)
+            raise RunnerError("still unavailable")
+
+        failed_client._request = failed_request
+        alive, detail, models = failed_client.health_check(
+            attempts=3,
+            retry_delay_seconds=0,
+        )
+
+        self.assertFalse(alive)
+        self.assertEqual(models, [])
+        self.assertIn("after 3 attempts", detail)
+        self.assertEqual(calls, ["/models", "/models", "/models"])
+        self.assertEqual(
+            failed_client.health_recovery_records[-1]["action"],
+            "models_probe_failed",
+        )
+
     def test_qwen_profile_remains_unchanged(self):
         with tempfile.TemporaryDirectory() as temp:
             config = self._config(Path(temp), "qwen-agent")

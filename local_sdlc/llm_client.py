@@ -22,6 +22,8 @@ from .models import *
 from .utils import compact_preview, strip_markdown_fence
 
 MAX_REASONING_RECORD_CHARS = 20000
+HEALTH_CHECK_ATTEMPTS = 3
+HEALTH_RETRY_DELAY_SECONDS = 0.25
 
 
 def profiles_for_served_models(served_models: list[str]) -> list[str]:
@@ -75,6 +77,7 @@ class LocalLLMClient:
         self.config = config
         self.reasoning_records: list[dict[str, object]] = []
         self.completion_recovery_records: list[dict[str, object]] = []
+        self.health_recovery_records: list[dict[str, object]] = []
         self.generation_request_count = 0
         self.last_completion_attempts = 0
         self.runtime_timeout_limit: float | None = None
@@ -231,6 +234,8 @@ class LocalLLMClient:
                 self._notify_runtime_timeout()
                 raise LLMTimeoutError(path, request_timeout) from exc
             raise RunnerError(f"LLM API connection failed: {exc.reason}") from exc
+        except ConnectionError as exc:
+            raise RunnerError(f"LLM API connection interrupted during {path}: {exc}") from exc
         finally:
             if use_wall_clock_alarm:
                 signal.setitimer(signal.ITIMER_REAL, 0)
@@ -238,15 +243,62 @@ class LocalLLMClient:
                     signal.signal(signal.SIGALRM, old_handler)
 
     def models(self, timeout: float | None = None) -> list[str]:
-        request_timeout = self.config.health_timeout if timeout is None else timeout
-        result = self._request("GET", "/models", timeout=request_timeout)
-        return [item.get("id", "") for item in result.get("data", []) if item.get("id")]
+        alive, status, models = self.health_check(timeout=timeout)
+        if not alive:
+            raise RunnerError(status)
+        return models
 
-    def health_check(self) -> tuple[bool, str, list[str]]:
-        try:
-            result = self._request("GET", "/models", timeout=self.config.health_timeout)
-        except RunnerError as exc:
-            return False, f"unreachable (/v1/models failed: {exc})", []
+    def health_check(
+        self,
+        *,
+        attempts: int = HEALTH_CHECK_ATTEMPTS,
+        retry_delay_seconds: float = HEALTH_RETRY_DELAY_SECONDS,
+        timeout: float | None = None,
+    ) -> tuple[bool, str, list[str]]:
+        bounded_attempts = max(1, int(attempts))
+        request_timeout = self.config.health_timeout if timeout is None else float(timeout)
+        result: dict | None = None
+        errors: list[str] = []
+        for attempt in range(1, bounded_attempts + 1):
+            try:
+                result = self._request("GET", "/models", timeout=request_timeout)
+                if errors:
+                    self.health_recovery_records.append(
+                        {
+                            "endpoint": "/v1/models",
+                            "attempt": attempt,
+                            "max_attempts": bounded_attempts,
+                            "action": "models_probe_recovered",
+                            "prior_errors": list(errors),
+                        }
+                    )
+                break
+            except RunnerError as exc:
+                errors.append(str(exc))
+                action = (
+                    "retry_models_probe"
+                    if attempt < bounded_attempts
+                    else "models_probe_failed"
+                )
+                self.health_recovery_records.append(
+                    {
+                        "endpoint": "/v1/models",
+                        "attempt": attempt,
+                        "max_attempts": bounded_attempts,
+                        "action": action,
+                        "error": str(exc),
+                    }
+                )
+                if attempt < bounded_attempts and retry_delay_seconds > 0:
+                    time.sleep(float(retry_delay_seconds) * attempt)
+
+        if result is None:
+            latest = errors[-1] if errors else "unknown health probe failure"
+            return (
+                False,
+                f"unreachable (/v1/models failed after {bounded_attempts} attempts: {latest})",
+                [],
+            )
 
         models = [item.get("id", "") for item in result.get("data", []) if item.get("id")]
         if models:
@@ -1085,6 +1137,10 @@ def llm_reasoning_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
 
 def llm_completion_recovery_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
     return list(getattr(client, "completion_recovery_records", []))
+
+
+def llm_health_recovery_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
+    return list(getattr(client, "health_recovery_records", []))
 
 
 def llm_generation_request_count(client: LocalLLMClient) -> int:
