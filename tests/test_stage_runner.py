@@ -11,6 +11,49 @@ from tests.helpers import LocalSDLCTestCase
 
 
 class StageRunnerTests(LocalSDLCTestCase):
+    def test_stage_summary_routes_on_terminal_failure_and_executable_focus(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = root / "run"
+            run_dir.mkdir()
+            stage = self.local_sdlc.StageWorkItem(
+                stage_id="S02.2",
+                title="executor slice",
+                goal="implement executor",
+                suggested_paths=("dagrunner/executor.py", "tests/test_executor.py"),
+                test_focus=("executor tests pass",),
+                writable_paths=("dagrunner/executor.py", "tests/test_executor.py"),
+                repair_scope_paths=(
+                    "dagrunner/__init__.py",
+                    "dagrunner/executor.py",
+                    "tests/test_executor.py",
+                ),
+            )
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "final_verdict": "patch_failed",
+                        "final_failure_type": "format_repair_markdown_fence",
+                        "failure_summary": {"failure_type": "missing_test_harness"},
+                        "candidate_regressions": [
+                            {
+                                "failure_signature": (
+                                    "ImportError: cannot import name 'Engine' from 'dagrunner' "
+                                    "(<project>/dagrunner/__init__.py)"
+                                )
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = self.local_sdlc.read_stage_agent_manifest(stage, run_dir, 1, root)
+
+        self.assertEqual(summary.failure_summary["failure_type"], "format_repair_markdown_fence")
+        self.assertEqual(summary.failure_summary["acceptance_failure_type"], "missing_test_harness")
+        self.assertIn("dagrunner/__init__.py", summary.repair_focus_paths)
+
     def test_run_stages_defaults_to_isolated_autonomous_recovery(self):
         args = self.local_sdlc.build_parser().parse_args(["run-stages", "task"])
 

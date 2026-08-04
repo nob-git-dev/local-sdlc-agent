@@ -1293,6 +1293,11 @@ def output_has_valid_artifact_candidate(text: str) -> bool:
         return True
     if fenced_path_file_artifacts(text, ArtifactPathPolicy(allowed_paths=(), allow_extra_new_files=True)):
         return True
+    if malformed_search_replace_full_file_artifacts(
+        text,
+        ArtifactPathPolicy(allowed_paths=(), allow_extra_new_files=True),
+    ):
+        return True
     return False
 
 def recoverable_fenced_unified_diff(text: str) -> bool:
@@ -1348,6 +1353,12 @@ def format_repair_format_issues(text: str) -> list[SemanticRepairFormatIssue]:
         ArtifactPathPolicy(allowed_paths=(), allow_extra_new_files=True),
     )
     fenced_file_artifacts = fenced_path_file_artifacts(text, ArtifactPathPolicy(allowed_paths=(), allow_extra_new_files=True))
+    recoverable_malformed_full_file = bool(
+        malformed_search_replace_full_file_artifacts(
+            text,
+            ArtifactPathPolicy(allowed_paths=(), allow_extra_new_files=True),
+        )
+    )
     recoverable_legacy_file_artifacts = False
     if "```" in text and legacy_file_begin_count(text):
         try:
@@ -1364,6 +1375,7 @@ def format_repair_format_issues(text: str) -> list[SemanticRepairFormatIssue]:
         and not fenced_file_artifacts
         and not loose_function_replacements
         and not fenced_search_replace_artifacts
+        and not recoverable_malformed_full_file
     ):
         issues.append(
             SemanticRepairFormatIssue(

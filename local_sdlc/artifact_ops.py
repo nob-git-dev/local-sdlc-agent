@@ -518,10 +518,24 @@ def merge_artifact_policy_paths(
 def freeze_test_paths_as_readonly(
     allowed_paths: Sequence[str],
     readonly_paths: Sequence[str],
+    existing_paths: Sequence[str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Move tests from writable targets to readonly evidence targets."""
-    frozen = [path for path in allowed_paths if path.startswith("tests/")]
-    allowed = [path for path in allowed_paths if not path.startswith("tests/")]
+    """Move existing tests from writable targets to readonly evidence targets.
+
+    A declared test path that does not exist is still an implementation
+    obligation. Freezing it before the harness has been created makes the
+    obligation impossible to satisfy after a rolled-back candidate. Callers
+    that provide ``existing_paths`` therefore retain missing tests as writable
+    until one has actually been materialized.
+    """
+    existing = set(existing_paths) if existing_paths is not None else None
+    frozen = [
+        path
+        for path in allowed_paths
+        if path.startswith("tests/") and (existing is None or path in existing)
+    ]
+    frozen_set = set(frozen)
+    allowed = [path for path in allowed_paths if path not in frozen_set]
     readonly = unique_ordered([*readonly_paths, *frozen])
     return allowed, readonly
 
@@ -847,16 +861,28 @@ def malformed_search_replace_full_file_artifacts(
     for candidate in artifact_candidate_texts(text):
         for match in pattern.finditer(candidate):
             body = match.group("body")
-            if contains_conflict_markers(body) or "=======" in body or "Replace with:" in body:
-                continue
             path = normalize_legacy_file_artifact_path(match.group("path"))
             duplicate_path = normalize_legacy_file_artifact_path(match.group("duplicate_path") or "")
             if duplicate_path and duplicate_path != path:
+                continue
+            terminal = re.search(
+                r"\n\s*END_SEARCH_REPLACE(?:\s*:\s*(?P<path>[^\n]*))?\s*\Z",
+                body,
+                flags=re.MULTILINE,
+            )
+            if terminal:
+                terminal_path = normalize_legacy_file_artifact_path(terminal.group("path") or "")
+                if terminal_path and terminal_path != path:
+                    continue
+                body = body[: terminal.start()]
+            if contains_conflict_markers(body) or "=======" in body or "Replace with:" in body:
                 continue
             check_artifact_path(path, policy, "malformed search/replace full-file recovery")
             if not path.endswith(".py"):
                 continue
             content = normalize_legacy_file_artifact_content(strip_markdown_fence(body)).rstrip() + "\n"
+            if contains_artifact_markers(content):
+                continue
             if looks_like_python_function_fragment(content):
                 continue
             if not looks_like_complete_python_module(content):

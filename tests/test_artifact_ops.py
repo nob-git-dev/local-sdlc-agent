@@ -114,6 +114,46 @@ if __name__ == "__main__":
         self.assertEqual(artifacts[0].mode, "replace")
         self.assertIn("def main", artifacts[0].content)
 
+    def test_extract_file_artifact_recovers_fenced_full_python_file_with_terminal_marker(self):
+        output = '''BEGIN_SEARCH_REPLACE: pkg/worker.py
+```python
+"""Worker module."""
+
+def run():
+    return "ok"
+```
+END_SEARCH_REPLACE: pkg/worker.py
+'''
+        policy = self.local_sdlc.ArtifactPathPolicy(
+            allowed_paths=("pkg/worker.py",),
+            existing_paths=("pkg/__init__.py",),
+        )
+
+        artifacts = self.local_sdlc.extract_file_artifacts(output, policy)
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].path, "pkg/worker.py")
+        self.assertEqual(artifacts[0].mode, "replace")
+        self.assertIn('return "ok"', artifacts[0].content)
+        self.assertNotIn("```", artifacts[0].content)
+
+    def test_extract_file_artifact_rejects_mismatched_terminal_path(self):
+        output = '''BEGIN_SEARCH_REPLACE: pkg/worker.py
+```python
+def run():
+    return "ok"
+```
+END_SEARCH_REPLACE: pkg/other.py
+'''
+        policy = self.local_sdlc.ArtifactPathPolicy(
+            allowed_paths=("pkg/worker.py",),
+            existing_paths=("pkg/__init__.py",),
+        )
+
+        artifacts = self.local_sdlc.extract_file_artifacts(output, policy)
+
+        self.assertEqual(artifacts, [])
+
     def test_extract_file_artifact_does_not_recover_malformed_search_replace_fragment(self):
         output = """BEGIN_SEARCH_REPLACE: app.py
 : app.py

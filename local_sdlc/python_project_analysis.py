@@ -123,8 +123,23 @@ def project_python_product_paths(project: Path | None) -> list[str]:
         paths.append(rel)
     return unique_ordered(paths)
 
-def module_name_to_project_path(module_name: str) -> str:
-    return module_name.replace(".", "/") + ".py"
+def module_name_to_project_path(module_name: str, project: Path | None = None) -> str:
+    """Resolve a Python module to its file or package initializer.
+
+    Import errors name packages (``from package import Symbol``) without
+    spelling out ``package/__init__.py``. Prefer the package initializer when
+    it exists so recovery focuses the actual public API boundary instead of a
+    non-existent sibling module.
+    """
+    stem = module_name.replace(".", "/")
+    module_path = stem + ".py"
+    package_path = stem + "/__init__.py"
+    if project is not None:
+        if (project / module_path).is_file():
+            return module_path
+        if (project / package_path).is_file():
+            return package_path
+    return module_path
 
 def python_defined_symbols(project: Path | None, rel_path: str) -> list[str]:
     if project is None:

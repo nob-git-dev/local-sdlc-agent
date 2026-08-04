@@ -541,6 +541,17 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
             "Choose a different smallest action against the restored state.",
         ),
     ),
+    "candidate_provisional_progress": FailureTransition(
+        "candidate_provisional_progress",
+        "repair_coder",
+        "retain_quarantined_candidate_and_repair_exposed_failure",
+        "supervisor",
+        (
+            "A missing required test harness became executable in an isolated worktree.",
+            "Keep the generated tests as read-only evidence and repair the newly exposed product boundary.",
+            "Do not copy the provisional candidate back until every executable gate passes.",
+        ),
+    ),
     "replayed_regressing_candidate": FailureTransition(
         "replayed_regressing_candidate",
         "root_cause_repair",

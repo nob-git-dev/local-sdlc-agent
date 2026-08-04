@@ -339,8 +339,20 @@ def repair_advice_from_command_docs(
         r"ImportError:\s*cannot import name '([^']+)' from '([^']+)'",
         combined,
     ):
-        module_path = module_name_to_project_path(module_name)
+        module_path = module_name_to_project_path(module_name, project)
         existing_symbols = python_defined_symbols(project, module_path)
+        package_export_owners: list[str] = []
+        if project is not None and module_path.endswith("/__init__.py"):
+            package_dir = Path(module_path).parent
+            try:
+                package_export_owners = unique_ordered(
+                    str(path.relative_to(project))
+                    for path in (project / package_dir).glob("*.py")
+                    if path.name != "__init__.py"
+                    and missing_symbol in python_defined_symbols(project, str(path.relative_to(project)))
+                )
+            except (OSError, ValueError):
+                package_export_owners = []
         importing_paths = unique_ordered([*generated_test_focus, *inferred_stage_focus, *product_trace_focus])
         projections = import_api_alias_projections(
             project,
@@ -349,10 +361,14 @@ def repair_advice_from_command_docs(
             existing_symbols,
         )
         aliases = likely_symbol_aliases(missing_symbol, existing_symbols)
-        same_stage_import_contract = module_path in set([*inferred_stage_focus, *product_trace_focus])
+        same_stage_import_contract = bool(package_export_owners) or module_path in set(
+            [*inferred_stage_focus, *product_trace_focus]
+        )
         if same_stage_import_contract:
             strategy = "root_cause_patch"
-            focus_files.extend([module_path, *inferred_stage_focus, *product_trace_focus])
+            focus_files.extend(
+                [module_path, *package_export_owners, *inferred_stage_focus, *product_trace_focus]
+            )
             instructions.extend(
                 [
                     (

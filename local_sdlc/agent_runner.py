@@ -331,6 +331,9 @@ def command_agent(args: argparse.Namespace) -> int:
     candidate_regressions: list[dict[str, object]] = [
         item for item in resume_manifest.get("candidate_regressions", []) if isinstance(item, dict)
     ] if resume_manifest else []
+    provisional_candidates: list[dict[str, object]] = [
+        item for item in resume_manifest.get("provisional_candidates", []) if isinstance(item, dict)
+    ] if resume_manifest else []
     candidate_replays: list[dict[str, object]] = [
         item for item in resume_manifest.get("candidate_replays", []) if isinstance(item, dict)
     ] if resume_manifest else []
@@ -554,6 +557,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
             "regression_recovery_pending": regression_recovery_pending,
             "candidate_regressions": candidate_regressions,
+            "provisional_candidates": provisional_candidates,
             "candidate_replays": candidate_replays,
             "last_functional_failure_score": last_functional_failure_score,
             "last_functional_failure_signature": last_functional_failure_signature,
@@ -1709,6 +1713,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
             "regression_recovery_pending": regression_recovery_pending,
             "candidate_regressions": candidate_regressions,
+            "provisional_candidates": provisional_candidates,
             "candidate_replays": candidate_replays,
             "last_functional_failure_score": last_functional_failure_score,
             "last_functional_failure_signature": last_functional_failure_signature,
@@ -2059,6 +2064,9 @@ def command_agent(args: argparse.Namespace) -> int:
         round_transaction_snapshots: dict[str, bytes | None] = {}
         round_changed_paths: list[str] = []
         round_candidate_hypotheses: list[dict[str, object]] = []
+        missing_required_paths_before_round = [
+            path for path in required_paths if not resolve_project_path(project, path).is_file()
+        ]
         active_patch_plan_doc = pending_patch_plan_doc
         write_partial_manifest("round_started", {"current_round": round_index})
         active_repair_strategy = str(latest_repair_advice.get("strategy", "")) if latest_repair_advice else ""
@@ -2067,6 +2075,7 @@ def command_agent(args: argparse.Namespace) -> int:
             allowed_artifact_paths, readonly_artifact_paths = freeze_test_paths_as_readonly(
                 allowed_artifact_paths,
                 readonly_artifact_paths,
+                listed_project_files(project),
             )
             if before_policy != (tuple(allowed_artifact_paths), tuple(readonly_artifact_paths)):
                 artifact_policy = ArtifactPathPolicy(
@@ -3885,7 +3894,7 @@ def command_agent(args: argparse.Namespace) -> int:
             },
         )
 
-        if (
+        candidate_regressed = bool(
             args.apply
             and round_transaction_snapshots
             and candidate_behavior_regressed(
@@ -3893,7 +3902,91 @@ def command_agent(args: argparse.Namespace) -> int:
                 current_failure_score,
                 round_changed_paths,
             )
-        ):
+        )
+        missing_required_paths_after_round = [
+            path for path in required_paths if not resolve_project_path(project, path).is_file()
+        ]
+        provisional_test_harness_progress = candidate_test_harness_bootstrap_progress(
+            last_functional_failure_score,
+            current_failure_score,
+            round_changed_paths,
+            missing_required_paths_before_round,
+            missing_required_paths_after_round,
+            isolated=args.worktree_mode == "copy",
+        )
+        if provisional_test_harness_progress:
+            newly_satisfied_paths = sorted(
+                set(missing_required_paths_before_round) - set(missing_required_paths_after_round)
+            )
+            provisional_record: dict[str, object] = {
+                "round": round_index,
+                "previous_failure_score": last_functional_failure_score,
+                "candidate_failure_score": current_failure_score,
+                "changed_paths": list(round_changed_paths),
+                "newly_satisfied_required_paths": newly_satisfied_paths,
+                "remaining_missing_required_paths": list(missing_required_paths_after_round),
+                "failure_signature": current_failure_signature,
+                "failure_family_signature": current_failure_family_signature,
+                "candidate_hypotheses": [dict(item) for item in round_candidate_hypotheses],
+                "isolated": True,
+                "copied_back": False,
+            }
+            provisional_candidates.append(provisional_record)
+            provisional_doc = textwrap.dedent(
+                f"""
+                ## Provisional Test Harness Progress
+
+                - status: QUARANTINED
+                - failure_type: candidate_provisional_progress
+                - previous_failure_score: {last_functional_failure_score}
+                - candidate_failure_score: {current_failure_score}
+                - newly_satisfied_required_paths: {", ".join(newly_satisfied_paths)}
+                - remaining_missing_required_paths: {", ".join(missing_required_paths_after_round) or "(none)"}
+                - changed_paths: {", ".join(round_changed_paths)}
+                - copied_back: false
+
+                Proposition:
+                - The candidate runs in an isolated worktree.
+                - Its raw failure count increased only after a previously
+                  missing required test harness became executable.
+                - The candidate therefore exposes stronger evidence and may be
+                  retained provisionally, but cannot be copied back until all
+                  executable checks pass.
+                """
+            ).strip()
+            provisional_path = write_run_document(
+                run_dir,
+                f"05-r{round_index:02d}-provisional-test-harness-progress.md",
+                provisional_doc,
+            )
+            written.append(provisional_path)
+            documents.append((f"Provisional test harness progress round {round_index}", provisional_doc))
+            prior_focus = [
+                str(path)
+                for path in latest_repair_advice.get("focus_files", [])
+                if isinstance(path, str)
+            ]
+            remember_repair_advice(
+                RepairAdvice(
+                    strategy="provisional_test_harness_progress",
+                    focus_files=tuple(unique_ordered([*prior_focus, *round_changed_paths])),
+                    instructions=(
+                        "Keep the now-executable generated tests as read-only evidence in the next round.",
+                        "Repair the newly exposed product or integration failure inside the isolated worktree.",
+                        "Do not copy back provisional files until every configured command and required path passes.",
+                    ),
+                    evidence=(
+                        "isolated_worktree=true",
+                        "newly_satisfied_required_paths=" + ",".join(newly_satisfied_paths),
+                    ),
+                ),
+                command_docs,
+                preserve_previous=True,
+            )
+            record_transition("candidate_provisional_progress", round_index, provisional_doc)
+            write_partial_manifest("candidate_provisional_progress", {"current_round": round_index})
+
+        if candidate_regressed and not provisional_test_harness_progress:
             previous_score = last_functional_failure_score
             restored_paths = restore_artifact_targets(project, round_transaction_snapshots)
             rollback_mismatches = artifact_snapshot_mismatches(project, round_transaction_snapshots)
@@ -4255,6 +4348,7 @@ def command_agent(args: argparse.Namespace) -> int:
         "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
         "regression_recovery_pending": regression_recovery_pending,
         "candidate_regressions": candidate_regressions,
+        "provisional_candidates": provisional_candidates,
         "candidate_replays": candidate_replays,
         "last_functional_failure_score": last_functional_failure_score,
         "last_functional_failure_signature": last_functional_failure_signature,

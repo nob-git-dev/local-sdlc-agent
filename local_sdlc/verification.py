@@ -157,6 +157,39 @@ def candidate_behavior_regressed(
         and current_score > previous_score
     )
 
+
+def candidate_test_harness_bootstrap_progress(
+    previous_score: int | None,
+    current_score: int | None,
+    changed_paths: Sequence[str],
+    missing_required_paths_before: Sequence[str],
+    missing_required_paths_after: Sequence[str],
+    *,
+    isolated: bool,
+) -> bool:
+    """Admit a failing candidate that makes a missing test harness executable.
+
+    Let ``M0`` and ``M1`` be the missing required-path sets before and after a
+    candidate. A newly executable generated test can increase the raw failure
+    count from a vacuous zero-test run. In an isolated worktree this is useful
+    intermediate evidence when ``M1`` is a strict subset of ``M0`` and at least
+    one newly satisfied path is a changed test file. The candidate remains
+    quarantined and still cannot be copied back until every check passes.
+    """
+    if not isolated or not candidate_behavior_regressed(previous_score, current_score, changed_paths):
+        return False
+    before = set(missing_required_paths_before)
+    after = set(missing_required_paths_after)
+    if not after < before:
+        return False
+    newly_satisfied = before - after
+    changed = set(changed_paths)
+    return bool(
+        newly_satisfied
+        and newly_satisfied <= changed
+        and any(path.startswith("tests/") for path in newly_satisfied)
+    )
+
 def normalize_failure_line(line: str) -> str:
     normalized = re.sub(r'File "[^"]+", line \d+', 'File "<path>", line <n>', line.strip())
     normalized = re.sub(r"/tmp/[^/\s]+/project/", "<project>/", normalized)

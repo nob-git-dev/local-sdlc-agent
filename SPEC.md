@@ -90,6 +90,11 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 自律 Supervisor Runtime は goal を `PLANNED -> RUNNING -> PROGRESSING -> STALLED -> RECOVERY_PLANNED -> RESUMED -> VERIFYING -> COMPLETED` または `USER_CANCELLED` / `SAFETY_BLOCKED` / `APPROVAL_REQUIRED` / `BLOCKED` の状態機械として扱う。
 - 自律 Supervisor Runtime は `progress.jsonl`、`run.partial.json`、子プロセス状態、stream stats、evidence 変化を使い、長時間思考と停滞を区別する。
 - 同一 agent run の固定 command vector に対して、適用候補後の失敗数が直前状態より増えた場合は `candidate_regression` と判定する。Runner は当該ラウンドの全変更対象を変更前 bytes へ復元し、一致検証が成功した場合だけ bounded adaptive recovery で別案へ進む。復元不一致は `rollback_verification_failed` として fail closed にする。
+- ただし copy-worktree 内で、欠落していた required path 集合が真部分集合へ縮小し、新たに満たした path が当該候補で変更した `tests/` 配下を含む場合は `candidate_provisional_progress` とする。この候補は隔離状態で次ラウンドへ保持できるが、全 executable gate が通るまで元 project へ copy back しない。
+- 宣言済みだが未作成の test path は実装義務であり、作成前に readonly へ凍結しない。いったん作成された generated test は次ラウンドから readonly evidence とし、product 側の修復だけを許す。
+- 壊れた search/replace wrapper 内の完全な Python file は、開始・終了 path が一致し、Markdown fence 除去後に完全な Python module として parse でき、競合 marker や入れ子の artifact marker を含まない場合だけ機械的に file artifact へ正規化する。それ以外は fail closed にする。
+- 子 agent の親 stage への失敗通知は、初期の acceptance failure より `final_failure_type` を優先する。candidate evidence から抽出する repair focus は親 stage の repair scope 内に限定する。
+- package からの `ImportError` は、対象が package なら実在する `__init__.py` を public API 境界として扱う。ただし sibling module に不足 symbol の実定義が確認できる場合だけ package export 修復として分類し、通常の module import や generated-test oracle conflict を上書きしない。
 - S99 final integration repair は修復前に固定 final command vector を precheck し、その failure score を candidate regression 比較の基準として保存する。
 - Safety/Suppression Harness は各 action 実行前に `SafetyDecision` を生成し、`safety_decisions.jsonl` に保存する。
 - 人間が goal/job/stage を cancel した場合、既存プロセスを停止し、その後の新規 API call、command、resume、retry、stage split、copy back を開始しない。
@@ -1458,6 +1463,9 @@ AutonomyPass :=
 - 1 stage の writable path 数が上限を超える場合は、API call 前に機械的に分割する。
 - artifact protocol failure の次 action は failure family ごとの bounded format repair とする。marker-based search/replace の malformed / periodic runaway は同じ形式を再試行せず、単一 JSON search_replace envelope へ切り替える。
 - candidate regression の rollback は active strategy だけを更新し、既存の mechanical evidence、forbidden hypothesis、owner-file focus を上書き消去してはならない。
+- 欠落 test harness の生成で raw failure score が増えた候補は、copy-worktree、required path の真の減少、変更済み test path の新規充足がすべて成立する場合だけ暫定保持する。元 project への copy back は全 gate 合格後に限る。
+- missing required test path は writable のまま維持し、生成後の test path だけを readonly evidence へ移す。
+- terminal artifact failure は親 stage の recovery reason を上書きし、古い acceptance failure type は補助 evidence として保持する。
 - root-cause analysis には、単純な文書 recency window とは独立して最新の失敗コマンド、acceptance gate、observation summary、mechanical probe、rejected candidate evidence を上限付きで固定する。
 - `MISSING_CONTEXT` が既に context 集合へ含まれる既存 path を要求した場合も、内容が global character budget で切れた可能性を認め、その path を次 round の context 先頭へ昇格して root-cause analysis を再実行する。
 - search と replacement が同一の candidate は、他の content mismatch を併発していても `effect(A,S)=empty` を優先し、apply/test/format repair を行わず root-cause analysis へ戻す。
@@ -1481,6 +1489,11 @@ AutonomyPass :=
 - [x] artifact protocol failure の次 attempt は format repair に限定される。
 - [x] malformed / periodic marker output の次 attempt は単一 JSON search_replace に切り替わる。
 - [x] candidate regression 後も以前の mechanical API evidence と owner-file focus が manifest に残る。
+- [x] 隔離環境で欠落 test harness を実行可能にした候補は `candidate_provisional_progress` として保持され、全 gate 合格前には copy back されない。
+- [x] 未作成の required test path は writable のまま、作成後の generated test だけが readonly evidence になる。
+- [x] path が一致する fenced full Python module は安全条件内で復旧され、path 不一致や不完全構文は拒否される。
+- [x] 親 stage は子 run の terminal failure type と scope 内の executable focus を使って次 recovery を選ぶ。
+- [x] package import failure は、sibling definition の機械的証拠がある場合に限り `__init__.py` の export boundary へ誘導される。
 - [x] root-cause analysis は document window 外の最新 executable failure evidence を保持する。
 - [x] 既に宣言済みだが切り捨てられた context path は先頭へ再配置され、coder ではなく root-cause analysis が再実行される。
 - [x] identical search/replace は併存する lint finding より zero-effect 分類を優先する。
@@ -1493,7 +1506,7 @@ AutonomyPass :=
 - [x] approval-required / safety-blocked / budget-exhausted は actionable blocked data を持つ。
 - [x] `run-stages` の既定 worktree mode は `copy` である。
 - [x] autonomy audit が unauthorized external intervention を区別して数える。
-- [x] unit/integration test 649件が成功する。
+- [x] unit/integration test 657件が成功する。
 
 ### 検証
 
@@ -1501,7 +1514,7 @@ AutonomyPass :=
   strict completion、intervention audit の直接テスト。
 - `tests.test_stage_runner`: 自動 root-cause recovery、format repair、goal stall recovery、
   unverified completion rejection、default isolation の結合テスト。
-- `python3 -m unittest discover -s tests`: `Ran 649 tests ... OK`。
+- `python3 -m unittest discover -s tests`: `Ran 657 tests ... OK`。
 - 次の汎化検証は、harness を commit で固定した後の Mini Git、再固定後の
   held-out DAG job engine の順に行う。
 

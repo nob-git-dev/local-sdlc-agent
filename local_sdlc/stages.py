@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import textwrap
 from pathlib import Path
@@ -420,13 +421,40 @@ def read_stage_agent_manifest(stage: StageWorkItem, run_dir: Path, exit_code: in
         api_calls = int(api_calls_raw)
     except (TypeError, ValueError):
         api_calls = 0
-    failure = manifest.get("failure_summary")
+    raw_failure = manifest.get("failure_summary")
+    failure = dict(raw_failure) if isinstance(raw_failure, dict) else {}
+    terminal_failure_type = str(manifest.get("final_failure_type") or "").strip()
+    if exit_code != 0 and terminal_failure_type:
+        prior_failure_type = str(failure.get("failure_type") or "").strip()
+        if prior_failure_type and prior_failure_type != terminal_failure_type:
+            failure["acceptance_failure_type"] = prior_failure_type
+        failure["failure_type"] = terminal_failure_type
+        failure["terminal_failure_type"] = terminal_failure_type
     repair_advice = manifest.get("repair_advice")
-    repair_focus_paths: tuple[str, ...] = ()
+    repair_focus: list[str] = []
     if isinstance(repair_advice, dict):
         raw_focus = repair_advice.get("focus_files", [])
         if isinstance(raw_focus, list):
-            repair_focus_paths = tuple(path for path in raw_focus if isinstance(path, str))
+            repair_focus.extend(path for path in raw_focus if isinstance(path, str))
+    repair_scope = set(stage_repair_scope_paths(stage))
+    candidate_records: list[object] = []
+    for key in ("candidate_regressions", "provisional_candidates"):
+        records = manifest.get(key, [])
+        if isinstance(records, list):
+            candidate_records.extend(records)
+    for record in candidate_records:
+        if not isinstance(record, dict):
+            continue
+        for key in ("failure_signature", "failure_family_signature"):
+            signature = record.get(key)
+            if not isinstance(signature, str):
+                continue
+            repair_focus.extend(
+                path
+                for path in re.findall(r"<project>/([A-Za-z0-9_./-]+\.py)", signature)
+                if path in repair_scope
+            )
+    repair_focus_paths = tuple(unique_ordered(repair_focus))
     return StageRunSummary(
         stage_id=stage.stage_id,
         title=stage.title,
@@ -438,7 +466,7 @@ def read_stage_agent_manifest(stage: StageWorkItem, run_dir: Path, exit_code: in
         changed_paths=changed_paths,
         required_paths=required_paths,
         repair_focus_paths=repair_focus_paths,
-        failure_summary=failure if isinstance(failure, dict) else None,
+        failure_summary=failure or None,
     )
 
 def integration_repair_brief(base_brief: str, completed: Sequence[StageRunSummary]) -> str:

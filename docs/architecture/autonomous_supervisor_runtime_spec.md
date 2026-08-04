@@ -85,6 +85,8 @@ Instead, it must define how new propositions are admitted.
 | P14 | Recovery does not forget hard evidence. | A strategy change preserves prior mechanical constraints and owner-file focus; the next manifest contains both rollback evidence and the earlier probe facts. |
 | P15 | A mechanically absent API cannot be introduced as an unresolved call. | Typed-receiver lint rejects a call when the probed owner lacks the method and the same candidate transaction does not define it on that owner. |
 | P16 | Periodic artifact runaway changes protocol before size exhaustion. | A repeated multi-line block is classified as `stream_repeated_text_runaway` before the generic byte limit, and the next bounded retry requires one JSON search/replace envelope. |
+| P17 | A newly executable test harness may expose more failures without being a regression. | In copy-worktree mode only, the missing required-path set strictly shrinks, a changed `tests/` path becomes present, the candidate is marked `candidate_provisional_progress`, and no copy-back occurs before all gates pass. |
+| P18 | Parent recovery follows the terminal child failure. | The stage summary prefers `final_failure_type`, preserves the earlier acceptance failure as evidence, and admits candidate-derived focus paths only inside the declared repair scope. |
 
 ## Progress Vector
 
@@ -529,6 +531,29 @@ planner not to repeat the rejected approach or assume an unobserved interface.
 The LLM cannot waive restoration. A mismatch after restoration is terminal
 `rollback_verification_failed`; it never reaches Judge or copy-back.
 
+A zero-test or missing-file baseline can make a useful test-harness candidate
+look numerically worse. Let `M(i)` be the missing required-path set and `C(i)`
+the paths changed by the candidate:
+
+```text
+ProvisionalHarnessProgress(i) :=
+  CandidateRegression(i)
+  and CopyWorktree(i)
+  and M(i) proper-subset-of M(i-1)
+  and Exists(p, p in (M(i-1) - M(i)) and p in C(i) and TestPath(p))
+
+AdmitWithoutCopyBack(i) :=
+  ProvisionalHarnessProgress(i)
+  and Quarantine(CurrentWorkspace)
+  and FreezeExistingGeneratedTestsAsEvidence
+
+CopyBack(i) := AllExecutableGatesPass(i)
+```
+
+Missing test paths remain writable until materialized. Once present, generated
+tests become read-only evidence for the next round. This exception cannot run
+in an in-place worktree and cannot waive the final executable gate.
+
 Recovery knowledge is monotone for mechanically established facts. Let
 `K(i)` be the retained constraints before round `i` and `M(i)` be new
 mechanical evidence:
@@ -651,7 +676,7 @@ TestPass(e) := RecognizedTestRunner(e) -> NonVacuousTestEvidence(e)
 `missing_test_harness` へ正規化する。
 
 Verified by `tests.test_autonomy_runtime`, `tests.test_stage_runner`, and the
-full 649-test suite. Cross-domain validation still follows the frozen sequence:
+full 657-test suite. Cross-domain validation still follows the frozen sequence:
 freeze the harness, run Mini Git, generalize only supported findings, freeze
 again, then run the held-out DAG job engine without mid-run intervention.
 

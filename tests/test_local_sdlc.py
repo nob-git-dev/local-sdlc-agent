@@ -105,6 +105,38 @@ class LocalSDLCTest(LocalSDLCTestCase):
         self.assertFalse(self.local_sdlc.candidate_behavior_regressed(3, 5, []))
         self.assertFalse(self.local_sdlc.candidate_behavior_regressed(None, 5, ["app.py"]))
 
+    def test_candidate_test_harness_bootstrap_progress_requires_isolated_missing_test(self):
+        self.assertTrue(
+            self.local_sdlc.candidate_test_harness_bootstrap_progress(
+                1,
+                3,
+                ["pkg/worker.py", "tests/test_worker.py"],
+                ["pkg/worker.py", "tests/test_worker.py"],
+                [],
+                isolated=True,
+            )
+        )
+        self.assertFalse(
+            self.local_sdlc.candidate_test_harness_bootstrap_progress(
+                1,
+                3,
+                ["pkg/worker.py", "tests/test_worker.py"],
+                ["pkg/worker.py", "tests/test_worker.py"],
+                [],
+                isolated=False,
+            )
+        )
+        self.assertFalse(
+            self.local_sdlc.candidate_test_harness_bootstrap_progress(
+                1,
+                3,
+                ["pkg/worker.py"],
+                ["pkg/worker.py"],
+                [],
+                isolated=True,
+            )
+        )
+
     def test_command_failure_signature_normalizes_paths_and_lines(self):
         doc1 = self.local_sdlc.command_result_document(
             "python3 -m unittest",
@@ -1094,6 +1126,16 @@ class Result:
 
         self.assertEqual(allowed, ["minisqlite/sql/parser.py"])
         self.assertEqual(readonly, ["minisqlite/sql/lexer.py", "tests/test_parser.py"])
+
+    def test_freeze_test_paths_as_readonly_keeps_missing_required_test_writable(self):
+        allowed, readonly = self.local_sdlc.freeze_test_paths_as_readonly(
+            allowed_paths=["app.py", "tests/test_app.py"],
+            readonly_paths=["SPEC.md"],
+            existing_paths=["app.py", "SPEC.md"],
+        )
+
+        self.assertEqual(allowed, ["app.py", "tests/test_app.py"])
+        self.assertEqual(readonly, ["SPEC.md"])
 
     def test_format_repair_accepts_loose_python_function_replacement(self):
         output = """BEGIN_SEARCH_REPLACE: app.py
@@ -2091,6 +2133,26 @@ AssertionError: 1 != 3
         self.assertEqual(artifacts[0].path, "app.py")
         self.assertEqual(artifacts[0].search, 'VALUE = "old"')
         self.assertEqual(artifacts[0].replace, 'VALUE = "new"')
+
+    def test_format_repair_recovers_path_qualified_fenced_full_python_file(self):
+        output = textwrap.dedent(
+            '''
+            BEGIN_SEARCH_REPLACE: pkg/worker.py
+            ```python
+            """Worker module."""
+
+            def run():
+                return "ok"
+            ```
+            END_SEARCH_REPLACE: pkg/worker.py
+            '''
+        )
+
+        issues = self.local_sdlc.format_repair_format_issues(output)
+        codes = {issue.code for issue in issues}
+
+        self.assertNotIn("format_repair_markdown_fence", codes)
+        self.assertNotIn("format_repair_no_artifact", codes)
 
     def test_format_repair_lint_accepts_recoverable_fenced_diff(self):
         output = textwrap.dedent(
@@ -5067,6 +5129,47 @@ FAILED (failures=1)
         self.assertNotIn("tests/test_cli.py", advice.focus_files)
         self.assertTrue(any("product public-API regression" in item for item in advice.instructions))
 
+    def test_repair_advice_resolves_package_import_to_init_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            package_dir = project / "dagrunner"
+            package_dir.mkdir(parents=True)
+            (package_dir / "__init__.py").write_text("from .model import Task\n", encoding="utf-8")
+            (package_dir / "model.py").write_text("class Task:\n    pass\n", encoding="utf-8")
+            (package_dir / "executor.py").write_text("class Engine:\n    pass\n", encoding="utf-8")
+            test_dir = project / "tests"
+            test_dir.mkdir()
+            (test_dir / "test_executor.py").write_text(
+                "from dagrunner import Engine\n",
+                encoding="utf-8",
+            )
+            doc = self.local_sdlc.command_result_document(
+                "python3 -m unittest discover -s tests -p test_executor.py",
+                1,
+                "",
+                (
+                    "Traceback (most recent call last):\n"
+                    '  File "/tmp/work/project/tests/test_executor.py", line 1, in <module>\n'
+                    "    from dagrunner import Engine\n"
+                    "ImportError: cannot import name 'Engine' from 'dagrunner' "
+                    "(/tmp/work/project/dagrunner/__init__.py)\n"
+                ),
+                0.01,
+            )
+
+            advice = self.local_sdlc.repair_advice_from_command_docs(
+                [("command", doc)],
+                ["python3 -m unittest discover -s tests -p test_executor.py"],
+                project,
+                ["tests/test_executor.py"],
+            )
+
+        self.assertIsNotNone(advice)
+        assert advice is not None
+        self.assertEqual(advice.strategy, "root_cause_patch")
+        self.assertIn("dagrunner/__init__.py", advice.focus_files)
+        self.assertNotIn("tests/test_executor.py", advice.focus_files)
+
     def test_repair_advice_policy_allows_generated_test_import_fix(self):
         advice = self.local_sdlc.RepairAdvice(
             strategy="generated_test_import_api_mismatch",
@@ -6785,6 +6888,143 @@ Required fixes:
                 ("coder", "repair_artifact"),
                 ("coder", "repair_artifact"),
             ],
+        )
+
+    def test_agent_retains_isolated_test_harness_bootstrap_until_product_passes(self):
+        calls = []
+        outputs = [
+            json.dumps(
+                {
+                    "artifacts": [
+                        {
+                            "type": "replace_file",
+                            "path": "pkg/worker.py",
+                            "content": "def value():\n    return 0\n",
+                        },
+                        {
+                            "type": "replace_file",
+                            "path": "tests/test_worker.py",
+                            "content": textwrap.dedent(
+                                """
+                                import unittest
+                                from pkg.worker import value
+
+                                class WorkerTests(unittest.TestCase):
+                                    def test_value(self):
+                                        self.assertEqual(value(), 1)
+                                """
+                            ).strip()
+                            + "\n",
+                        },
+                    ]
+                }
+            ),
+            textwrap.dedent(
+                """
+                BEGIN_SEARCH_REPLACE: pkg/worker.py
+                <<<<<<< SEARCH
+                def value():
+                    return 0
+                =======
+                def value():
+                    return 1
+                >>>>>>> REPLACE
+                END_SEARCH_REPLACE
+                """
+            ).strip(),
+        ]
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                calls.append((agent_level, call_function))
+                if call_function == "project_policy_triage":
+                    return json.dumps(
+                        {
+                            "case_type": "product_defect",
+                            "confidence": "high",
+                            "safe_next_action": "patch_product",
+                            "editable_paths": ["pkg/worker.py"],
+                            "readonly_paths": ["tests/test_worker.py"],
+                            "forbidden_actions": ["edit generated test assertions"],
+                            "project_policy_basis": ["SPEC.md"],
+                            "rationale": "the generated test states the requested worker behavior",
+                        }
+                    )
+                artifact_call_count = sum(
+                    1
+                    for _level, function in calls
+                    if function in {"generate_artifact", "repair_artifact"}
+                )
+                if artifact_call_count > len(outputs):
+                    raise AssertionError(f"unexpected calls: {calls}")
+                return outputs[artifact_call_count - 1]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            (project / "pkg").mkdir()
+            (project / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+            (project / "tests").mkdir()
+            (project / "tests" / "test_existing.py").write_text(
+                "import unittest\n\nclass ExistingTests(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "create a tested worker",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--new-file",
+                        "pkg/worker.py",
+                        "--new-file",
+                        "tests/test_worker.py",
+                        "--apply",
+                        "--precheck",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--worktree-mode",
+                        "copy",
+                        "--max-rounds",
+                        "2",
+                        "--test-command",
+                        f"{sys.executable} -B -m unittest discover -s tests -p test_worker.py",
+                        "--test-command",
+                        f"{sys.executable} -B -m unittest discover -s tests",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            source = (project / "pkg" / "worker.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0)
+        self.assertIn("return 1", source)
+        self.assertEqual(len(manifest["provisional_candidates"]), 1)
+        self.assertFalse(manifest["provisional_candidates"][0]["copied_back"])
+        self.assertEqual(manifest["candidate_regressions"], [])
+        self.assertIn(
+            "candidate_provisional_progress",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
+        self.assertEqual(
+            [item for item in calls if item[1] in {"generate_artifact", "repair_artifact"}],
+            [("coder", "generate_artifact"), ("coder", "repair_artifact")],
         )
 
     def test_agent_rejects_regression_replay_before_apply_and_routes_root_cause(self):
