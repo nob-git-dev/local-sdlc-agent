@@ -277,6 +277,65 @@ END_SEARCH_REPLACE"""
         self.assertIn("PASS", doc)
         self.assertEqual(text, "initBoard();\nrenderBoard();\n")
 
+    def test_extract_search_replace_normalizes_path_on_next_line(self):
+        output = textwrap.dedent(
+            """
+            BEGIN_SEARCH_REPLACE
+            pkg/worker.py
+            <<<<<<< SEARCH
+            VALUE = "old"
+            =======
+            VALUE = "new"
+            >>>>>>> REPLACE
+            END_SEARCH_REPLACE
+            """
+        ).strip()
+
+        artifact = self.local_sdlc.extract_search_replace_artifact(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(
+                allowed_paths=("pkg/worker.py",),
+                existing_paths=("pkg/worker.py",),
+            ),
+        )
+
+        self.assertEqual(artifact.path, "pkg/worker.py")
+        self.assertEqual(artifact.search, 'VALUE = "old"')
+        self.assertEqual(artifact.replace, 'VALUE = "new"')
+
+    def test_next_line_search_replace_still_enforces_readonly_stream_policy(self):
+        policy = self.local_sdlc.ArtifactPathPolicy(
+            allowed_paths=("pkg/worker.py",),
+            readonly_paths=("tests/test_worker.py",),
+        )
+
+        result = self.local_sdlc.artifact_stream_guard(
+            "BEGIN_SEARCH_REPLACE\ntests/test_worker.py\n<<<<<<< SEARCH\n",
+            artifact_policy=policy,
+        )
+
+        self.assertTrue(result.should_abort)
+        self.assertEqual(result.code, "stream_readonly_artifact_path")
+
+    def test_next_line_search_replace_does_not_guess_without_search_marker(self):
+        output = """BEGIN_SEARCH_REPLACE
+pkg/worker.py
+def run():
+    return "new"
+END_SEARCH_REPLACE"""
+
+        normalized = self.local_sdlc.normalize_next_line_search_replace_headers(output)
+
+        self.assertEqual(normalized, output)
+        with self.assertRaises(self.local_sdlc.RunnerError):
+            self.local_sdlc.extract_search_replace_artifact(
+                output,
+                self.local_sdlc.ArtifactPathPolicy(
+                    allowed_paths=("pkg/worker.py",),
+                    existing_paths=("pkg/worker.py",),
+                ),
+            )
+
     def test_extract_fenced_search_replace_normalizes_extra_colon_path(self):
         output = """BEGIN_SEARCH_REPLACE: : tests/test_core.py
 ```python

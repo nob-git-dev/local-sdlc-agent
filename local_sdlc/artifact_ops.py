@@ -120,6 +120,39 @@ def normalize_file_header_search_replace_artifacts(text: str) -> str:
     return pattern.sub(replace, text)
 
 
+_NEXT_LINE_SEARCH_REPLACE_HEADER = re.compile(
+    r"(?m)^(?P<indent>[ \t]*)BEGIN_SEARCH_REPLACE[ \t]*\n"
+    r"[ \t]*(?P<path>[A-Za-z0-9_.][A-Za-z0-9_./-]*)[ \t]*\n"
+    r"(?=[ \t]*<<<<<<< SEARCH[ \t]*$)"
+)
+
+
+def normalize_next_line_search_replace_headers(text: str) -> str:
+    """Join an unambiguous next-line path to its search/replace marker.
+
+    Recovery is limited to one conservative path token immediately followed by
+    the canonical SEARCH marker.  The ordinary artifact path policy still
+    decides whether that path is writable; this function changes no payload.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        raw_path = match.group("path")
+        try:
+            paths = normalize_project_relative_paths(
+                [raw_path],
+                "search/replace envelope path",
+            )
+        except RunnerError:
+            return match.group(0)
+        if len(paths) != 1:
+            return match.group(0)
+        return (
+            f"{match.group('indent')}BEGIN_SEARCH_REPLACE: {paths[0]}\n"
+        )
+
+    return _NEXT_LINE_SEARCH_REPLACE_HEADER.sub(replace, text)
+
+
 def normalize_terminal_end_search_replace_artifact(text: str) -> str:
     """Recover an unambiguous block that omits ``>>>>>>> REPLACE``.
 
@@ -151,13 +184,17 @@ def normalize_terminal_end_search_replace_artifact(text: str) -> str:
 
 def artifact_candidate_texts(text: str) -> list[str]:
     normalized_file_headers = normalize_inline_file_artifact_headers(text)
-    normalized_search_replace = normalize_file_header_search_replace_artifacts(
+    normalized_next_line_headers = normalize_next_line_search_replace_headers(
         normalized_file_headers
+    )
+    normalized_search_replace = normalize_file_header_search_replace_artifacts(
+        normalized_next_line_headers
     )
     normalized_terminal = normalize_terminal_end_search_replace_artifact(normalized_search_replace)
     candidates = [
         text,
         normalized_file_headers,
+        normalized_next_line_headers,
         normalized_search_replace,
         normalized_terminal,
         strip_markdown_fence(text),

@@ -97,6 +97,7 @@ Instead, it must define how new propositions are admitted.
 | P26 | Mechanical envelope repair cannot widen write authority. | A missing file-header colon is normalized only for one conservative relative path, after which the ordinary writable/readonly policy still decides admissibility. |
 | P27 | A missing target uses a creation protocol. | After transport failure, one path that is both required and runner-writable is selected for a JSON `replace_file`; search/replace is not requested for a path that does not exist. |
 | P28 | Decomposition preserves a semantic integration gate. | Slices containing export surfaces or manifests are ordered last and inherit the parent stage's joint executable commands instead of compile-only evidence. |
+| P29 | Mechanical search/replace envelope repair cannot invent intent or authority. | A next-line path is joined to `BEGIN_SEARCH_REPLACE` only when it is one conservative relative token immediately followed by `<<<<<<< SEARCH`; normal writable/readonly policy still decides admissibility. |
 
 ## Progress Vector
 

@@ -485,6 +485,7 @@ def repeated_text_run_score(text: str) -> tuple[int, str]:
 def streamed_artifact_paths(text: str) -> list[str]:
     """Extract target paths from incomplete streamed artifact output."""
     text = normalize_inline_file_artifact_headers(text)
+    text = normalize_next_line_search_replace_headers(text)
     paths: list[str] = []
     for match in re.finditer(r"(?m)^BEGIN_(?:APPEND_)?FILE:\s*(?P<path>[^\n]+)\s*$", text):
         paths.append(match.group("path"))
@@ -578,6 +579,7 @@ def artifact_stream_guard(
     artifact_policy: ArtifactPathPolicy | None = None,
 ) -> ArtifactStreamGuardResult:
     text = normalize_inline_file_artifact_headers(text)
+    text = normalize_next_line_search_replace_headers(text)
     encoded_len = len(text.encode("utf-8"))
     artifact_offset = first_artifact_marker_offset(text)
     stripped = text.lstrip()
@@ -1273,7 +1275,7 @@ def semantic_repair_format_issues(text: str) -> list[SemanticRepairFormatIssue]:
     )
     valid_unified_diff = stripped.startswith("diff --git ") and len(re.findall(r"(?m)^diff --git\s+a/[^\s]+\s+b/[^\s]+", stripped)) == 1
 
-    if MALFORMED_SEARCH_REPLACE_WITHOUT_PATH_PATTERN.search(text):
+    if MALFORMED_SEARCH_REPLACE_WITHOUT_PATH_PATTERN.search(text) and not valid_search_replace:
         issues.append(
             SemanticRepairFormatIssue(
                 code="semantic_repair_missing_path",
