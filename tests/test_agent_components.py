@@ -25,6 +25,7 @@ from local_sdlc.policy_triage import (
     apply_project_policy_triage_to_advice,
     generated_test_oracle_evidence_document,
     judge_ownership_classification,
+    patch_plan_requests_generated_test_oracle_triage,
     project_policy_triage_enabled,
     triage_allows_test_harness_edit,
     validate_project_policy_triage_proposition,
@@ -99,6 +100,8 @@ class AgentComponentTests(unittest.TestCase):
         self.assertIn('"next_required_action"', failure)
         self.assertIn("No code artifacts", FAILURE_ANALYSIS_OUTPUT_CONTRACT)
         self.assertIn("patch_type: search_replace|unified_diff|missing_context", planner)
+        self.assertIn("escalation: none|generated_test_oracle_triage|collect_context", planner)
+        self.assertIn("planner cannot authorize or apply a test edit", planner)
         self.assertIn("Merely touching required_path", conformance)
         self.assertIn('"missing_obligations"', conformance)
         self.assertIn("T cannot directly apply an edit", triage)
@@ -252,6 +255,22 @@ class AgentComponentTests(unittest.TestCase):
             "product_bug",
         )
         self.assertEqual(judge_ownership_classification("the test may be wrong"), "not_applicable")
+
+    def test_patch_plan_oracle_escalation_requires_one_exact_control_pair(self):
+        valid = """PATCH_PLAN
+- patch_type: missing_context
+- escalation: generated_test_oracle_triage
+"""
+        prose_only = "The generated test may need generated_test_oracle_triage."
+        conflicting = """PATCH_PLAN
+- patch_type: missing_context
+- escalation: generated_test_oracle_triage
+- escalation: collect_context
+"""
+
+        self.assertTrue(patch_plan_requests_generated_test_oracle_triage(valid))
+        self.assertFalse(patch_plan_requests_generated_test_oracle_triage(prose_only))
+        self.assertFalse(patch_plan_requests_generated_test_oracle_triage(conflicting))
 
     def test_artifact_transaction_restores_existing_and_new_targets(self):
         with tempfile.TemporaryDirectory() as temp:

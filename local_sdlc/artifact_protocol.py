@@ -134,6 +134,17 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
         ("Extract usable intent from the failed output.", "Route to format_repair or repair_coder."),
     ),
     "missing_context": FailureTransition("missing_context", "runner", "collect_context_then_retry", "runner"),
+    "generated_test_oracle_triage_authorized": FailureTransition(
+        "generated_test_oracle_triage_authorized",
+        "repair_coder",
+        "edit_authorized_generated_test_only",
+        "supervisor",
+        (
+            "Edit only the generated test paths authorized by independent project-policy triage.",
+            "Use SPEC.md and executable evidence as the oracle; do not weaken fixed acceptance tests.",
+            "Keep product files and every non-authorized test path read-only.",
+        ),
+    ),
     "root_cause_context_refocus": FailureTransition(
         "root_cause_context_refocus",
         "root_cause_repair",
@@ -618,7 +629,6 @@ def is_protocol_failure_type(failure_type: str | None) -> bool:
         "patch_extraction_failed",
         "patch_apply_failed",
         "non_artifact_output",
-        "missing_context",
         "mechanical_probe_contradiction",
         "test_edit_attempt",
         "unbalanced_file_artifact",

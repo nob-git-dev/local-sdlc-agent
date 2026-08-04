@@ -9450,6 +9450,204 @@ END_SEARCH_REPLACE"""
         self.assertEqual(manifest["repair_advice"]["strategy"], "test_harness_api_mismatch")
         self.assertIn("tests/test_btree.py", manifest["repair_advice"]["focus_files"])
 
+    def test_patch_planner_escalation_routes_only_generated_test_to_independent_triage(self):
+        calls = []
+        artifact_calls = 0
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, messages, agent_level="default", call_function="default", **_kwargs):
+                nonlocal artifact_calls
+                joined = "\n".join(str(message.get("content", "")) for message in messages)
+                calls.append((agent_level, call_function, joined))
+                if call_function == "root_cause_analysis":
+                    return textwrap.dedent(
+                        """
+                        ROOT_CAUSE_REPORT
+                        - repeated_failure_signature: generated oracle remains after product repair
+                        - failing_observation: tests/test_app.py expects RESULT=wrong
+                        - rejected_hypotheses:
+                          - changing app.py RESULT would contradict SPEC.md
+                        - chosen_root_cause: the generated test oracle contradicts SPEC.md
+                        - patch_target: tests/test_app.py
+                        - patch_rule: send the conflict to independent project-policy triage
+                        - stop_rule: do not edit product code or tests without authorization
+                        """
+                    ).strip()
+                if call_function == "patch_planner":
+                    return textwrap.dedent(
+                        """
+                        PATCH_PLAN
+                        - proposition: If SPEC fixes RESULT=actual, no product edit may satisfy a generated test expecting wrong
+                        - required_path: app.py
+                        - readonly_paths: SPEC.md, app.py
+                        - forbidden_paths: tests/test_app.py
+                        - patch_type: missing_context
+                        - escalation: generated_test_oracle_triage
+                        - minimal_patch_goal: obtain an independent ownership verdict for the contradictory generated assertion
+                        - stop_rule: stop before artifact generation until path-gated triage authorizes an action
+                        """
+                    ).strip()
+                if call_function == "project_policy_triage":
+                    return json.dumps(
+                        {
+                            "trigger": "generated_test_oracle_conflict",
+                            "case_type": "test_harness",
+                            "confidence": "high",
+                            "selected_hypothesis": "H_test",
+                            "product_violation_evidence": [],
+                            "test_contradiction_evidence": [
+                                "tests/test_app.py asserts RESULT == wrong while SPEC.md fixes RESULT == actual"
+                            ],
+                            "project_policy_basis": ["SPEC.md: RESULT must remain actual"],
+                            "safe_next_action": "edit_test_harness",
+                            "editable_paths": ["tests/test_app.py"],
+                            "readonly_paths": ["app.py", "SPEC.md"],
+                            "forbidden_actions": ["do not change RESULT to wrong"],
+                            "rationale": "The machine-owned assertion contradicts the fixed specification.",
+                        }
+                    )
+                if call_function in {
+                    "generate_artifact",
+                    "repair_artifact",
+                    "semantic_repair",
+                    "artifact_writer",
+                }:
+                    artifact_calls += 1
+                    if "strategy: replace_test_harness" in joined:
+                        return textwrap.dedent(
+                            """
+                            BEGIN_SEARCH_REPLACE: tests/test_app.py
+                            <<<<<<< SEARCH
+                                    self.assertEqual(RESULT, "wrong")
+                            =======
+                                    self.assertEqual(RESULT, "actual")
+                            >>>>>>> REPLACE
+                            END_SEARCH_REPLACE
+                            """
+                        ).strip()
+                    if artifact_calls == 1:
+                        return textwrap.dedent(
+                            """
+                            BEGIN_SEARCH_REPLACE: app.py
+                            <<<<<<< SEARCH
+                            PRIMARY = "old"
+                            =======
+                            PRIMARY = "fixed"
+                            >>>>>>> REPLACE
+                            END_SEARCH_REPLACE
+                            """
+                        ).strip()
+                    return textwrap.dedent(
+                        """
+                        BEGIN_SEARCH_REPLACE: app.py
+                        <<<<<<< SEARCH
+                        RESULT = "actual"
+                        =======
+                        RESULT = "actual"
+                        >>>>>>> REPLACE
+                        END_SEARCH_REPLACE
+                        """
+                    ).strip()
+                raise AssertionError(f"unexpected LLM call: {call_function}")
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "SPEC.md").write_text(
+                "# SPEC\n\nPRIMARY must be fixed. RESULT must remain actual.\n",
+                encoding="utf-8",
+            )
+            (project / "app.py").write_text(
+                'PRIMARY = "old"\nRESULT = "actual"\n',
+                encoding="utf-8",
+            )
+            tests_dir = project / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "test_app.py").write_text(
+                textwrap.dedent(
+                    """
+                    import unittest
+                    from app import PRIMARY, RESULT
+
+                    class AppTests(unittest.TestCase):
+                        def test_primary(self):
+                            self.assertEqual(PRIMARY, "fixed")
+
+                        def test_generated_oracle(self):
+                            self.assertEqual(RESULT, "wrong")
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "implement the fixed app contract and generated tests",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--skip-pm",
+                        "--domain-modeling",
+                        "never",
+                        "--judge-mode",
+                        "command-only",
+                        "--include",
+                        "app.py",
+                        "--include",
+                        "tests/test_app.py",
+                        "--require-path",
+                        "tests/test_app.py",
+                        "--apply",
+                        "--precheck",
+                        "--max-rounds",
+                        "4",
+                        "--protocol-repair-rounds",
+                        "0",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "1",
+                        "--test-command",
+                        f"{sys.executable} -m unittest discover -s tests -v",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            app_source = (project / "app.py").read_text(encoding="utf-8")
+            test_source = (tests_dir / "test_app.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0)
+        self.assertIn('PRIMARY = "fixed"', app_source)
+        self.assertIn('self.assertEqual(RESULT, "actual")', test_source)
+        self.assertEqual(manifest["final_verdict"], "approved")
+        self.assertEqual(manifest["pending_patch_plan_doc"], "")
+        self.assertIn("project_policy_triage", [call[1] for call in calls])
+        self.assertIn(
+            "generated_test_oracle_triage_authorized",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
+        authorized_writer = next(
+            joined
+            for _level, function, joined in calls
+            if function in {"repair_artifact", "artifact_writer"}
+            and "strategy: replace_test_harness" in joined
+        )
+        self.assertIn("tests/test_app.py", authorized_writer)
+        self.assertIn("app.py", manifest["project_policy_triages"][-1]["readonly_paths"])
+
     def test_agent_routes_malformed_semantic_repair_to_format_repair(self):
         calls = []
 

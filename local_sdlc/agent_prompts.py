@@ -203,13 +203,21 @@ def patch_planner_instruction(brief: str, role_label: str, analysis_doc: str) ->
         - readonly_paths: comma-separated evidence paths or "(none)"
         - forbidden_paths: comma-separated paths that must not be edited
         - patch_type: search_replace|unified_diff|missing_context
+        - escalation: none|generated_test_oracle_triage|collect_context
         - minimal_patch_goal: one smallest behavior change
         - stop_rule: when the artifact writer must stop instead of guessing
 
         Validity rule:
         The plan is valid only if required_path is not under tests/ and the
         minimal_patch_goal can be implemented as one atomic product-code edit.
-        If that is impossible, use patch_type=missing_context.
+        If that is impossible, use patch_type=missing_context. Use
+        escalation=generated_test_oracle_triage only when the executable
+        evidence identifies a machine-owned generated test that may contradict
+        SPEC.md and no admissible product edit can satisfy both propositions.
+        The planner cannot authorize or apply a test edit; independent
+        project-policy triage and the runner's path gate must do that. Use
+        escalation=collect_context only when a named missing file or symbol
+        could make a product-code plan possible. Otherwise use escalation=none.
         """
     ).strip()
 

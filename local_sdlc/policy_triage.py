@@ -26,6 +26,21 @@ JUDGE_OWNERSHIP_VALUES = frozenset(
 )
 
 
+def patch_plan_requests_generated_test_oracle_triage(document: str) -> bool:
+    """Accept only an explicit, unambiguous planner escalation pair."""
+    patch_types = re.findall(
+        r"(?mi)^\s*-\s*patch_type\s*:\s*([a-z_]+)\s*$",
+        document,
+    )
+    escalations = re.findall(
+        r"(?mi)^\s*-\s*escalation\s*:\s*([a-z_]+)\s*$",
+        document,
+    )
+    return patch_types == ["missing_context"] and escalations == [
+        "generated_test_oracle_triage"
+    ]
+
+
 def judge_ownership_classification(document: str) -> str:
     """Extract the judge's explicit ownership vote without interpreting prose."""
     match = re.search(

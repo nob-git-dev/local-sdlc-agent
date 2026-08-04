@@ -239,6 +239,36 @@ python3 -m compileall -q package
         self.assertEqual(split_decision.action, "split_stage")
         self.assertFalse(split_decision.human_required)
 
+    def test_missing_context_is_semantic_recovery_not_format_repair(self):
+        stage = self.local_sdlc.StageWorkItem(
+            stage_id="S03",
+            title="Repository operations",
+            goal="Implement repository operations.",
+            suggested_paths=("minigit/repository.py", "minigit/index.py"),
+            test_focus=("repository tests",),
+            writable_paths=("minigit/repository.py", "minigit/index.py"),
+        )
+        summary = self.local_sdlc.StageRunSummary(
+            stage_id=stage.stage_id,
+            title=stage.title,
+            status="failed",
+            run_dir="run/s03",
+            exit_code=1,
+            failure_summary={"failure_type": "missing_context"},
+        )
+
+        decision = self.local_sdlc.decide_stage_recovery(
+            stage,
+            summary,
+            recovery_count=0,
+            max_recoveries=3,
+            previous_actions=(),
+        )
+
+        self.assertFalse(self.local_sdlc.is_protocol_failure_type("missing_context"))
+        self.assertTrue(self.local_sdlc.is_protocol_failure_type("format_repair_missing_context"))
+        self.assertNotEqual(decision.action, "format_repair")
+
     def test_stage_split_preserves_paths_and_defers_joint_command_to_last_slice(self):
         stage = self.local_sdlc.StageWorkItem(
             stage_id="S04",

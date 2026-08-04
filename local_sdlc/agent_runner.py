@@ -34,6 +34,7 @@ from .policy_triage import (
     generated_test_oracle_triage_needed,
     generated_test_oracle_evidence_document,
     judge_ownership_classification,
+    patch_plan_requests_generated_test_oracle_triage,
     project_policy_triage_enabled as triage_is_enabled,
     triage_allows_test_harness_edit,
     triage_string_list,
@@ -1663,6 +1664,7 @@ def command_agent(args: argparse.Namespace) -> int:
             initial_command_docs,
         )
     initial_commands_passed = bool(args.precheck and initial_command_docs)
+    latest_command_docs = list(initial_command_docs)
     html_smoke_only_passed = bool(html_targets and not test_commands and not redis_checks)
     if (
         initial_checks
@@ -2525,6 +2527,7 @@ def command_agent(args: argparse.Namespace) -> int:
         semantic_repair_mode = bool(
             round_index > 1
             and binding_semantic_contracts
+            and active_repair_strategy not in TEST_HARNESS_WRITE_STRATEGIES
             and role_label not in {"format_repair", "root_cause_repair", "artifact_plan_repair"}
         )
         if semantic_repair_mode:
@@ -2842,6 +2845,128 @@ def command_agent(args: argparse.Namespace) -> int:
             patch_plan_missing_context = bool(
                 re.search(r"(?im)^\s*-\s*patch_type\s*:\s*missing_context\s*$", patch_plan_doc)
             )
+            if patch_plan_requests_generated_test_oracle_triage(patch_plan_doc):
+                stage_owned_test_paths = unique_ordered(
+                    [*stage_generated_test_paths, *stage_scope_test_paths]
+                )
+                failing_generated_tests = stage_test_paths_in_command_docs(
+                    latest_command_docs,
+                    stage_owned_test_paths,
+                )
+                triage_record = None
+                if failing_generated_tests:
+                    triage_evidence = generated_test_oracle_evidence_document(
+                        project,
+                        spec,
+                        failing_generated_tests,
+                        latest_command_docs,
+                        latest_judge_review_document(),
+                    )
+                    triage_record = run_project_policy_triage(
+                        round_index,
+                        "generated_test_oracle_conflict",
+                        triage_evidence,
+                        "decide whether the planner's no-product-patch result is a generated test-oracle contradiction",
+                    )
+                    if triage_record is not None:
+                        triage_record["failure_signature"] = last_functional_failure_signature or ""
+                        triage_record["failure_family_signature"] = (
+                            last_functional_failure_family_signature or ""
+                        )
+                        write_partial_manifest(
+                            "project_policy_triage_bound_to_failure",
+                            {"current_round": round_index},
+                        )
+                triage_editable = (
+                    [
+                        path
+                        for path in triage_string_list(triage_record, "editable_paths")
+                        if path in failing_generated_tests
+                    ]
+                    if triage_allows_test_harness_edit(triage_record)
+                    else []
+                )
+                if triage_editable:
+                    triage_readonly = [
+                        path
+                        for path in triage_string_list(triage_record, "readonly_paths")
+                        if path not in triage_editable
+                    ]
+                    allowed_artifact_paths, readonly_artifact_paths = merge_artifact_policy_paths(
+                        allowed_artifact_paths,
+                        readonly_artifact_paths,
+                        triage_editable,
+                        triage_readonly,
+                    )
+                    context_files = unique_ordered(
+                        [*context_files, *triage_editable, *triage_readonly]
+                    )
+                    artifact_policy = ArtifactPathPolicy(
+                        allowed_paths=tuple(allowed_artifact_paths),
+                        readonly_paths=tuple(readonly_artifact_paths),
+                        existing_paths=tuple(existing_project_paths),
+                        allow_extra_new_files=not bool(args.no_extra_files),
+                    )
+                    remember_repair_advice(
+                        RepairAdvice(
+                            strategy="replace_test_harness",
+                            focus_files=tuple(
+                                unique_ordered([*triage_editable, *triage_readonly])
+                            ),
+                            instructions=(
+                                "Independent project-policy triage authorized a generated test-oracle repair.",
+                                "Edit only the authorized stage-owned generated test paths.",
+                                "Align each test proposition with SPEC.md without weakening fixed acceptance evidence.",
+                            ),
+                            evidence=(
+                                "patch_planner_escalation=generated_test_oracle_triage",
+                                f"project_policy_triage={triage_record.get('case_type')}:{triage_record.get('safe_next_action')}",
+                                "failing generated tests: " + ", ".join(failing_generated_tests),
+                            ),
+                        ),
+                        latest_command_docs,
+                    )
+                    active_patch_plan_doc = ""
+                    pending_patch_plan_doc = ""
+                    pending_deterministic_repair = None
+                    root_cause_patch_pending = True
+                    final_verdict = "patch_failed"
+                    final_failure_type = "generated_test_oracle_triage_authorized"
+                    authorization_doc = textwrap.dedent(
+                        f"""
+                        ## Generated Test Oracle Triage Authorization
+
+                        - failure_type: generated_test_oracle_triage_authorized
+                        - editable_paths: {", ".join(triage_editable)}
+                        - readonly_paths: {", ".join(triage_readonly) or "(none)"}
+                        - source: independent project-policy triage
+
+                        Runner action:
+                        - Discard the impossible product patch plan.
+                        - Route the next bounded round to generated-test repair.
+                        - Preserve fixed acceptance evidence as read-only.
+                        """
+                    ).strip()
+                    path = write_run_document(
+                        run_dir,
+                        f"03-r{round_index:02d}-generated-test-oracle-triage-authorized.md",
+                        authorization_doc,
+                    )
+                    written.append(path)
+                    documents.append(
+                        (
+                            f"Generated test oracle triage authorization round {round_index}",
+                            authorization_doc,
+                        )
+                    )
+                    record_transition(final_failure_type, round_index, authorization_doc)
+                    write_partial_manifest(
+                        "generated_test_oracle_triage_authorized",
+                        {"current_round": round_index},
+                    )
+                    if not consume_failure_budget(final_failure_type, round_index):
+                        break
+                    continue
             if patch_plan_missing_context and not plan_required_paths:
                 failure_doc = textwrap.dedent(
                     f"""
@@ -3867,6 +3992,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 command_docs.append((f"Repair advice round {round_index}", advice_doc))
 
         documents.extend(command_docs)
+        latest_command_docs = list(command_docs)
         current_failure_score = command_failure_score(command_docs)
         current_failure_signature = command_failure_signature(command_docs)
         current_failure_family_signature = command_failure_family_signature(command_docs)

@@ -1468,6 +1468,8 @@ AutonomyPass :=
 - terminal artifact failure は親 stage の recovery reason を上書きし、古い acceptance failure type は補助 evidence として保持する。
 - root-cause analysis には、単純な文書 recency window とは独立して最新の失敗コマンド、acceptance gate、observation summary、mechanical probe、rejected candidate evidence を上限付きで固定する。
 - `MISSING_CONTEXT` が既に context 集合へ含まれる既存 path を要求した場合も、内容が global character budget で切れた可能性を認め、その path を次 round の context 先頭へ昇格して root-cause analysis を再実行する。
+- Patch Planner が製品コードでは仕様と生成テストを同時に満たせないと判断した場合、`patch_type=missing_context` と `escalation=generated_test_oracle_triage` の一意な組だけを審査要求として受理する。固定SPEC、実行結果、stage-owned failing test sourceによる独立Project Policy Triageが medium/high confidence で許可した交差pathだけを次roundで writable とし、元のproduct patch planは破棄する。
+- bare `missing_context` は意味・文脈不足として扱い、artifact protocol failureには分類しない。`format_repair_missing_context` と `semantic_repair_missing_context` のみ各protocol recoveryへ送る。
 - search と replacement が同一の candidate は、他の content mismatch を併発していても `effect(A,S)=empty` を優先し、apply/test/format repair を行わず root-cause analysis へ戻す。
 - mechanical probe が class method の不在を確定した場合、型を機械的に追跡できる receiver への unresolved call は apply 前に拒否する。ただし owner が既に method を持つ場合、または同一 artifact transaction が owner に method を定義する場合はこの拒否条件から除外する。
 - stream guard は同一行/tokenだけでなく周期的な複数行 block の反復を generic size limit より先に判定する。
@@ -1499,6 +1501,8 @@ AutonomyPass :=
 - [x] identical search/replace は併存する lint finding より zero-effect 分類を優先する。
 - [x] typed receiver が mechanically absent API を呼び、owner または同一 transaction に定義がない artifact は apply 前に拒否される。
 - [x] periodic multi-line runaway は `stream_artifact_too_large` より先に `stream_repeated_text_runaway` として停止する。
+- [x] product edit不能なgenerated-test oracle conflictは、明示的planner escalation、独立triage、stage-owned path intersectionをすべて通過した場合だけtest repairへ進む。
+- [x] bare `missing_context` は親Supervisorでformat repairに誤分類されない。
 - [x] multi-path stage failure はユーザー質問なしで分割される。
 - [x] single-path stage failure は root-cause evidence を引き継いだ新 attempt になる。
 - [x] persistent STALLED parent は evidence-bound な別 run へ再開できる。
@@ -1506,7 +1510,7 @@ AutonomyPass :=
 - [x] approval-required / safety-blocked / budget-exhausted は actionable blocked data を持つ。
 - [x] `run-stages` の既定 worktree mode は `copy` である。
 - [x] autonomy audit が unauthorized external intervention を区別して数える。
-- [x] unit/integration test 657件が成功する。
+- [x] unit/integration test 660件が成功する。
 
 ### 検証
 
@@ -1514,7 +1518,8 @@ AutonomyPass :=
   strict completion、intervention audit の直接テスト。
 - `tests.test_stage_runner`: 自動 root-cause recovery、format repair、goal stall recovery、
   unverified completion rejection、default isolation の結合テスト。
-- `python3 -m unittest discover -s tests`: `Ran 657 tests ... OK`。
+- `tests.test_local_sdlc.LocalSDLCTest.test_patch_planner_escalation_routes_only_generated_test_to_independent_triage`: 製品修正、zero-effect拒否、root cause、独立triage、生成テスト限定修正、合格までの結合経路が成功。
+- `python3 -m unittest discover -s tests`: `Ran 660 tests ... OK`。
 - 次の汎化検証は、harness を commit で固定した後の Mini Git、再固定後の
   held-out DAG job engine の順に行う。
 

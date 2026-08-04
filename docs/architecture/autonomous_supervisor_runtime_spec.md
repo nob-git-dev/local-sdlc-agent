@@ -87,6 +87,8 @@ Instead, it must define how new propositions are admitted.
 | P16 | Periodic artifact runaway changes protocol before size exhaustion. | A repeated multi-line block is classified as `stream_repeated_text_runaway` before the generic byte limit, and the next bounded retry requires one JSON search/replace envelope. |
 | P17 | A newly executable test harness may expose more failures without being a regression. | In copy-worktree mode only, the missing required-path set strictly shrinks, a changed `tests/` path becomes present, the candidate is marked `candidate_provisional_progress`, and no copy-back occurs before all gates pass. |
 | P18 | Parent recovery follows the terminal child failure. | The stage summary prefers `final_failure_type`, preserves the earlier acceptance failure as evidence, and admits candidate-derived focus paths only inside the declared repair scope. |
+| P19 | A product-impossible generated-test conflict requires independent authorization. | An exact planner pair (`patch_type=missing_context`, `escalation=generated_test_oracle_triage`) triggers primary-evidence policy triage; only a medium/high-confidence `test_harness` verdict can make the intersecting stage-owned failing test paths writable. |
+| P20 | Semantic context shortage is not an artifact transport failure. | Bare `missing_context` never selects format repair; only explicitly prefixed format/semantic repair protocol failures enter protocol recovery. |
 
 ## Progress Vector
 
@@ -621,6 +623,49 @@ effect(A, W) = empty
   and next(root_cause_analysis)
 ```
 
+Generated-test ownership is a two-key authorization rather than an inferred
+permission from root-cause prose. Let `P` be the patch plan, `T` independent
+project-policy triage, `F` machine-owned failing test paths, and `W` the next
+round's writable set:
+
+```text
+OracleEscalation(P) :=
+  Exact(P.patch_type, missing_context)
+  and Exact(P.escalation, generated_test_oracle_triage)
+
+AuthorizeTestRepair(P, T, F) :=
+  OracleEscalation(P)
+  and T.case_type = test_harness
+  and T.safe_next_action = edit_test_harness
+  and T.confidence in {medium, high}
+  and (T.editable_paths intersect F) != empty
+
+AuthorizeTestRepair(P, T, F)
+  -> W := T.editable_paths intersect F
+  and discard(P)
+  and next(repair_coder)
+
+not AuthorizeTestRepair(P, T, F)
+  -> no_test_edit
+```
+
+`T` receives fixed SPEC, complete generated-test source, current executable
+command evidence, and an advisory prior judge vote. It does not receive repair
+hypotheses as primary evidence and cannot apply an edit itself. Fixed acceptance
+tests never enter `F`. A test-repair strategy also disables product-only
+semantic-repair routing for that round.
+
+Failure taxonomy remains disjoint:
+
+```text
+ProtocolFailure(missing_context) := false
+ProtocolFailure(format_repair_missing_context) := true
+ProtocolFailure(semantic_repair_missing_context) := true
+```
+
+This prevents a parent supervisor from treating an unresolved proposition or
+missing semantic input as malformed artifact serialization.
+
 The autonomy benchmark passes only when:
 
 ```text
@@ -675,8 +720,9 @@ TestPass(e) := RecognizedTestRunner(e) -> NonVacuousTestEvidence(e)
 認識済み `unittest` runner の `Ran 0 tests` は、Python実装ごとの終了コード差に依存せず
 `missing_test_harness` へ正規化する。
 
-Verified by `tests.test_autonomy_runtime`, `tests.test_stage_runner`, and the
-full 657-test suite. Cross-domain validation still follows the frozen sequence:
+Verified by `tests.test_agent_components`, `tests.test_autonomy_runtime`, the
+planner-to-triage integration test in `tests.test_local_sdlc`, and the full
+660-test suite. Cross-domain validation still follows the frozen sequence:
 freeze the harness, run Mini Git, generalize only supported findings, freeze
 again, then run the held-out DAG job engine without mid-run intervention.
 
