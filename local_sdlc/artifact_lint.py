@@ -577,6 +577,24 @@ def artifact_stream_guard(
     encoded_len = len(text.encode("utf-8"))
     artifact_offset = first_artifact_marker_offset(text)
     stripped = text.lstrip()
+    if stripped.startswith("{"):
+        first_key_match = re.match(r'^\{\s*"(?P<key>(?:\\.|[^"\\])*)"\s*:', stripped)
+        if first_key_match:
+            try:
+                first_key = json.loads(f'"{first_key_match.group("key")}"')
+            except json.JSONDecodeError:
+                first_key = ""
+            if first_key not in {"artifacts", "type"}:
+                return ArtifactStreamGuardResult(
+                    should_abort=True,
+                    reason=(
+                        f"unsupported top-level JSON key {first_key!r}; "
+                        "artifact JSON must begin with `artifacts` or `type`"
+                    ),
+                    code="stream_json_schema_mismatch",
+                    score=1,
+                    threshold=0,
+                )
     budget_artifact_offset = artifact_offset
     if budget_artifact_offset < 0 and stripped.startswith("{") and '"artifacts"' in stripped[:non_artifact_prefix_threshold]:
         budget_artifact_offset = len(text) - len(stripped)
@@ -1025,6 +1043,47 @@ def deterministic_project_policy_triage_from_evidence(
     stage_generated_test_paths: Sequence[str] = (),
 ) -> dict[str, object] | None:
     """Classify mechanically provable generated-test oracle conflicts."""
+    if trigger == "test_harness_ownership" and project is not None:
+        owned_tests = [
+            path
+            for path in unique_ordered(stage_generated_test_paths)
+            if path.startswith("tests/")
+        ]
+        missing_tests = [
+            path
+            for path in owned_tests
+            if not resolve_project_path(project, path).is_file()
+            and (
+                f"required path missing: {path}" in evidence_doc
+                or path in evidence_doc
+            )
+        ]
+        zero_test_evidence = (
+            "verification infrastructure: unittest command discovered zero tests"
+            in evidence_doc.lower()
+            or "no tests ran" in evidence_doc.lower()
+        )
+        if missing_tests and zero_test_evidence:
+            return {
+                "trigger": trigger,
+                "case_type": "test_harness",
+                "confidence": "high",
+                "project_policy_basis": [
+                    "The test path is declared as stage-owned generated output.",
+                    "The path is absent on disk and configured discovery executed zero tests.",
+                ],
+                "safe_next_action": "edit_test_harness",
+                "editable_paths": missing_tests,
+                "readonly_paths": [],
+                "forbidden_actions": [
+                    "Do not edit fixed acceptance tests.",
+                    "Do not grant write access to undeclared test paths.",
+                ],
+                "rationale": (
+                    "Creating an absent, declared stage-owned test harness satisfies a machine-owned "
+                    "stage obligation; it does not alter an existing test oracle."
+                ),
+            }
     if trigger != "generated_test_oracle_conflict":
         return None
     if "Mechanical Probe: Python storage state" not in evidence_doc:

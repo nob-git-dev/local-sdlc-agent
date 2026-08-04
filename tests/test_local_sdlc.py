@@ -74,6 +74,28 @@ class LocalSDLCTest(LocalSDLCTestCase):
 
         self.assertEqual(score, 2)
 
+    def test_command_failure_score_does_not_double_count_acceptance_gate(self):
+        required = self.local_sdlc.command_result_document(
+            "require-path pkg/worker.py",
+            1,
+            "",
+            "required path missing: pkg/worker.py\n",
+            0.0,
+        )
+        derived = self.local_sdlc.command_result_document(
+            "acceptance-evidence-gate",
+            1,
+            "{}",
+            "X01: fail - Executable check must pass: require-path pkg/worker.py\n",
+            0.0,
+        )
+
+        score = self.local_sdlc.command_failure_score(
+            [("required", required), ("derived gate", derived)]
+        )
+
+        self.assertEqual(score, 1)
+
     def test_executable_command_gate_blockers_override_mapped_acceptance_pass(self):
         passed = self.local_sdlc.command_result_document(
             "python3 -m unittest discover -s tests",
@@ -158,6 +180,27 @@ class LocalSDLCTest(LocalSDLCTestCase):
 
         self.assertEqual(sig1, sig2)
         self.assertIn("Row 195 not found", sig1 or "")
+
+    def test_command_failure_signature_normalizes_round_labels(self):
+        doc1 = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests",
+            1,
+            '{"label": "Command result round 5.2"}\n',
+            "X01: fail\n",
+            0.0,
+        )
+        doc2 = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests",
+            1,
+            '{"label": "Command result round 11.2"}\n',
+            "X01: fail\n",
+            0.0,
+        )
+
+        self.assertEqual(
+            self.local_sdlc.command_failure_signature([("first", doc1)]),
+            self.local_sdlc.command_failure_signature([("second", doc2)]),
+        )
 
     def test_command_failure_family_signature_ignores_assertion_payload_drift(self):
         doc1 = self.local_sdlc.command_result_document(
@@ -2337,7 +2380,22 @@ AssertionError: 1 != 3
         result = self.local_sdlc.artifact_stream_guard(output)
 
         self.assertTrue(result.should_abort)
-        self.assertEqual(result.code, "stream_json_plan_before_artifact")
+        self.assertEqual(result.code, "stream_json_schema_mismatch")
+
+    def test_artifact_stream_guard_aborts_unsupported_json_schema_immediately(self):
+        result = self.local_sdlc.artifact_stream_guard(
+            '{"propositions":["P1"],"edges":[]}'
+        )
+
+        self.assertTrue(result.should_abort)
+        self.assertEqual(result.code, "stream_json_schema_mismatch")
+
+    def test_artifact_stream_guard_accepts_supported_json_first_keys(self):
+        envelope = self.local_sdlc.artifact_stream_guard('{"artifacts":[')
+        single = self.local_sdlc.artifact_stream_guard('{"type":"search_replace",')
+
+        self.assertFalse(envelope.should_abort)
+        self.assertFalse(single.should_abort)
 
     def test_artifact_stream_guard_aborts_json_file_artifact_mixed_with_begin_file(self):
         output = (
@@ -3697,6 +3755,42 @@ AssertionError: 1 != 3
 
         self.assertEqual(paths["required_paths"], [])
 
+    def test_patch_plan_paths_accepts_only_runner_authorized_missing_path(self):
+        authorized_plan = "PATCH_PLAN\n- required_path: pkg/checkpoint.py\n"
+        unauthorized_plan = "PATCH_PLAN\n- required_path: pkg/other.py\n"
+
+        authorized = self.local_sdlc.patch_plan_paths_from_text(
+            authorized_plan,
+            ["pkg/existing.py"],
+            ["pkg/checkpoint.py"],
+        )
+        unauthorized = self.local_sdlc.patch_plan_paths_from_text(
+            unauthorized_plan,
+            ["pkg/existing.py"],
+            ["pkg/checkpoint.py"],
+        )
+
+        self.assertEqual(authorized["required_paths"], ["pkg/checkpoint.py"])
+        self.assertEqual(unauthorized["required_paths"], [])
+
+    def test_effective_artifact_format_follows_repair_contract(self):
+        self.assertEqual(
+            self.local_sdlc.effective_artifact_format(
+                "legacy", {"json_search_replace_recovery"}
+            ),
+            "json",
+        )
+        self.assertEqual(
+            self.local_sdlc.effective_artifact_format(
+                "json", {"single_artifact_required"}
+            ),
+            "legacy",
+        )
+        self.assertEqual(
+            self.local_sdlc.effective_artifact_format("auto", set()),
+            "auto",
+        )
+
     def test_repair_advice_classifies_cross_stage_constructor_shape_mismatch(self):
         doc = """
         ERROR: test_basic_create_table (test_parser.TestParserCreateTable.test_basic_create_table)
@@ -3741,6 +3835,33 @@ AssertionError: 1 != 3
         self.assertNotIn("tests/__init__.py", advice.focus_files)
         self.assertFalse(any("minisqlite" in path for path in advice.focus_files))
         self.assertTrue(any("stage-authorized" in item for item in advice.instructions))
+
+    def test_repair_advice_detects_missing_declared_test_file_after_zero_discovery(self):
+        missing_path = self.local_sdlc.command_result_document(
+            "require-path tests/test_checkpoint.py",
+            1,
+            "",
+            "required path missing: tests/test_checkpoint.py\n",
+            0.0,
+        )
+        zero_tests = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests -p test_checkpoint.py -v",
+            5,
+            "",
+            "NO TESTS RAN\nverification infrastructure: unittest command discovered zero tests\n",
+            0.01,
+        )
+
+        advice = self.local_sdlc.repair_advice_from_command_docs(
+            [("required", missing_path), ("focused tests", zero_tests)],
+            ["python3 -m unittest discover -s tests -p test_checkpoint.py -v"],
+            generated_test_paths=("tests/test_checkpoint.py",),
+        )
+
+        self.assertIsNotNone(advice)
+        assert advice is not None
+        self.assertEqual(advice.strategy, "create_test_harness")
+        self.assertEqual(advice.focus_files, ("tests/test_checkpoint.py",))
 
     def test_repair_advice_uses_project_paths_instead_of_benchmark_package_names(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -4547,6 +4668,30 @@ FAILED (failures=1)
         self.assertEqual(triage["safe_next_action"], "edit_test_harness")
         self.assertEqual(triage["editable_paths"], ["tests/test_btree.py"])
         self.assertTrue(any("tests/test_pager.py" in item for item in triage["project_policy_basis"]))
+
+    def test_deterministic_policy_triage_authorizes_absent_declared_test_harness(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            evidence = textwrap.dedent(
+                """
+                - stage_owned_generated_tests: tests/test_worker.py
+                required path missing: tests/test_worker.py
+                NO TESTS RAN
+                verification infrastructure: unittest command discovered zero tests
+                """
+            )
+
+            triage = self.local_sdlc.deterministic_project_policy_triage_from_evidence(
+                "test_harness_ownership",
+                evidence,
+                project,
+                ["tests/test_worker.py"],
+            )
+
+        self.assertIsNotNone(triage)
+        assert triage is not None
+        self.assertEqual(triage["safe_next_action"], "edit_test_harness")
+        self.assertEqual(triage["editable_paths"], ["tests/test_worker.py"])
 
     def test_test_harness_action_gate_rejects_non_stage_owned_test(self):
         triage = {
@@ -6698,6 +6843,77 @@ Required fixes:
         self.assertEqual(manifest["functional_rounds_used"], 0)
         self.assertEqual(calls[1], ("coder", "format_repair"))
 
+    def test_agent_parses_json_recovery_when_parent_format_is_legacy(self):
+        calls = []
+        outputs = [
+            "<<<<<<< SEARCH\nVALUE = 'old'\n=======\nVALUE = 'new'\n>>>>>>> REPLACE\n",
+            json.dumps(
+                {
+                    "artifacts": [
+                        {
+                            "type": "search_replace",
+                            "path": "app.py",
+                            "search": "VALUE = 'old'",
+                            "replace": "VALUE = 'new'",
+                        }
+                    ]
+                }
+            ),
+        ]
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                calls.append((agent_level, call_function))
+                return outputs[len(calls) - 1]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            (project / "app.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "fix app",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--artifact-format",
+                        "legacy",
+                        "--max-rounds",
+                        "2",
+                        "--protocol-repair-rounds",
+                        "1",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            source = (project / "app.py").read_text(encoding="utf-8")
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertIn("VALUE = 'new'", source)
+        self.assertEqual(manifest["protocol_rounds_used"], 1)
+        self.assertEqual(calls[1], ("coder", "format_repair"))
+
     def test_agent_uses_adaptive_round_when_command_failures_shrink(self):
         calls = []
         outputs = [
@@ -7015,10 +7231,9 @@ Required fixes:
 
         self.assertEqual(result, 0)
         self.assertIn("return 1", source)
-        self.assertEqual(len(manifest["provisional_candidates"]), 1)
-        self.assertFalse(manifest["provisional_candidates"][0]["copied_back"])
+        self.assertEqual(manifest["provisional_candidates"], [])
         self.assertEqual(manifest["candidate_regressions"], [])
-        self.assertIn(
+        self.assertNotIn(
             "candidate_provisional_progress",
             {item["failure_type"] for item in manifest["state_transitions"]},
         )
@@ -10190,7 +10405,7 @@ END_FILE"""
         self.assertGreaterEqual(len(calls), 1)
         self.assertIn("stream_mixed_artifact_formats", lint_doc)
         self.assertIn("- failure_type: stream_mixed_artifact_formats", transition_doc)
-        self.assertIn(manifest["final_verdict"], {"needs_changes", "not_judged"})
+        self.assertEqual(manifest["final_verdict"], "patch_failed")
 
     def test_html_smoke_flags_broken_tetris_file(self):
         with tempfile.TemporaryDirectory() as temp:

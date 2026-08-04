@@ -571,7 +571,17 @@ def repair_advice_from_command_docs(
         )
         evidence.append("unittest runner observed pytest-specific test harness usage")
 
-    if "start directory is not importable: 'tests'" in lowered or 'start directory is not importable: "tests"' in lowered:
+    missing_generated_test_harness = bool(generated_test_focus) and (
+        "start directory is not importable: 'tests'" in lowered
+        or 'start directory is not importable: "tests"' in lowered
+        or "verification infrastructure: unittest command discovered zero tests" in lowered
+        or "no tests ran" in lowered
+        or any(
+            f"required path missing: {path}" in lowered
+            for path in generated_test_focus
+        )
+    )
+    if missing_generated_test_harness:
         strategy = "create_test_harness"
         focus_files.extend(
             unique_ordered(
@@ -586,7 +596,9 @@ def repair_advice_from_command_docs(
                 "Keep tests dependency-free; do not use pytest fixtures or pytest-only assertions unless the configured command uses pytest.",
             ]
         )
-        evidence.append("unittest discovery start directory did not exist before the authorized test artifact was created")
+        evidence.append(
+            "configured unittest discovery could not execute the declared stage-owned generated test harness"
+        )
 
     if "search text must occur exactly once" in lowered or "found 0" in lowered:
         strategy = "whole_file_or_shorter_search"

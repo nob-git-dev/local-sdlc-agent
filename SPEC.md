@@ -1462,9 +1462,14 @@ AutonomyPass :=
   計画読込時に検証し、関数名だけの曖昧な指定を API call 前に拒否する。
 - 1 stage の writable path 数が上限を超える場合は、API call 前に機械的に分割する。
 - artifact protocol failure の次 action は failure family ごとの bounded format repair とする。marker-based search/replace の malformed / periodic runaway は同じ形式を再試行せず、単一 JSON search_replace envelope へ切り替える。
+- artifact parser は親 run の既定形式ではなく、その round の recovery contract に従う。JSON recovery を要求した round は configured `legacy` でも JSON だけを解析し、non-JSON recovery を要求した round は configured `json` でも marker artifact だけを解析する。
+- artifact stream が JSON object で始まる場合、最初の top-level key は `artifacts` または `type` に限る。`propositions` 等の診断 schema は完了を待たず `stream_json_schema_mismatch` として停止する。
 - candidate regression の rollback は active strategy だけを更新し、既存の mechanical evidence、forbidden hypothesis、owner-file focus を上書き消去してはならない。
+- candidate regression の failure score は初期 precheck と各 repair round で同一の verification vector から算出する。required-path、smoke、configured test command は両方へ含め、他の check から導出される Acceptance Evidence Gate 自体は二重計上しない。
 - 欠落 test harness の生成で raw failure score が増えた候補は、copy-worktree、required path の真の減少、変更済み test path の新規充足がすべて成立する場合だけ暫定保持する。元 project への copy back は全 gate 合格後に限る。
+- stage contract に declared された未作成 test path と unittest の zero-discovery が同時に観測された場合、`create_test_harness` へ機械的に分類する。既存 test oracle の変更とは区別し、product-only root-cause planner より先にその declared path 一つの作成を行う。
 - missing required test path は writable のまま維持し、生成後の test path だけを readonly evidence へ移す。
+- Patch Planner が参照できる未作成 path は runner の既存 writable authority に明示された path だけとする。LLM が path を文書へ書いた事実だけでは権限を付与せず、未宣言 path は解決しない。
 - terminal artifact failure は親 stage の recovery reason を上書きし、古い acceptance failure type は補助 evidence として保持する。
 - root-cause analysis には、単純な文書 recency window とは独立して最新の失敗コマンド、acceptance gate、observation summary、mechanical probe、rejected candidate evidence を上限付きで固定する。
 - `MISSING_CONTEXT` が既に context 集合へ含まれる既存 path を要求した場合も、内容が global character budget で切れた可能性を認め、その path を次 round の context 先頭へ昇格して root-cause analysis を再実行する。
@@ -1490,9 +1495,14 @@ AutonomyPass :=
 
 - [x] artifact protocol failure の次 attempt は format repair に限定される。
 - [x] malformed / periodic marker output の次 attempt は単一 JSON search_replace に切り替わる。
+- [x] per-round recovery contract が configured artifact format を安全に上書きし、legacy 親 run でも JSON recovery artifact を解析できる。
+- [x] artifact schema でない top-level JSON は最初の key が判明した時点で早期停止する。
 - [x] candidate regression 後も以前の mechanical API evidence と owner-file focus が manifest に残る。
+- [x] initial precheck と repair round は同じ verification vector で比較され、derived acceptance gate は failure score に二重計上されない。
 - [x] 隔離環境で欠落 test harness を実行可能にした候補は `candidate_provisional_progress` として保持され、全 gate 合格前には copy back されない。
+- [x] zero-discovery と declared missing test path は `create_test_harness` へ進み、product-only patch plan へ誤配送されない。
 - [x] 未作成の required test path は writable のまま、作成後の generated test だけが readonly evidence になる。
+- [x] planner は runner-authorized missing path を解決できるが、未宣言の新規 path へ write authority を拡張できない。
 - [x] path が一致する fenced full Python module は安全条件内で復旧され、path 不一致や不完全構文は拒否される。
 - [x] 親 stage は子 run の terminal failure type と scope 内の executable focus を使って次 recovery を選ぶ。
 - [x] package import failure は、sibling definition の機械的証拠がある場合に限り `__init__.py` の export boundary へ誘導される。
@@ -1510,7 +1520,7 @@ AutonomyPass :=
 - [x] approval-required / safety-blocked / budget-exhausted は actionable blocked data を持つ。
 - [x] `run-stages` の既定 worktree mode は `copy` である。
 - [x] autonomy audit が unauthorized external intervention を区別して数える。
-- [x] unit/integration test 660件が成功する。
+- [x] unit/integration test 669件が成功する。
 
 ### 検証
 

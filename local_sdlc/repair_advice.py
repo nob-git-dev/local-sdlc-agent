@@ -492,16 +492,22 @@ def deterministic_python_syntax_repair_artifact(
 def patch_plan_paths_from_text(
     plan_doc: str,
     existing_paths: Sequence[str],
+    authorized_paths: Sequence[str] = (),
 ) -> dict[str, list[str]]:
     """Parse PATCH_PLAN path fields without trusting the planner blindly.
 
     The planner may abbreviate a unique basename, but it does not get direct
     write authority. The runner uses this parsed result only after resolving a
-    path to a known project-relative file.
+    path to a known project-relative file or an exact runner-authorized new
+    path. Merely naming a new path in the LLM plan never grants authority.
     """
     existing = tuple(str(path) for path in existing_paths)
+    authorized = tuple(
+        path for path in unique_ordered(str(path) for path in authorized_paths) if path
+    )
+    known = tuple(unique_ordered([*existing, *authorized]))
     by_basename: dict[str, list[str]] = {}
-    for path in existing:
+    for path in known:
         by_basename.setdefault(Path(path).name, []).append(path)
 
     def resolve_path(raw_path: str) -> str | None:
@@ -509,7 +515,7 @@ def patch_plan_paths_from_text(
         if not normalized or normalized.lower() in {"(none)", "none", "n/a"}:
             return None
         normalized = normalized.strip("`'\" ")
-        if normalized in existing:
+        if normalized in known:
             return normalized
         basename_matches = by_basename.get(Path(normalized).name, [])
         if len(basename_matches) == 1:
@@ -538,6 +544,34 @@ def patch_plan_paths_from_text(
                 fields[field_name].append(resolved)
 
     return {key: unique_ordered(value) for key, value in fields.items()}
+
+
+def effective_artifact_format(configured_format: str, modes: set[str]) -> str:
+    """Return the parser format required by the current repair contract.
+
+    A recovery contract may deliberately switch protocols. The parser must
+    follow that per-round contract instead of retaining the parent run's
+    default format and rejecting an otherwise valid recovery artifact.
+    """
+    if {"json_search_replace_recovery", "malformed_search_replace"} & modes:
+        return "json"
+    legacy_only_modes = {
+        "single_artifact_required",
+        "atomic_search_replace_required",
+        "mixed_artifact_formats",
+        "corrupt_unified_diff",
+        "empty_or_skipped_patch",
+        "oversized_python_diff_artifact",
+        "bad_search_replace",
+        "stage_scope_violation",
+        "oversized_python_file_artifact",
+        "json_plan_before_artifact",
+        "semantic_repair_format",
+        "format_repair_protocol",
+    }
+    if legacy_only_modes & modes:
+        return "legacy"
+    return configured_format
 
 def final_failure_focus_from_command_docs(
     command_docs: Sequence[tuple[str, str]],
@@ -644,6 +678,7 @@ def artifact_failure_modes_from_documents(documents: Sequence[tuple[str, str]], 
         "stream_prose_before_artifact",
         "stream_non_artifact_output",
         "stream_json_plan_before_artifact",
+        "stream_json_schema_mismatch",
         "stream_mixed_artifact_formats",
         "stream_multiple_file_artifacts_in_repair",
         "stream_artifact_too_large",
@@ -666,7 +701,10 @@ def artifact_failure_modes_from_documents(documents: Sequence[tuple[str, str]], 
         or "artifact_orphan_search_replace" in recent_text
     ):
         modes.add("json_search_replace_recovery")
-    if "stream_json_plan_before_artifact" in recent_text:
+    if (
+        "stream_json_plan_before_artifact" in recent_text
+        or "stream_json_schema_mismatch" in recent_text
+    ):
         modes.add("json_plan_before_artifact")
     if "stream_mixed_artifact_formats" in recent_text or "mixed json file artifacts" in recent_text:
         modes.add("mixed_artifact_formats")

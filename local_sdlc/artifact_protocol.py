@@ -413,6 +413,16 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
         "runner",
         ("Do not emit JSON plans/propositions.", "Return only the requested file artifacts."),
     ),
+    "stream_json_schema_mismatch": FailureTransition(
+        "stream_json_schema_mismatch",
+        "format_repair",
+        "abort_unsupported_json_and_emit_artifact_schema",
+        "runner",
+        (
+            "Do not emit JSON plans, propositions, graphs, or diagnostic objects.",
+            "Use a supported artifact envelope whose first key is `artifacts`, or switch to one valid marker artifact.",
+        ),
+    ),
     "stream_mixed_artifact_formats": FailureTransition(
         "stream_mixed_artifact_formats",
         "format_repair",
@@ -625,6 +635,7 @@ def is_protocol_failure_type(failure_type: str | None) -> bool:
         return True
     return failure_type in {
         "artifact_invalid",
+        "artifact_orphan_search_replace",
         "artifact_lint_failed",
         "patch_extraction_failed",
         "patch_apply_failed",

@@ -89,6 +89,11 @@ Instead, it must define how new propositions are admitted.
 | P18 | Parent recovery follows the terminal child failure. | The stage summary prefers `final_failure_type`, preserves the earlier acceptance failure as evidence, and admits candidate-derived focus paths only inside the declared repair scope. |
 | P19 | A product-impossible generated-test conflict requires independent authorization. | An exact planner pair (`patch_type=missing_context`, `escalation=generated_test_oracle_triage`) triggers primary-evidence policy triage; only a medium/high-confidence `test_harness` verdict can make the intersecting stage-owned failing test paths writable. |
 | P20 | Semantic context shortage is not an artifact transport failure. | Bare `missing_context` never selects format repair; only explicitly prefixed format/semantic repair protocol failures enter protocol recovery. |
+| P21 | Candidate quality is compared on one stable verification vector. | Initial and repair checks contain the same required-path, smoke, and configured-command identities; the derived acceptance gate is excluded from the failure score. |
+| P22 | A recovery protocol controls both prompting and parsing for its round. | A JSON recovery contract parses JSON even under a legacy parent profile, while a marker-only recovery contract does not silently accept JSON. |
+| P23 | A planner cannot mint write authority. | A missing path resolves only when it is already present in the runner-authorized writable set; an undeclared path remains unresolved. |
+| P24 | An absent declared generated test is a harness-construction obligation. | Declared stage ownership, path absence, and zero-test discovery route to `create_test_harness` before product-only root-cause planning. |
+| P25 | Unsupported artifact JSON stops at schema identification. | Once the first top-level key is known and is neither `artifacts` nor `type`, streaming aborts with `stream_json_schema_mismatch`. |
 
 ## Progress Vector
 
@@ -665,6 +670,32 @@ ProtocolFailure(semantic_repair_missing_context) := true
 
 This prevents a parent supervisor from treating an unresolved proposition or
 missing semantic input as malformed artifact serialization.
+
+Candidate comparison and path authority are likewise explicit:
+
+```text
+StableVector(V0, Vr) := identities(V0) = identities(Vr)
+
+Regression(A) :=
+  StableVector(Vbefore, Vafter)
+  and FailureScore(Vafter) > FailureScore(Vbefore)
+
+FailureScore(V) :=
+  Sum(failures(c) for c in V if not DerivedAcceptanceGate(c))
+
+PlannerPathAllowed(p) :=
+  ExistingProjectPath(p) or RunnerAuthorizedWritablePath(p)
+
+DeclaredHarnessMissing(t) :=
+  StageOwnedGeneratedTest(t)
+  and not ExistsOnDisk(t)
+  and ZeroTestDiscovery(t)
+```
+
+`DeclaredHarnessMissing(t)` routes to bounded harness creation. It does not
+authorize edits to an existing generated assertion, and it never includes
+fixed acceptance tests. `PlannerPathAllowed(p)` is checked by the runner; an
+LLM plan is advisory and cannot add a path to the authorized set.
 
 The autonomy benchmark passes only when:
 

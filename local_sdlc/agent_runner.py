@@ -1534,6 +1534,7 @@ def command_agent(args: argparse.Namespace) -> int:
             written.append(path)
             documents.append((f"Initial HTML smoke {index}", doc))
             initial_checks.append((f"Initial HTML smoke {index}", doc, ok))
+            initial_command_docs.append((f"Initial HTML smoke {index}", doc))
             evidence = evidence_from_command_document("html_smoke", f"Initial HTML smoke {index}", ok, path, original_project, doc)
             evidence["id"] = f"E{len(evidence_records) + 1:02d}"
             evidence_records.append(evidence)
@@ -1545,6 +1546,7 @@ def command_agent(args: argparse.Namespace) -> int:
             written.append(path)
             documents.append((f"Initial required path {index}", doc))
             initial_checks.append((f"Initial required path {index}", doc, ok))
+            initial_command_docs.append((f"Initial required path {index}", doc))
             evidence = evidence_from_command_document("required_path", f"Initial required path {index}", ok, path, original_project, doc)
             evidence["id"] = f"E{len(evidence_records) + 1:02d}"
             evidence_records.append(evidence)
@@ -1984,7 +1986,11 @@ def command_agent(args: argparse.Namespace) -> int:
 
         nonlocal final_verdict, final_failure_type, pending_patch_plan_doc
         nonlocal root_cause_patch_pending
-        plan_paths = patch_plan_paths_from_text(patch_plan_doc, existing_project_paths)
+        plan_paths = patch_plan_paths_from_text(
+            patch_plan_doc,
+            existing_project_paths,
+            allowed_artifact_paths,
+        )
         required_paths = unique_ordered(
             str(path) for path in plan_paths.get("required_paths", []) if str(path)
         )
@@ -2072,6 +2078,19 @@ def command_agent(args: argparse.Namespace) -> int:
         active_patch_plan_doc = pending_patch_plan_doc
         write_partial_manifest("round_started", {"current_round": round_index})
         active_repair_strategy = str(latest_repair_advice.get("strategy", "")) if latest_repair_advice else ""
+        pending_declared_test_harness_paths = [
+            path
+            for path in stage_generated_test_paths
+            if path.startswith("tests/") and not resolve_project_path(project, path).is_file()
+        ]
+        test_harness_creation_pending = bool(
+            active_repair_strategy == "create_test_harness"
+            and pending_declared_test_harness_paths
+        )
+        if test_harness_creation_pending:
+            active_patch_plan_doc = ""
+            pending_patch_plan_doc = ""
+            root_cause_patch_pending = False
         if latest_repair_advice and active_repair_strategy not in TEST_HARNESS_WRITE_STRATEGIES:
             before_policy = (tuple(allowed_artifact_paths), tuple(readonly_artifact_paths))
             allowed_artifact_paths, readonly_artifact_paths = freeze_test_paths_as_readonly(
@@ -2262,7 +2281,12 @@ def command_agent(args: argparse.Namespace) -> int:
                 implementation failure.
                 """
             ).strip()
-        if args.artifact_format == "legacy":
+        artifact_failure_modes = artifact_failure_modes_from_documents(documents, args.document_window)
+        round_artifact_format = effective_artifact_format(
+            args.artifact_format,
+            artifact_failure_modes,
+        )
+        if round_artifact_format == "legacy":
             artifact_output_instruction = textwrap.dedent(
                 """
                 Preferred output:
@@ -2321,7 +2345,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 Do not include prose, test reports, or self-judgement.
                 """
             ).strip()
-        if args.artifact_format == "legacy":
+        if round_artifact_format == "legacy":
             output_contract = (
                 "Return ONLY a unified diff, BEGIN_SEARCH_REPLACE/END_SEARCH_REPLACE, "
                 "one or more BEGIN_FILE/END_FILE full file artifacts, or a "
@@ -2342,7 +2366,6 @@ def command_agent(args: argparse.Namespace) -> int:
                 "No prose. No verdict."
             )
 
-        artifact_failure_modes = artifact_failure_modes_from_documents(documents, args.document_window)
         strict_instruction, strict_contract = strict_artifact_output_instruction(artifact_failure_modes)
         single_artifact_stream_mode = bool(
             round_index > 1
@@ -2486,7 +2509,10 @@ def command_agent(args: argparse.Namespace) -> int:
                 test_edit_rule = "- Do not edit tests unless the repair advice strategy explicitly says the test harness is invalid."
             focused_artifact_rule = (
                 "- For this strategy, return one BEGIN_FILE/END_FILE full replacement for the named test file. Do not use search_replace."
-                if latest_strategy == "rewrite_current_stage_tests_to_scope"
+                if latest_strategy in {
+                    "create_test_harness",
+                    "rewrite_current_stage_tests_to_scope",
+                }
                 else "- Prefer one BEGIN_SEARCH_REPLACE block or one minimal diff."
             )
             focused_repair_instruction = textwrap.dedent(
@@ -2513,6 +2539,8 @@ def command_agent(args: argparse.Namespace) -> int:
             if round_index > 1 or force_root_cause_recovery
             else "stage_coder"
         )
+        if role_label == "root_cause_repair" and test_harness_creation_pending:
+            role_label = "repair_coder"
         transition_instruction = ""
         if (round_index > 1 or force_root_cause_recovery) and current_transition.instructions:
             transition_instruction = textwrap.dedent(
@@ -2522,6 +2550,18 @@ def command_agent(args: argparse.Namespace) -> int:
                 - action: {current_transition.action}
                 - required_actions:
                 {chr(10).join(f"  - {item}" for item in current_transition.instructions)}
+                """
+            ).strip()
+        if test_harness_creation_pending:
+            transition_instruction = textwrap.dedent(
+                f"""
+                Deterministic supervisor routing override:
+                - failure_type: missing_test_harness
+                - action: create_declared_stage_test_harness
+                - writable_missing_tests: {", ".join(pending_declared_test_harness_paths)}
+                - The paths are pre-authorized by the stage plan. Create one
+                  missing test file as a complete artifact before product-only
+                  root-cause planning. Fixed acceptance tests remain read-only.
                 """
             ).strip()
         semantic_repair_mode = bool(
@@ -2542,6 +2582,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 coder_call_function = "artifact_writer"
             if semantic_repair_mode:
                 coder_call_function = "semantic_repair"
+                round_artifact_format = "legacy"
                 artifact_output_instruction = textwrap.dedent(
                     """
                     Semantic repair output:
@@ -2592,6 +2633,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 ).rstrip()
 
         if role_label == "root_cause_repair":
+            round_artifact_format = "legacy"
             analysis_instruction = textwrap.dedent(
                 f"""
                 Act as the objective root-cause analysis role for this request.
@@ -2836,7 +2878,11 @@ def command_agent(args: argparse.Namespace) -> int:
                 if not consume_failure_budget(final_failure_type, round_index):
                     break
                 continue
-            patch_plan_paths = patch_plan_paths_from_text(patch_plan_doc, existing_project_paths)
+            patch_plan_paths = patch_plan_paths_from_text(
+                patch_plan_doc,
+                existing_project_paths,
+                allowed_artifact_paths,
+            )
             plan_required_paths = [
                 path for path in patch_plan_paths.get("required_paths", []) if not path.startswith("tests/")
             ]
@@ -3038,39 +3084,71 @@ def command_agent(args: argparse.Namespace) -> int:
                 policy_path = write_run_document(run_dir, f"03-r{round_index:02d}-patch-plan-policy.md", policy_doc)
                 written.append(policy_path)
                 documents.append((f"Patch plan policy round {round_index}", policy_doc))
-            artifact_output_instruction = textwrap.dedent(
-                f"""
-                Root-cause patch output:
-                - Use the latest PATCH_PLAN as the binding patch proposition.
-                - Implement only its minimal_patch_goal in its required_path.
-                - Do not repeat previously failed local edits unless the PATCH_PLAN
-                  explicitly says why the previous attempt was incomplete.
-                - The first non-whitespace characters must be exactly
-                  `BEGIN_SEARCH_REPLACE: ` or `diff --git `.
-                - Return exactly one atomic product-code artifact.
-                - Do not return prose, markdown fences, JSON, BEGIN_FILE,
-                  BEGIN_APPEND_FILE, test edits, or alternative patches.
+            missing_plan_required_paths = [
+                path
+                for path in plan_required_paths
+                if not resolve_project_path(project, path).is_file()
+            ]
+            if missing_plan_required_paths:
+                missing_plan_target = missing_plan_required_paths[0]
+                artifact_output_instruction = textwrap.dedent(
+                    f"""
+                    Root-cause missing-file output:
+                    - Use the latest PATCH_PLAN as the binding proposition.
+                    - The runner already authorized this missing product path:
+                      {missing_plan_target}
+                    - Return exactly one complete BEGIN_FILE/END_FILE artifact for
+                      that path. Create its parent directory through artifact application.
+                    - Do not return prose, markdown fences, JSON, search_replace,
+                      unified diff, test edits, or alternative files.
 
-                Valid form A:
-                BEGIN_SEARCH_REPLACE: path/to/product_file.py
-                <<<<<<< SEARCH
-                exact old text
-                =======
-                exact new text
-                >>>>>>> REPLACE
-                END_SEARCH_REPLACE
+                    Required form:
+                    BEGIN_FILE: {missing_plan_target}
+                    complete non-empty file content
+                    END_FILE
 
-                Valid form B:
-                one minimal unified diff touching one product-code file.
+                    Latest PATCH_PLAN:
+                    {patch_plan_doc}
+                    """
+                ).strip()
+                output_contract = (
+                    f"Return ONLY one complete BEGIN_FILE/END_FILE artifact for {missing_plan_target}. "
+                    "No prose. No fences. No JSON. No tests."
+                )
+            else:
+                artifact_output_instruction = textwrap.dedent(
+                    f"""
+                    Root-cause patch output:
+                    - Use the latest PATCH_PLAN as the binding patch proposition.
+                    - Implement only its minimal_patch_goal in its required_path.
+                    - Do not repeat previously failed local edits unless the PATCH_PLAN
+                      explicitly says why the previous attempt was incomplete.
+                    - The first non-whitespace characters must be exactly
+                      `BEGIN_SEARCH_REPLACE: ` or `diff --git `.
+                    - Return exactly one atomic product-code artifact.
+                    - Do not return prose, markdown fences, JSON, BEGIN_FILE,
+                      BEGIN_APPEND_FILE, test edits, or alternative patches.
 
-                Latest PATCH_PLAN:
-                {patch_plan_doc}
-                """
-            ).strip()
-            output_contract = (
-                "Return ONLY one root-cause patch artifact. First non-whitespace bytes: "
-                "BEGIN_SEARCH_REPLACE: or diff --git. No prose. No fences. No JSON. No tests."
-            )
+                    Valid form A:
+                    BEGIN_SEARCH_REPLACE: path/to/product_file.py
+                    <<<<<<< SEARCH
+                    exact old text
+                    =======
+                    exact new text
+                    >>>>>>> REPLACE
+                    END_SEARCH_REPLACE
+
+                    Valid form B:
+                    one minimal unified diff touching one product-code file.
+
+                    Latest PATCH_PLAN:
+                    {patch_plan_doc}
+                    """
+                ).strip()
+                output_contract = (
+                    "Return ONLY one root-cause patch artifact. First non-whitespace bytes: "
+                    "BEGIN_SEARCH_REPLACE: or diff --git. No prose. No fences. No JSON. No tests."
+                )
 
         if role_label == "artifact_plan_repair" and active_patch_plan_doc:
             transition_instruction = textwrap.dedent(
@@ -3522,7 +3600,11 @@ def command_agent(args: argparse.Namespace) -> int:
                     if isinstance(item, str)
                 )
                 repair_instruction = str(conformance_review.get("repair_instruction") or "").strip()
-                plan_paths = patch_plan_paths_from_text(active_patch_plan_doc, existing_project_paths)
+                plan_paths = patch_plan_paths_from_text(
+                    active_patch_plan_doc,
+                    existing_project_paths,
+                    allowed_artifact_paths,
+                )
                 review_error = str(conformance_review.get("review_error") or "").strip()
                 final_verdict = "patch_failed"
                 final_failure_type = (
@@ -3578,7 +3660,7 @@ def command_agent(args: argparse.Namespace) -> int:
         artifacts: list[FileArtifact] = []
         artifact_error = ""
 
-        if args.artifact_format in {"auto", "json"}:
+        if round_artifact_format in {"auto", "json"}:
             try:
                 replacements, artifacts = extract_json_artifacts(coder_doc, artifact_policy)
                 if args.no_replace_file and any(artifact.mode == "replace" for artifact in artifacts):
@@ -3588,7 +3670,7 @@ def command_agent(args: argparse.Namespace) -> int:
             except RunnerError as exc:
                 artifact_error = str(exc)
 
-        if not replacements and not artifacts and args.artifact_format != "json":
+        if not replacements and not artifacts and round_artifact_format != "json":
             try:
                 replacements = extract_search_replace_artifacts(coder_doc, artifact_policy)
             except RunnerError:
@@ -3746,7 +3828,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 apply_doc = "## Artifact Apply Result\n\nDRY_RUN: artifacts saved but not applied:\n" + "\n".join(dry_parts)
         else:
             try:
-                if args.artifact_format == "json":
+                if round_artifact_format == "json":
                     raise RunnerError(artifact_error or "LLM output did not contain JSON artifacts")
                 patch = extract_unified_diff(coder_doc)
             except RunnerError as exc:
@@ -4193,7 +4275,13 @@ def command_agent(args: argparse.Namespace) -> int:
             continue
 
         failure_analysis_doc = ""
-        if command_docs and not command_ok and same_functional_failure and (current_failure_signature or current_failure_family_signature):
+        if (
+            command_docs
+            and not command_ok
+            and same_functional_failure
+            and not test_harness_creation_pending
+            and (current_failure_signature or current_failure_family_signature)
+        ):
             failure_analysis_doc = run_failure_analysis(
                 round_index,
                 "repeated_same_failure",

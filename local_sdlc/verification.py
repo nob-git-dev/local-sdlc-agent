@@ -93,10 +93,18 @@ def command_failure_count_from_text(text: str) -> int | None:
     return None
 
 def command_failure_score(command_docs: Sequence[tuple[str, str]]) -> int | None:
+    """Count failures in the stable executable verification vector.
+
+    The acceptance evidence gate is derived from the other checks, so counting
+    it would double-count the same failure and make initial/repair scores
+    incomparable. Required-path checks remain part of the vector.
+    """
     total = 0
     observed = False
     for _name, document in command_docs:
         parsed = parse_command_result_document(document)
+        if parsed.get("command") == "acceptance-evidence-gate":
+            continue
         if parsed.get("status") != "FAIL":
             continue
         text = f"{parsed.get('stdout', '')}\n{parsed.get('stderr', '')}"
@@ -195,6 +203,7 @@ def normalize_failure_line(line: str) -> str:
     normalized = re.sub(r"/tmp/[^/\s]+/project/", "<project>/", normalized)
     normalized = re.sub(r"/home/[^/\s]+/[^\s\"]+", "<path>", normalized)
     normalized = re.sub(r"\b0x[0-9a-fA-F]+\b", "0x<addr>", normalized)
+    normalized = re.sub(r"(?i)\bround\s+\d+(?:\.\d+)?\b", "round <n>", normalized)
     return normalized
 
 def command_failure_signature(command_docs: Sequence[tuple[str, str]]) -> str | None:
@@ -205,6 +214,8 @@ def command_failure_signature(command_docs: Sequence[tuple[str, str]]) -> str | 
         if parsed.get("status") != "FAIL":
             continue
         command = parsed.get("command", "")
+        if command == "acceptance-evidence-gate":
+            continue
         try:
             returncode = int(parsed.get("exit_code", "1"))
         except ValueError:
@@ -246,6 +257,8 @@ def command_failure_family_signature(command_docs: Sequence[tuple[str, str]]) ->
         if parsed.get("status") != "FAIL":
             continue
         command = parsed.get("command", "")
+        if command == "acceptance-evidence-gate":
+            continue
         try:
             returncode = int(parsed.get("exit_code", "1"))
         except ValueError:
