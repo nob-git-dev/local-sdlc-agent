@@ -97,6 +97,31 @@ def create_copy_worktree(project: Path) -> Path:
     )
     return target
 
+
+def changed_allowed_paths_between(
+    source_project: Path,
+    target_project: Path,
+    paths: Sequence[str],
+) -> list[str]:
+    """Return allowed file paths whose resumable source bytes differ.
+
+    A standalone ``--resume-worktree-path`` has no previous run manifest from
+    which to restore ``changed_paths``. Comparing only declared writable paths
+    preserves completed work from earlier rounds without widening copy-back
+    authority to unrelated files.
+    """
+
+    changed: list[str] = []
+    for raw in unique_ordered(paths):
+        source = resolve_project_path(source_project, raw)
+        target = resolve_project_path(target_project, raw)
+        if not source.is_file():
+            continue
+        if not target.is_file() or source.read_bytes() != target.read_bytes():
+            changed.append(raw)
+    return changed
+
+
 def copy_allowed_paths_back(source_project: Path, target_project: Path, paths: Sequence[str]) -> list[str]:
     copied: list[str] = []
     for raw in unique_ordered(paths):

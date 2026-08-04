@@ -81,6 +81,10 @@ Instead, it must define how new propositions are admitted.
 | P10 | Autonomous edits are isolated by default. | Worktree copy mode is used and only approved changed paths are copied back. |
 | P11 | Discovered propositions require admission metadata. | Evidence, scope, counterexamples, rationale, and regression tests are present. |
 | P12 | Benchmark-specific rules do not overfire. | A generalization regression shows that unrelated tasks do not trigger the rule. |
+| P13 | A behaviorally worse candidate is rejected reversibly. | With an unchanged command vector, a higher failure score causes exact pre-round restoration, verified byte equality, a persisted `candidate_regression`, and a bounded different retry. |
+| P14 | Recovery does not forget hard evidence. | A strategy change preserves prior mechanical constraints and owner-file focus; the next manifest contains both rollback evidence and the earlier probe facts. |
+| P15 | A mechanically absent API cannot be introduced as an unresolved call. | Typed-receiver lint rejects a call when the probed owner lacks the method and the same candidate transaction does not define it on that owner. |
+| P16 | Periodic artifact runaway changes protocol before size exhaustion. | A repeated multi-line block is classified as `stream_repeated_text_runaway` before the generic byte limit, and the next bounded retry requires one JSON search/replace envelope. |
 
 ## Progress Vector
 
@@ -416,6 +420,36 @@ An acceptance item with no mechanically mapped coverage is still a blocker.
 The former behavior, where unmapped conditions could be ignored, is retained
 only inside stage-local repair and cannot authorize goal completion.
 
+The evidence mapping and the executable vector are conjunctive gates. A mapped
+requirement cannot cancel a failed command from the same verification cycle:
+
+```text
+ExecutableGatePass := ForAll(current_command, status = PASS)
+CompletionGatePass := AcceptanceMatrixPass and ExecutableGatePass
+```
+
+When root-cause analysis produces a patch plan, the plan remains binding until
+one candidate satisfies every named obligation. A separate judge API call
+reviews the candidate before application:
+
+```text
+PlanConformant(candidate, plan) :=
+  ForAll(obligation in plan,
+    candidate_evidence(obligation)
+    and not counterexample(candidate, obligation))
+```
+
+Malformed reviews, evidence-free approval, unresolved obligations, and missing
+review context fail closed. The reviewer can recommend repair or context
+collection but cannot apply a patch. A rejected candidate is never written to
+the worktree; the supervisor retains the same plan and requests a replacement
+artifact from a fresh coder API call.
+
+Standalone worktree recovery also restores its change ledger mechanically.
+Only declared writable files whose bytes differ from the original project are
+seeded as resumed baseline changes, and they are copied back only after the
+ordinary completion and safety gates pass.
+
 `BLOCKED` is reserved for a real human decision boundary. Its manifest must
 contain `blocked_reason`, `supporting_evidence`, and
 `required_human_input`. Internal recovery exhaustion is `fail_closed`, not a
@@ -450,8 +484,118 @@ represented as general runtime responsibilities, not SQLite-specific rules:
 | 17 | Refuse completion with evidence gaps | strict completion predicate |
 | 18 | Escalate only true human decisions | HumanRequired policy and actionable BLOCKED state |
 
+Generated-test assertions enter the evidence graph as
+`provisional_test_oracle`, not as binding product contracts. Ownership triage
+must use the fixed specification, complete generated-test source, executable
+command evidence, and an explicit independent Judge vote. Repair advice and
+failure-analysis conclusions under review are excluded from that packet. A
+product or test verdict is actionable only when its selected hypothesis has
+positive evidence and the path Action Gate accepts the exact owner. Conflicting
+Judge and triage votes invoke a separate bounded `policy_arbitration` API call;
+an invalid arbitration fails closed without granting write authority.
+
 Every Supervisor choice is appended to `autonomy_decisions.jsonl`. The final
 manifest includes an audit with `unauthorized_external_intervention_count`.
+Stage-level `api_profile` entries are executable function overrides, not labels;
+the stage-plan boundary validates every entry as `function:key=value,...`
+before any child agent or LLM API call starts.
+They are workload defaults. Explicit runtime `--api-profile` entries are
+applied afterward and therefore win for the same function, allowing
+model-specific tuning without rewriting the product specification.
+
+#### Candidate regression control
+
+Let `W(i-1)` be the workspace immediately before round `i`, `A(i)` the
+candidate artifact transaction, and `s(F)` the total unittest failures and
+errors observed by the unchanged command vector.
+
+```text
+CandidateRegression(i) :=
+  Applied(A(i))
+  and SameCommandVector(i-1, i)
+  and s(F(i)) > s(F(i-1))
+
+AdmitNextRound(i) :=
+  CandidateRegression(i)
+  and Restore(W(i-1))
+  and ByteEqual(CurrentWorkspace, Snapshot(i-1))
+  and AdaptiveBudgetRemaining
+```
+
+When `CandidateRegression(i)` is true, the candidate is evidence, not retained
+product state. The runtime records its paths and failure signatures, restores
+the complete artifact transaction, verifies exact bytes, and tells the next
+planner not to repeat the rejected approach or assume an unobserved interface.
+The LLM cannot waive restoration. A mismatch after restoration is terminal
+`rollback_verification_failed`; it never reaches Judge or copy-back.
+
+Recovery knowledge is monotone for mechanically established facts. Let
+`K(i)` be the retained constraints before round `i` and `M(i)` be new
+mechanical evidence:
+
+```text
+K(i+1) := K(i) union M(i) union RegressionFacts(i)
+
+ResolvedAbsentCall(A, C.m, owner) :=
+  CallsTypedReceiver(A, C.m)
+  implies Defines(owner, C.m) or DefinesInSameTransaction(A, owner, C.m)
+
+Admissible(A) :=
+  ArtifactWellFormed(A)
+  and ForAll(absent_api, ResolvedAbsentCall(A, absent_api))
+```
+
+A rollback may replace the selected repair strategy, but it may not remove
+`K(i)`. Mechanical API owner paths are prioritized in retry context. If a
+candidate calls a method proved absent through a receiver visibly bound to its
+class, the artifact is rejected before apply unless the owner already defines
+the method or the same transaction defines it on that owner. Unknown receiver
+types are not guessed by lint and remain subject to executable tests.
+
+For streamed output, a periodic repeated block is a distinct failure family
+from a legitimately large artifact:
+
+```text
+PeriodicRunaway(S) := Exists(block, repeat_count >= threshold)
+
+PeriodicRunaway(S)
+  -> Abort(stream_repeated_text_runaway)
+  -> NextProtocol(single_json_search_replace)
+```
+
+This transition occurs before the generic byte-budget decision. It preserves
+semantic intent while changing the serialization protocol, preventing another
+attempt from repeating the same malformed marker grammar.
+
+Root-cause diagnosis uses an ordered context vector rather than set membership
+alone. Let `visible(p, C)` mean that the relevant contents of path `p` survive
+the global context budget, and let `E_fail` be the latest executable failure
+evidence:
+
+```text
+requested(p) and exists(p) and not visible(p, C(t))
+  -> prioritize(p, C(t+1))
+  and retry(root_cause_analysis)
+
+root_cause_analysis(t) -> E_fail in input(t)
+```
+
+The second rule is independent of the recent-document window. A bounded set of
+latest command results, acceptance gates, observation summaries, mechanical
+probes, and rejected-candidate facts is pinned for diagnosis. Requesting a path
+already declared as context is therefore actionable: the path is promoted to
+the front rather than dismissed as already present.
+
+Zero semantic effect also dominates secondary content classifications:
+
+```text
+effect(A, W) = empty
+  -> reject(A)
+  and not apply(A)
+  and not test(A)
+  and next(root_cause_analysis)
+```
+
 The autonomy benchmark passes only when:
 
 ```text
@@ -462,8 +606,52 @@ AutonomyPass :=
   and UnauthorizedExternalInterventions = 0
 ```
 
+### LLM Completion Recovery And Non-vacuous Evidence
+
+分析 call `c` の thinking 出力を `R(c)`、後段へ渡せる結論本文を `C(c)` とする。
+
+```text
+ReasoningOnly(c) := R(c) != empty and C(c) = empty
+
+RecoverableCompletion(c) :=
+  AnalysisFunction(c)
+  and ThinkingEnabled(c)
+  and ReasoningOnly(c)
+  and FallbackCount(c) = 0
+
+Fallback(c) :=
+  SameRole(c)
+  and SameSystemPrompt(c)
+  and SameInputDocuments(c)
+  and CondensationInput = Tail(R(c), 6000 chars)
+  and ThinkingDisabled
+  and Temperature = 0
+  and MaxTokens <= 2048
+
+AcceptContent(c) := C(c) != empty or C(Fallback(c)) != empty
+```
+
+`Fallback(c)` は内部処理の続きではなく、Action Gate と API budget を再度通過する
+独立 request である。監査用reasoning全体は後続roleへ渡さない。ただし同じcallを完結させる
+ためのfallbackに限り、末尾6,000文字以内を「既存推論の圧縮対象」として渡し、thinking off・
+最大2,048 tokensで契約どおりの結論だけを生成させる。fallbackも空ならfail closedとし、
+2回目のfallbackは行わない。
+
+テスト証拠 `e` には非空性を要求する。
+
+```text
+NonVacuousTestEvidence(e) :=
+  ExitCode(e) = 0
+  and ExecutedTestCount(e) >= 1
+
+TestPass(e) := RecognizedTestRunner(e) -> NonVacuousTestEvidence(e)
+```
+
+認識済み `unittest` runner の `Ran 0 tests` は、Python実装ごとの終了コード差に依存せず
+`missing_test_harness` へ正規化する。
+
 Verified by `tests.test_autonomy_runtime`, `tests.test_stage_runner`, and the
-full 597-test suite. Cross-domain validation still follows the frozen sequence:
+full 649-test suite. Cross-domain validation still follows the frozen sequence:
 freeze the harness, run Mini Git, generalize only supported findings, freeze
 again, then run the held-out DAG job engine without mid-run intervention.
 

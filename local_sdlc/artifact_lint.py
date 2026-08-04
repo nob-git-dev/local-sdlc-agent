@@ -15,7 +15,7 @@ from .artifact_protocol import *
 from .models import *
 from .python_project_analysis import *
 from .utils import markdown_fenced_blocks, strip_markdown_fence, unique_ordered
-from .workspace import normalize_project_relative_paths, resolve_project_path
+from .workspace import normalize_project_relative_paths, read_text_if_exists, resolve_project_path
 
 
 def python_declared_class_attributes(source: str) -> set[str]:
@@ -41,6 +41,50 @@ def python_declared_class_attributes(source: str) -> set[str]:
                     if isinstance(target, py_ast.Name):
                         attributes.add(target.id)
     return attributes
+
+
+def python_class_defines_method(source: str, class_name: str, method_name: str) -> bool:
+    """Return whether ``class_name`` directly defines ``method_name``."""
+    try:
+        tree = py_ast.parse(source)
+    except (IndentationError, SyntaxError):
+        return False
+    for node in py_ast.walk(tree):
+        if not isinstance(node, py_ast.ClassDef) or node.name != class_name:
+            continue
+        return any(
+            isinstance(statement, (py_ast.FunctionDef, py_ast.AsyncFunctionDef))
+            and statement.name == method_name
+            for statement in node.body
+        )
+    return False
+
+
+def python_receivers_bound_to_class(source: str, class_name: str) -> set[str]:
+    """Infer simple local and ``self`` attribute bindings to a class.
+
+    This deliberately handles only mechanically visible assignments and type
+    annotations.  Unknown receiver types are left to the LLM and tests instead
+    of being guessed by the lint layer.
+    """
+    identifier = r"[A-Za-z_][A-Za-z0-9_]*"
+    qualified_class = rf"(?:{identifier}\.)*{re.escape(class_name)}"
+    receivers = {
+        match.group("receiver")
+        for match in re.finditer(
+            rf"(?<![A-Za-z0-9_.])(?P<receiver>(?:self\.)?{identifier})\s*"
+            rf"(?:\:\s*{qualified_class}\s*)?=\s*{qualified_class}\s*\(",
+            source,
+        )
+    }
+    receivers.update(
+        match.group("receiver")
+        for match in re.finditer(
+            rf"(?<![A-Za-z0-9_.])(?P<receiver>(?:self\.)?{identifier})\s*:\s*{qualified_class}\b",
+            source,
+        )
+    )
+    return receivers
 
 
 def json_generated_blocks(text: str) -> list[tuple[str | None, str]]:
@@ -401,6 +445,23 @@ def repeated_text_run_score(text: str) -> tuple[int, str]:
             max_score = max_line_run
             label = f"line_run:{truncate_text(max_line, 80)}"
 
+        # Detect periodic multi-line loops such as a delimiter followed by the
+        # same replacement body.  Consecutive-line checks miss these because
+        # no individual line is adjacent to itself.
+        max_block_width = min(16, len(lines) // 2)
+        for width in range(2, max_block_width + 1):
+            for start in range(0, len(lines) - (2 * width) + 1):
+                block = lines[start : start + width]
+                repeats = 1
+                cursor = start + width
+                while cursor + width <= len(lines) and lines[cursor : cursor + width] == block:
+                    repeats += 1
+                    cursor += width
+                score = repeats * width
+                if repeats >= 3 and score > max_score:
+                    max_score = score
+                    label = f"block_run:{truncate_text(' | '.join(block), 80)}"
+
     tokens = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", text)
     if tokens:
         current_token = ""
@@ -694,6 +755,19 @@ def artifact_stream_guard(
             score=json_search_replace_path_count,
             threshold=1,
         )
+    repeated_score, repeated_label = repeated_text_run_score(text)
+    if (
+        has_streamed_search_replace
+        and repeated_label.startswith("block_run:")
+        and repeated_score >= repeated_text_threshold
+    ):
+        return ArtifactStreamGuardResult(
+            should_abort=True,
+            reason=f"repeated text runaway detected while streaming: {repeated_label} repeated score={repeated_score}",
+            code="stream_repeated_text_runaway",
+            score=repeated_score,
+            threshold=repeated_text_threshold,
+        )
     if budget_artifact_offset < 0 and re.search(r"(?m)^\s*<<<<<<< SEARCH\b", text):
         return ArtifactStreamGuardResult(
             should_abort=True,
@@ -877,11 +951,10 @@ def artifact_stream_guard(
             score=total_json_search_replace_count,
             threshold=total_threshold,
         )
-    repeated_score, repeated_label = repeated_text_run_score(text)
     if repeated_score >= repeated_text_threshold:
         return ArtifactStreamGuardResult(
             should_abort=True,
-            reason=f"repeated text runaway detected while streaming: {repeated_label} repeated {repeated_score} times",
+            reason=f"repeated text runaway detected while streaming: {repeated_label} repeated score={repeated_score}",
             code="stream_repeated_text_runaway",
             score=repeated_score,
             threshold=repeated_text_threshold,
@@ -1128,7 +1201,10 @@ def semantic_repair_format_issues(text: str) -> list[SemanticRepairFormatIssue]:
         )
 
     stripped = text.strip()
-    valid_search_replace = bool(VALID_SEARCH_REPLACE_PATTERN.match(stripped))
+    valid_search_replace = any(
+        VALID_SEARCH_REPLACE_PATTERN.match(candidate.strip())
+        for candidate in artifact_candidate_texts(text)
+    )
     valid_fenced_search_replace = bool(
         fenced_conflict_search_replace_artifacts(text, ArtifactPathPolicy(allowed_paths=(), allow_extra_new_files=True))
     )
@@ -1363,9 +1439,33 @@ def lint_artifact_output(
             raw_items = payload
         items = [raw_items] if isinstance(raw_items, dict) else raw_items if isinstance(raw_items, list) else []
         for item in items:
-            if not isinstance(item, dict) or str(item.get("type", "")).strip() != "search_replace":
+            if not isinstance(item, dict):
                 continue
+            artifact_type = str(item.get("type", "")).strip()
             path = str(item.get("path", "")).strip() or None
+            if artifact_type in {"replace_file", "file"}:
+                content = item.get("content")
+                if project is not None and path and isinstance(content, str):
+                    target = resolve_project_path(project, normalize_legacy_file_artifact_path(path))
+                    if target.is_file():
+                        current = read_text_if_exists(target)
+                        normalized_current = current.replace("\r\n", "\n").rstrip("\n")
+                        normalized_content = content.replace("\r\n", "\n").rstrip("\n")
+                        if normalized_current == normalized_content:
+                            findings.append(
+                                ArtifactLintFinding(
+                                    severity="error",
+                                    code="unchanged_replace_file",
+                                    message=(
+                                        "whole-file replacement is unchanged from the current file; "
+                                        "emit a real behavioral change or MISSING_CONTEXT"
+                                    ),
+                                    path=path,
+                                )
+                            )
+                continue
+            if artifact_type != "search_replace":
+                continue
             search = item.get("search")
             replace = item.get("replace")
             edit_text_parts = [value for value in (search, replace) if isinstance(value, str)]
@@ -1488,6 +1588,90 @@ def lint_artifact_output(
                         path=normalized_path,
                     )
                 )
+    mechanical_absent_facts = mechanically_absent_api_facts_from_texts(forbidden_actions)
+    if project is not None and mechanical_absent_facts and generated_blocks:
+        generated_by_path: dict[str, list[str]] = {}
+        for path, block in generated_blocks:
+            if path:
+                generated_by_path.setdefault(
+                    normalize_legacy_file_artifact_path(path), []
+                ).append(block)
+        reported_unresolved_calls: set[tuple[str, str, str]] = set()
+        for class_name, attr, owner_path in mechanical_absent_facts:
+            normalized_owner = (
+                normalize_legacy_file_artifact_path(owner_path)
+                if owner_path
+                else None
+            )
+            owner_source = ""
+            if normalized_owner:
+                owner_target = resolve_project_path(project, normalized_owner)
+                if owner_target.exists() and owner_target.is_file():
+                    owner_source = owner_target.read_text(encoding="utf-8", errors="replace")
+            owner_defines_method = python_class_defines_method(
+                owner_source,
+                class_name,
+                attr,
+            )
+            candidate_defines_method = bool(
+                normalized_owner
+                and any(
+                    re.search(rf"(?m)^\s*def\s+{re.escape(attr)}\s*\(", block)
+                    for block in generated_by_path.get(normalized_owner, [])
+                )
+            )
+            if owner_defines_method or candidate_defines_method:
+                continue
+            for path, block in generated_blocks:
+                if not path or not path.endswith(".py"):
+                    continue
+                normalized_path = normalize_legacy_file_artifact_path(path)
+                target = resolve_project_path(project, normalized_path)
+                source = (
+                    target.read_text(encoding="utf-8", errors="replace")
+                    if target.exists() and target.is_file()
+                    else ""
+                )
+                receivers = python_receivers_bound_to_class(
+                    source + "\n" + block,
+                    class_name,
+                )
+                if normalized_owner and normalized_path == normalized_owner:
+                    receivers.add("self")
+                called_receivers = {
+                    match.group("receiver")
+                    for match in re.finditer(
+                        rf"(?<![A-Za-z0-9_.])(?P<receiver>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\."
+                        rf"{re.escape(attr)}\s*\(",
+                        block,
+                    )
+                }
+                direct_constructor_call = bool(
+                    re.search(
+                        rf"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)*{re.escape(class_name)}\s*\([^\n]*\)\."
+                        rf"{re.escape(attr)}\s*\(",
+                        block,
+                    )
+                )
+                if not direct_constructor_call and not (called_receivers & receivers):
+                    continue
+                key = (normalized_path, class_name, attr)
+                if key in reported_unresolved_calls:
+                    continue
+                reported_unresolved_calls.add(key)
+                findings.append(
+                    ArtifactLintFinding(
+                        severity="error",
+                        code="unresolved_absent_api_call",
+                        message=(
+                            f"artifact calls mechanically absent API `{class_name}.{attr}` through a "
+                            f"receiver visibly bound to `{class_name}`, but neither the current owner "
+                            "nor this artifact transaction defines that method"
+                        ),
+                        path=normalized_path,
+                    )
+                )
+
     absent_api_contracts = absent_api_contracts_from_texts(forbidden_actions)
     forbidden_edit_symbols = forbidden_edit_symbols_from_texts(forbidden_actions)
     if forbidden_edit_symbols and edited_blocks:
@@ -1536,7 +1720,6 @@ def lint_artifact_output(
         pytest_patterns = {
             "pytest_import": r"(?m)^\s*import pytest\s*$",
             "pytest_raises": r"pytest\.raises\s*\(",
-            "pytest_fixture": r"\btmp_path\b",
         }
         for code, pattern in pytest_patterns.items():
             bad_match = next(((path, block) for path, block in generated_blocks if re.search(pattern, block)), None)
@@ -1553,6 +1736,31 @@ def lint_artifact_output(
                         path=bad_path or "tests",
                     )
                 )
+        fixture_match = next(
+            (
+                (path, block)
+                for path, block in generated_blocks
+                if re.search(r"\btmp_path\b", block)
+                and (
+                    str(path or "").startswith("tests/")
+                    or block_looks_like_test_harness(block)
+                )
+            ),
+            None,
+        )
+        if fixture_match is not None:
+            bad_path, _block = fixture_match
+            findings.append(
+                ArtifactLintFinding(
+                    severity="error",
+                    code="pytest_fixture",
+                    message=(
+                        "unittest command is configured, but the generated test artifact appears "
+                        "to depend on a pytest fixture"
+                    ),
+                    path=bad_path or "tests",
+                )
+            )
 
     for candidate in artifact_candidate_texts(text):
         for match in re.finditer(
@@ -1563,7 +1771,7 @@ def lint_artifact_output(
             search = clean_artifact_block(match.group("search"))
             replace = clean_artifact_block(match.group("replace"))
             path = match.group("path").strip()
-            if search == replace:
+            if search.rstrip() == replace.rstrip():
                 findings.append(
                     ArtifactLintFinding(
                         severity="error",
@@ -1703,6 +1911,9 @@ def artifact_lint_document(findings: Sequence[ArtifactLintFinding]) -> str:
     return "\n".join(lines)
 
 def artifact_lint_failure_type(findings: Sequence[ArtifactLintFinding], default: str = "artifact_lint_failed") -> str:
+    codes = [finding.code for finding in findings if finding.severity == "error"]
+    if "identical_search_replace" in codes:
+        return "candidate_no_effect"
     priority = [
         "semantic_repair_missing_context",
         "semantic_repair_missing_path",
@@ -1715,6 +1926,7 @@ def artifact_lint_failure_type(findings: Sequence[ArtifactLintFinding], default:
         "semantic_repair_test_edit",
         "semantic_repair_too_large",
         "artifact_path_content_mismatch",
+        "unresolved_absent_api_call",
         "forbidden_absent_api_addition",
         "forbidden_absent_api_call",
         "format_repair_missing_context",
@@ -1727,15 +1939,11 @@ def artifact_lint_failure_type(findings: Sequence[ArtifactLintFinding], default:
         "format_repair_no_artifact",
         "stage_scope_violation",
         "test_edit_attempt",
-        "identical_search_replace",
         "search_replace_conflict_markers",
         "unbalanced_file_artifact",
     ]
-    codes = [finding.code for finding in findings if finding.severity == "error"]
     for code in priority:
         if code in codes:
-            if code == "identical_search_replace":
-                return "artifact_invalid"
             if code == "search_replace_conflict_markers":
                 return "artifact_invalid"
             if code == "unbalanced_file_artifact":

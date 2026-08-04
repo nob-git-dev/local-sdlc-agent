@@ -117,6 +117,57 @@ class AutonomyRuntimeTests(LocalSDLCTestCase):
         with self.assertRaises(self.local_sdlc.RunnerError):
             self.local_sdlc.synthesize_stage_queue(spec)
 
+    def test_stage_plan_rejects_invalid_function_api_profile_before_execution(self):
+        spec = """
+## Implementation Stages
+```json
+{
+  "stage_plan_schema": 1,
+  "stages": [
+    {
+      "stage_id": "S01",
+      "title": "Core",
+      "goal": "Implement the core.",
+      "writable_paths": ["core.py"],
+      "api_profile": ["generate_artifact"]
+    }
+  ]
+}
+```
+"""
+
+        with self.assertRaisesRegex(
+            self.local_sdlc.RunnerError,
+            "S01.api_profile.*function:key=value",
+        ):
+            self.local_sdlc.synthesize_stage_queue(spec)
+
+    def test_stage_plan_accepts_valid_function_api_profile_override(self):
+        spec = """
+## Implementation Stages
+```json
+{
+  "stage_plan_schema": 1,
+  "stages": [
+    {
+      "stage_id": "S01",
+      "title": "Core",
+      "goal": "Implement the core.",
+      "writable_paths": ["core.py"],
+      "api_profile": ["generate_artifact:max_tokens=8192,temperature=0.05,thinking=off"]
+    }
+  ]
+}
+```
+"""
+
+        stage = self.local_sdlc.synthesize_stage_queue(spec)[0]
+
+        self.assertEqual(
+            stage.api_profile,
+            ("generate_artifact:max_tokens=8192,temperature=0.05,thinking=off",),
+        )
+
     def test_verification_commands_are_read_only_from_explicit_section(self):
         spec = """
 ## Example
@@ -203,9 +254,102 @@ python3 -m compileall -q package
 
         self.assertEqual([child.stage_id for child in children], ["S04.1", "S04.2"])
         flattened = [path for child in children for path in child.writable_paths]
-        self.assertEqual(flattened, list(stage.writable_paths))
+        self.assertCountEqual(flattened, stage.writable_paths)
         self.assertEqual(children[0].test_commands, ())
         self.assertEqual(children[1].test_commands, stage.test_commands)
+
+    def test_stage_split_keeps_matching_tests_with_product_paths(self):
+        stage = self.local_sdlc.StageWorkItem(
+            stage_id="S02",
+            title="Repository and index",
+            goal="Implement two independently testable modules.",
+            suggested_paths=(
+                "pkg/index.py",
+                "pkg/repository.py",
+                "tests/test_index.py",
+                "tests/test_repository.py",
+            ),
+            test_focus=("repository tests",),
+            test_commands=("python3 -m unittest discover -s tests",),
+            writable_paths=(
+                "pkg/index.py",
+                "pkg/repository.py",
+                "tests/test_index.py",
+                "tests/test_repository.py",
+            ),
+        )
+
+        children = self.local_sdlc.split_stage_work_item(stage, parts=2)
+
+        self.assertEqual(
+            [set(child.writable_paths) for child in children],
+            [
+                {"pkg/index.py", "tests/test_index.py"},
+                {"pkg/repository.py", "tests/test_repository.py"},
+            ],
+        )
+        for child in children:
+            self.assertEqual(set(child.repair_scope_paths), set(stage.writable_paths))
+
+    def test_stage_recovery_expands_only_to_evidence_path_inside_parent_scope(self):
+        stage = self.local_sdlc.StageWorkItem(
+            stage_id="S02.2",
+            title="Repository slice",
+            goal="Make repository tests pass.",
+            suggested_paths=("tests/test_repository.py",),
+            test_focus=("repository tests",),
+            writable_paths=("tests/test_repository.py",),
+            repair_scope_paths=("pkg/repository.py", "tests/test_repository.py"),
+        )
+        summary = self.local_sdlc.StageRunSummary(
+            stage_id=stage.stage_id,
+            title=stage.title,
+            status="failed",
+            run_dir="run/s02.2",
+            exit_code=1,
+            repair_focus_paths=("pkg/repository.py", "outside.py"),
+            failure_summary={"failure_type": "test_error"},
+        )
+
+        decision = self.local_sdlc.decide_stage_recovery(
+            stage,
+            summary,
+            recovery_count=1,
+            max_recoveries=3,
+            previous_actions=("split_stage",),
+        )
+
+        self.assertEqual(decision.action, "expand_repair_scope")
+        self.assertEqual(decision.additional_writable_paths, ("pkg/repository.py",))
+
+    def test_stage_recovery_rejects_unchanged_root_cause_replay(self):
+        stage = self.local_sdlc.StageWorkItem(
+            stage_id="S02.2",
+            title="Repository slice",
+            goal="Make repository tests pass.",
+            suggested_paths=("pkg/repository.py",),
+            test_focus=("repository tests",),
+            writable_paths=("pkg/repository.py",),
+        )
+        summary = self.local_sdlc.StageRunSummary(
+            stage_id=stage.stage_id,
+            title=stage.title,
+            status="failed",
+            run_dir="run/s02.2",
+            exit_code=1,
+            failure_summary={"failure_type": "test_error"},
+        )
+
+        decision = self.local_sdlc.decide_stage_recovery(
+            stage,
+            summary,
+            recovery_count=2,
+            max_recoveries=3,
+            previous_actions=("split_stage", "root_cause_recovery"),
+        )
+
+        self.assertEqual(decision.action, "fail_closed")
+        self.assertEqual(decision.reason_code, "no_novel_recovery")
 
 
 if __name__ == "__main__":

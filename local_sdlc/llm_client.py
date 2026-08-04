@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import re
@@ -73,9 +74,13 @@ class LocalLLMClient:
     def __init__(self, config: LLMConfig):
         self.config = config
         self.reasoning_records: list[dict[str, object]] = []
+        self.completion_recovery_records: list[dict[str, object]] = []
+        self.generation_request_count = 0
+        self.last_completion_attempts = 0
         self.runtime_timeout_limit: float | None = None
         self.runtime_timeout_callback: Callable[[], None] | None = None
         self.runtime_progress_callback: Callable[[LLMStreamStats], None] | None = None
+        self.runtime_completion_fallback_callback: Callable[[str, str, str], None] | None = None
 
     def set_runtime_timeout_limit(
         self,
@@ -99,6 +104,13 @@ class LocalLLMClient:
         callback: Callable[[LLMStreamStats], None] | None,
     ) -> None:
         self.runtime_progress_callback = callback
+
+    def set_runtime_completion_fallback_callback(
+        self,
+        callback: Callable[[str, str, str], None] | None,
+    ) -> None:
+        """Authorize and account for one physical no-thinking retry."""
+        self.runtime_completion_fallback_callback = callback
 
     def _record_reasoning_content(
         self,
@@ -457,14 +469,16 @@ class LocalLLMClient:
         elif self.runtime_progress_callback:
             self.runtime_progress_callback(stats)
         content_text = "".join(output_parts).strip()
+        reasoning_text = "".join(reasoning_parts)
         if not content_text and reasoning_chunks:
-            raise RunnerError(
+            raise LLMReasoningOnlyError(
                 "LLM streaming API returned reasoning-only output with empty content; "
-                "keep thinking disabled for artifact calls or use a model that emits delta.content"
+                "keep thinking disabled for artifact calls or use a model that emits delta.content",
+                reasoning=reasoning_text,
+                reasoning_chars=reasoning_chars,
             )
         if not content_text:
             raise RunnerError("LLM streaming API returned an empty message with no content")
-        reasoning_text = "".join(reasoning_parts)
         return content_text, stats, reasoning_text, reasoning_chars
 
     def complete(
@@ -476,6 +490,7 @@ class LocalLLMClient:
         stream_callback: Callable[[LLMStreamStats], None] | None = None,
         stream_guard: Callable[[str], ArtifactStreamGuardResult] | None = None,
     ) -> str:
+        self.last_completion_attempts = 0
         alive, health_status, health_models = self.health_check()
         if not alive:
             raise RunnerError(f"LLM API preflight failed: {health_status}")
@@ -490,67 +505,136 @@ class LocalLLMClient:
         model = settings.model or selected_model
         require_profile_model_compatibility(self.config.model_profile, model, health_models)
 
-        try:
-            if self.config.stream:
-                content, _stats, reasoning, reasoning_chars = self.chat_completion_stream(
-                    messages,
-                    model=model,
-                    temperature=settings.temperature,
-                    max_tokens=settings.max_tokens,
-                    chat_template_kwargs=self._chat_template_kwargs(settings),
-                    partial_output_path=stream_output_path,
-                    progress_callback=stream_callback,
-                    stream_guard=stream_guard,
-                )
-                if reasoning:
-                    self._record_reasoning_content(
-                        agent_level=agent_level,
-                        call_function=call_function,
+        def complete_once(
+            active_settings: LLMCallSettings,
+            active_messages: list[dict[str, str]] | None = None,
+        ) -> str:
+            request_messages = active_messages or messages
+            self.last_completion_attempts += 1
+            self.generation_request_count += 1
+            try:
+                if self.config.stream:
+                    content, _stats, reasoning, reasoning_chars = self.chat_completion_stream(
+                        request_messages,
                         model=model,
-                        reasoning=reasoning,
-                        original_chars=reasoning_chars,
+                        temperature=active_settings.temperature,
+                        max_tokens=active_settings.max_tokens,
+                        chat_template_kwargs=self._chat_template_kwargs(active_settings),
+                        partial_output_path=stream_output_path,
+                        progress_callback=stream_callback,
+                        stream_guard=stream_guard,
                     )
-                return content
-            result = self.chat_completion_raw(
-                messages,
-                model=model,
-                temperature=settings.temperature,
-                max_tokens=settings.max_tokens,
-                chat_template_kwargs=self._chat_template_kwargs(settings),
-            )
-        except LLMTimeoutError as exc:
-            health = self.health_probe()
-            raise RunnerError(
-                f"LLM generation request timed out after {exc.timeout:g}s. "
-                f"API health after timeout: {health}. "
-                "This does not prove the server is dead; it means this generation "
-                "did not return within the client timeout. For large jobs, retry "
-                "with --timeout 600, reduce --max-tokens/context, or use a smaller step."
-            ) from exc
-        choices = result.get("choices") or []
-        if not choices:
-            raise RunnerError("LLM API returned no choices")
-        choice = choices[0]
-        message = choice.get("message") or {}
-        reasoning = message.get("reasoning") or message.get("reasoning_content")
-        if reasoning:
-            self._record_reasoning_content(
-                agent_level=agent_level,
-                call_function=call_function,
-                model=model,
-                reasoning=reasoning,
-            )
-        content = message.get("content")
-        if content is None:
-            content = choice.get("text")
-        if content is None:
-            if reasoning:
-                raise RunnerError(
-                    "LLM API returned reasoning-only output with empty content; "
-                    "try the default no-thinking mode, a larger --max-tokens, or a model that emits message.content"
+                    if reasoning:
+                        self._record_reasoning_content(
+                            agent_level=agent_level,
+                            call_function=call_function,
+                            model=model,
+                            reasoning=reasoning,
+                            original_chars=reasoning_chars,
+                        )
+                    return content
+                result = self.chat_completion_raw(
+                    request_messages,
+                    model=model,
+                    temperature=active_settings.temperature,
+                    max_tokens=active_settings.max_tokens,
+                    chat_template_kwargs=self._chat_template_kwargs(active_settings),
                 )
-            raise RunnerError("LLM API returned an empty message with no content")
-        return str(content).strip()
+            except LLMTimeoutError as exc:
+                health = self.health_probe()
+                raise RunnerError(
+                    f"LLM generation request timed out after {exc.timeout:g}s. "
+                    f"API health after timeout: {health}. "
+                    "This does not prove the server is dead; it means this generation "
+                    "did not return within the client timeout. For large jobs, retry "
+                    "with --timeout 600, reduce --max-tokens/context, or use a smaller step."
+                ) from exc
+            choices = result.get("choices") or []
+            if not choices:
+                raise RunnerError("LLM API returned no choices")
+            choice = choices[0]
+            message = choice.get("message") or {}
+            reasoning = message.get("reasoning") or message.get("reasoning_content")
+            content = message.get("content")
+            if content is None:
+                content = choice.get("text")
+            if content is None:
+                if reasoning:
+                    raise LLMReasoningOnlyError(
+                        "LLM API returned reasoning-only output with empty content; "
+                        "try the default no-thinking mode, a larger --max-tokens, or a model that emits message.content",
+                        reasoning=str(reasoning),
+                        reasoning_chars=len(str(reasoning)),
+                    )
+                raise RunnerError("LLM API returned an empty message with no content")
+            if reasoning:
+                self._record_reasoning_content(
+                    agent_level=agent_level,
+                    call_function=call_function,
+                    model=model,
+                    reasoning=reasoning,
+                )
+            return str(content).strip()
+
+        try:
+            return complete_once(settings)
+        except LLMReasoningOnlyError as exc:
+            if exc.reasoning:
+                self._record_reasoning_content(
+                    agent_level=agent_level,
+                    call_function=call_function,
+                    model=model,
+                    reasoning=exc.reasoning,
+                    original_chars=exc.reasoning_chars,
+                )
+            if settings.disable_thinking:
+                raise
+            if self.runtime_completion_fallback_callback is not None:
+                self.runtime_completion_fallback_callback(
+                    normalize_agent_level(agent_level),
+                    normalize_call_function(call_function),
+                    "reasoning_only_output",
+                )
+            fallback_settings = dataclasses.replace(
+                settings,
+                temperature=0.0,
+                max_tokens=min(settings.max_tokens, 2048),
+                disable_thinking=True,
+                reasoning_effort=None,
+            )
+            reasoning_excerpt = exc.reasoning[-6000:].strip()
+            fallback_messages = [
+                *messages,
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Prior private analysis excerpt for same-call condensation:\n"
+                        "<private_analysis>\n"
+                        f"{reasoning_excerpt}\n"
+                        "</private_analysis>"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Condense the prior analysis into the exact output contract requested by the original "
+                        "prompt. Return only the final answer, with no analysis, self-revision, or commentary. "
+                        "Do not introduce conclusions unsupported by the prior analysis or supplied evidence."
+                    ),
+                },
+            ]
+            self.completion_recovery_records.append(
+                {
+                    "agent_level": normalize_agent_level(agent_level),
+                    "call_function": normalize_call_function(call_function),
+                    "model": model,
+                    "reason": "reasoning_only_output",
+                    "action": "condense_reasoning_once_with_thinking_off",
+                    "fallback_max_tokens": fallback_settings.max_tokens,
+                    "reasoning_excerpt_chars": len(reasoning_excerpt),
+                }
+            )
+            return complete_once(fallback_settings, fallback_messages)
 
 def _app_config_for_args(args: argparse.Namespace) -> AppConfig:
     project = getattr(args, "project", Path.cwd())
@@ -997,6 +1081,14 @@ def llm_role_recommendations(model: str) -> list[str]:
 
 def llm_reasoning_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
     return list(getattr(client, "reasoning_records", []))
+
+
+def llm_completion_recovery_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
+    return list(getattr(client, "completion_recovery_records", []))
+
+
+def llm_generation_request_count(client: LocalLLMClient) -> int:
+    return int(getattr(client, "generation_request_count", 0) or 0)
 
 
 def llm_settings_manifest(client: LocalLLMClient) -> dict[str, dict[str, object]]:

@@ -119,11 +119,50 @@ def normalize_file_header_search_replace_artifacts(text: str) -> str:
 
     return pattern.sub(replace, text)
 
+
+def normalize_terminal_end_search_replace_artifact(text: str) -> str:
+    """Recover an unambiguous block that omits ``>>>>>>> REPLACE``.
+
+    Some models use ``END_SEARCH_REPLACE`` as both the conflict-pair terminator
+    and the outer block terminator.  Recovery is safe only when the response
+    contains exactly one path header, one SEARCH marker, one separator, no
+    standard REPLACE marker, and a single terminal END marker.  The payload is
+    preserved verbatim; only the missing envelope marker is inserted.
+    """
+    if re.search(rf"(?m)^\s*{SEARCH_REPLACE_END_MARKER}\s*$", text):
+        return text
+    if len(re.findall(r"(?m)^\s*BEGIN_SEARCH_REPLACE:\s*[^\n]+$", text)) != 1:
+        return text
+    if len(re.findall(r"(?m)^\s*<<<<<<< SEARCH\s*$", text)) != 1:
+        return text
+    if len(re.findall(r"(?m)^\s*=======\s*$", text)) != 1:
+        return text
+    if len(re.findall(r"(?m)^\s*END_SEARCH_REPLACE\s*$", text)) != 1:
+        return text
+    pattern = re.compile(
+        r"(?ms)^(?P<body>\s*BEGIN_SEARCH_REPLACE:\s*[^\n]+\n"
+        r"\s*<<<<<<< SEARCH\n.*?\n\s*=======\n.*?)\n"
+        r"\s*END_SEARCH_REPLACE\s*$"
+    )
+    match = pattern.match(text)
+    if not match:
+        return text
+    return match.group("body") + "\n>>>>>>> REPLACE\nEND_SEARCH_REPLACE"
+
 def artifact_candidate_texts(text: str) -> list[str]:
     normalized_search_replace = normalize_file_header_search_replace_artifacts(text)
-    candidates = [text, normalized_search_replace, strip_markdown_fence(text), strip_markdown_fence(normalized_search_replace)]
+    normalized_terminal = normalize_terminal_end_search_replace_artifact(normalized_search_replace)
+    candidates = [
+        text,
+        normalized_search_replace,
+        normalized_terminal,
+        strip_markdown_fence(text),
+        strip_markdown_fence(normalized_search_replace),
+        strip_markdown_fence(normalized_terminal),
+    ]
     candidates.extend(markdown_fenced_blocks(text))
     candidates.extend(markdown_fenced_blocks(normalized_search_replace))
+    candidates.extend(markdown_fenced_blocks(normalized_terminal))
     return unique_ordered(candidate for candidate in candidates if candidate.strip())
 
 def json_artifact_marker_offsets(text: str) -> list[int]:
@@ -211,6 +250,54 @@ def absent_api_contracts_from_texts(texts: Sequence[str]) -> list[tuple[str, str
         filtered.append((class_name, attr))
     return filtered
 
+
+def mechanically_absent_api_facts_from_texts(
+    texts: Sequence[str],
+) -> list[tuple[str, str, str | None]]:
+    """Extract mechanically observed absent APIs and their owner paths.
+
+    Unlike :func:`absent_api_contracts_from_texts`, this function does not
+    decide whether restoring an API is allowed.  It records only the probe
+    fact needed to validate a candidate transaction: a call to an absent API
+    is unresolved unless the current project or the same transaction defines
+    that method on its owner class.
+    """
+    facts: list[tuple[str, str, str | None]] = []
+    pending: list[tuple[str, str]] = []
+    owner_paths: list[str] = []
+    for text in texts:
+        if not text:
+            continue
+        for class_name, attr, owner_path in re.findall(
+            r"`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`\s+is absent\s+from\s+`([^`]+)`",
+            text,
+        ):
+            facts.append((class_name, attr, normalize_legacy_file_artifact_path(owner_path)))
+        if re.search(r"(?i)\babsent api(?:\s+from\s+mechanical\s+probe)?\b", text):
+            pending.extend(
+                (class_name, attr)
+                for class_name, attr in re.findall(
+                    r"\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b",
+                    text,
+                )
+            )
+        owner_paths.extend(
+            normalize_legacy_file_artifact_path(path)
+            for path in re.findall(
+                r"(?im)^\s*-?\s*(?:api surface probed from|source file|owner path):\s*`?([^`\n]+?)`?\s*$",
+                text,
+            )
+        )
+
+    known_pairs = {(class_name, attr) for class_name, attr, _path in facts}
+    default_owner = unique_ordered(path for path in owner_paths if path)
+    for class_name, attr in dict.fromkeys(pending):
+        if (class_name, attr) in known_pairs:
+            continue
+        owner_path = default_owner[0] if len(default_owner) == 1 else None
+        facts.append((class_name, attr, owner_path))
+    return list(dict.fromkeys(facts))
+
 def forbidden_edit_symbols_from_texts(texts: Sequence[str]) -> list[str]:
     """Extract mechanically forbidden edit targets from supervisor advice.
 
@@ -296,7 +383,77 @@ def repaired_json_candidates(candidate: str) -> list[str]:
         fixed_both = re.sub(r'"type"\s*:\s*"type"\s*:\s*"', '"type":"', fixed_commas)
         if fixed_both != fixed_commas:
             repairs.append(fixed_both)
-    return repairs
+    for base in [candidate, *list(repairs)]:
+        completed = complete_json_terminal_closers(base)
+        if completed is None:
+            continue
+        repairs.append(completed)
+        completed_without_trailing_commas = remove_json_trailing_commas(completed)
+        if completed_without_trailing_commas != completed:
+            repairs.append(completed_without_trailing_commas)
+    return unique_ordered(repairs)
+
+
+def complete_json_terminal_closers(candidate: str, max_insertions: int = 4) -> str | None:
+    """Repair only unambiguous missing JSON container closers.
+
+    The function never invents values, keys, quotes, commas, or string bytes.
+    It may insert ``]``/``}`` before an already present ancestor closer or at
+    end-of-input when the lexer is outside a string.  Any extra/mismatched
+    closer or truncated string remains invalid and is rejected by the caller.
+    """
+    stack: list[str] = []
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    insertions = 0
+    closing_for = {"{": "}", "[": "]"}
+
+    for char in candidate:
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            result.append(char)
+            continue
+        if char in closing_for:
+            stack.append(char)
+            result.append(char)
+            continue
+        if char in "}]":
+            matching_index = next(
+                (
+                    index
+                    for index in range(len(stack) - 1, -1, -1)
+                    if closing_for[stack[index]] == char
+                ),
+                None,
+            )
+            if matching_index is None:
+                return None
+            while len(stack) - 1 > matching_index:
+                result.append(closing_for[stack.pop()])
+                insertions += 1
+            stack.pop()
+            result.append(char)
+            continue
+        result.append(char)
+
+    if in_string or escaped:
+        return None
+    while stack:
+        result.append(closing_for[stack.pop()])
+        insertions += 1
+    if insertions == 0 or insertions > max_insertions:
+        return None
+    return "".join(result)
 
 def remove_json_trailing_commas(candidate: str) -> str:
     """Remove JSON trailing commas before object/array closers.

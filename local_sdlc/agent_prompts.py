@@ -22,15 +22,62 @@ PATCH_PLANNER_OUTPUT_CONTRACT = (
     "No code. No artifacts. No prose outside the schema."
 )
 
+PATCH_CONFORMANCE_OUTPUT_CONTRACT = (
+    "Return ONLY one compact JSON object matching the patch-conformance schema. "
+    "No markdown fences. No prose. No code artifacts."
+)
+
 PROJECT_POLICY_TRIAGE_OUTPUT_CONTRACT = (
     "Return ONLY one JSON object matching the project-policy triage schema. "
     "No markdown fences. No prose. No code artifacts."
 )
 
 JUDGE_REVIEW_OUTPUT_CONTRACT = (
-    "Return Markdown with Verdict, Proposition Ledger, Graph Edges, Findings, "
-    "Required fixes, and Evidence gaps."
+    "Return compact Markdown with Verdict, one exact OWNERSHIP line, Proposition Ledger, "
+    "Graph Edges, Findings, Required fixes, and Evidence gaps. Maximum 3 entries per section, "
+    "one line per entry, no duplicated premise/evidence/finding, and no code artifact."
 )
+
+
+def root_cause_evidence_documents(
+    documents: Sequence[tuple[str, str]],
+    recent_window: int,
+) -> list[tuple[str, str]]:
+    """Keep recent context plus bounded executable evidence for diagnosis."""
+    items = list(documents)
+    if not items:
+        return []
+
+    recent_window = max(1, recent_window)
+    selected: set[int] = set(range(max(0, len(items) - recent_window), len(items)))
+
+    def matching_indices(*needles: str) -> list[int]:
+        return [
+            index
+            for index, (title, _document) in enumerate(items)
+            if any(needle in title.lower() for needle in needles)
+        ]
+
+    command_indices = matching_indices(
+        "initial command",
+        "command result",
+        "html smoke",
+        "redis smoke",
+        "required path",
+    )
+    selected.update(command_indices[-4:])
+
+    for category in (
+        ("observation summary",),
+        ("acceptance evidence gate",),
+        ("failure analysis", "mechanical probe"),
+        ("candidate regression rollback", "replayed regressing candidate", "root cause plan rejection"),
+    ):
+        indices = matching_indices(*category)
+        if indices:
+            selected.add(indices[-1])
+
+    return [items[index] for index in sorted(selected)]
 
 
 def failure_analysis_instruction(
@@ -86,9 +133,16 @@ def failure_analysis_instruction(
         - R_i is executable evidence after A_i.
         - If same(F_i, F_t) and applied(A_i), then reject H_i unless
           new evidence strictly refines H_i.
-        - The next action must satisfy:
-          changes_behavior(A) and not touches_tests(A) and
-          not based_on(rejected_hypothesis).
+        - Fixed acceptance tests are immutable evidence.
+        - Assertions from machine-owned stage-generated tests are provisional
+          propositions until project-policy triage validates their setup,
+          action, and expected result against SPEC.md.
+        - If ownership is unresolved for a stage-generated test, the next
+          action must be project_policy_triage. Do not silently promote that
+          assertion into a product contract and do not authorize an edit.
+        - After ownership is resolved, the next action must satisfy:
+          changes_behavior(A) and not based_on(rejected_hypothesis), while the
+          machine action gate determines which exact paths are writable.
 
         Return exactly one JSON object with this schema:
         {{
@@ -107,7 +161,7 @@ def failure_analysis_instruction(
             "1-5 constraints the next role must obey"
           ],
           "next_required_action": {{
-            "role": "root_cause_analysis|format_repair|repair_artifact",
+            "role": "root_cause_analysis|format_repair|repair_artifact|project_policy_triage",
             "goal": "one sentence",
             "required_paths": ["project-relative writable product path required for the next patch"],
             "readonly_paths": ["project-relative evidence/context path that must not be edited"],
@@ -160,6 +214,75 @@ def patch_planner_instruction(brief: str, role_label: str, analysis_doc: str) ->
     ).strip()
 
 
+def patch_conformance_instruction(
+    brief: str,
+    patch_plan_doc: str,
+    candidate_artifact: str,
+) -> str:
+    return textwrap.dedent(
+        f"""
+        Act as the independent patch-plan conformance reviewer for this
+        coding-agent run.
+
+        Request:
+        {brief}
+
+        Binding patch plan:
+        {patch_plan_doc}
+
+        Candidate artifact:
+        {candidate_artifact}
+
+        Your only job is to decide whether the candidate artifact implements
+        every behavioral obligation in the binding plan. Do not write code,
+        repair the artifact, approve application, or rely on tests that have
+        not run yet.
+
+        Counterexample procedure:
+        1. Extract each behavior required by proposition, minimal_patch_goal,
+           and stop_rule. Path selection and syntactic validity alone are not
+           behavioral obligations.
+        2. Derive the candidate's post-edit behavior from its SEARCH and
+           REPLACE text, diff, or file content plus the supplied file context.
+        3. For each obligation, try to name one input/state transition for
+           which the candidate would still violate the plan.
+        4. Mark status=pass only when every obligation is satisfied and each
+           satisfied obligation cites concrete candidate evidence.
+        5. If the candidate implements only deletion, persistence, validation,
+           or one branch of a requested exact synchronization/replacement,
+           mark the uncovered state transition not_satisfied.
+        6. If context is genuinely insufficient, return
+           status=insufficient_context and exact missing_context_paths. Do not
+           guess either pass or fail.
+
+        Formal rule:
+        Let O be the set of explicit behavioral obligations in the plan and A
+        be the candidate artifact. conformance(A, O) is true iff for every
+        o in O, implements(A, o) is supported by candidate evidence and no
+        derived counterexample remains. Merely touching required_path does not
+        imply implements(A, o).
+
+        Return exactly one JSON object:
+        {{
+          "status": "pass|fail|insufficient_context",
+          "obligations": [
+            {{
+              "id": "O1",
+              "requirement": "one explicit behavioral obligation",
+              "status": "satisfied|not_satisfied|uncertain",
+              "candidate_evidence": "exact candidate operation or (none)",
+              "counterexample": "remaining input/state transition or (none)"
+            }}
+          ],
+          "missing_obligations": ["required behavior not implemented"],
+          "missing_context_paths": ["project-relative path needed for review"],
+          "safe_next_action": "apply|repair_artifact|collect_context",
+          "repair_instruction": "one concise instruction; empty when status=pass"
+        }}
+        """
+    ).strip()
+
+
 def project_policy_triage_instruction(
     brief: str,
     trigger: str,
@@ -170,6 +293,26 @@ def project_policy_triage_instruction(
 ) -> str:
     transition_text = json.dumps(list(state_transitions)[-8:], ensure_ascii=False, indent=2)
     prior_text = json.dumps(list(prior_triages)[-5:], ensure_ascii=False, indent=2)
+    oracle_obligation = ""
+    if trigger == "generated_test_oracle_conflict":
+        oracle_obligation = textwrap.dedent(
+            """
+            Mandatory generated-test counterexample procedure:
+            1. Read the complete failing test setup and action sequence from the supplied file context.
+            2. Derive the relevant state immediately before the action under test.
+            3. Derive the state selected by the action target, revision, key, or input.
+            4. Compare the assertion with that derived state and with SPEC.md.
+            5. Try to falsify both hypotheses independently:
+               H_product = product behavior violates a valid test proposition.
+               H_test = generated test setup or assertion contradicts its own name, target state, SPEC.md, or an approved API.
+            6. Cite the concrete setup/action/assertion facts in project_policy_basis. A prior repair advice saying tests are readonly is not evidence for H_product; ownership is the question being reviewed.
+            7. Fill product_violation_evidence and test_contradiction_evidence
+               independently before selecting either hypothesis. An exception
+               location proves where execution stopped, not which proposition
+               is correct.
+            Classify test_harness only when H_test has positive evidence. Otherwise classify product_bug or insufficient_context.
+            """
+        ).strip()
     return textwrap.dedent(
         f"""
         Act as the project-policy triage role for this coding-agent run.
@@ -214,16 +357,76 @@ def project_policy_triage_instruction(
         - T = your triage classification.
         - T may select a next role/action, but T cannot directly apply an edit.
         - valid(T) requires basis(T) subset of P union E and no violation of U.
+        - A generated test may be classified as the owner only when evidence
+          shows that its setup violates an earlier invariant before the
+          asserted behavior is reached, or its expected proposition conflicts
+          with SPEC.md or an already approved API contract.
+        - A product exception that merely differs from the test expectation is
+          not enough to classify the test as wrong.
+        - Even when you select edit_test_harness, the action gate will permit
+          only exact paths mechanically verified as stage-owned generated tests.
+
+        {oracle_obligation}
 
         Return exactly one JSON object:
         {{
           "trigger": "{trigger}",
           "case_type": "artifact_format|test_harness|product_bug|spec_conflict|insufficient_context|reject",
           "confidence": "high|medium|low",
+          "selected_hypothesis": "H_product|H_test|H_spec_conflict|undetermined",
+          "product_violation_evidence": ["observed product behavior that contradicts one cited SPEC proposition"],
+          "test_contradiction_evidence": ["generated setup/action/assertion fact that contradicts SPEC or its own target state"],
           "project_policy_basis": ["SPEC.md or document evidence line"],
           "safe_next_action": "format_repair|root_cause_analysis|repair_artifact|edit_test_harness|reject|ask_user",
           "editable_paths": ["project-relative paths that may be writable"],
           "readonly_paths": ["project-relative paths that must remain context/evidence only"],
+          "forbidden_actions": ["actions the next role must not take"],
+          "rationale": "one concise sentence"
+        }}
+        """
+    ).strip()
+
+
+def project_policy_arbitration_instruction(
+    brief: str,
+    prior_judge_vote: str,
+    primary_triage: dict[str, object],
+    evidence_doc: str,
+) -> str:
+    return textwrap.dedent(
+        f"""
+        Act as an independent project-policy arbiter for this coding-agent run.
+
+        Request:
+        {brief}
+
+        Two advisory roles disagree about ownership:
+        - prior_judge_vote: {prior_judge_vote}
+        - primary_triage_vote: {primary_triage.get('case_type', 'insufficient_context')}
+
+        Recompute the result from the primary evidence below. Do not decide by
+        majority, role seniority, exception location, or prior repair advice.
+        For each hypothesis, cite one positive fact or leave its evidence list
+        empty. Select product_bug only when observed product behavior contradicts
+        a cited SPEC proposition. Select test_harness only when a machine-owned
+        generated test's setup/action/assertion contradicts SPEC.md or its own
+        selected target state. Otherwise select insufficient_context and reject.
+
+        Primary evidence:
+        {evidence_doc}
+
+        Return exactly one JSON object:
+        {{
+          "trigger": "generated_test_oracle_conflict",
+          "case_type": "test_harness|product_bug|spec_conflict|insufficient_context|reject",
+          "confidence": "high|medium|low",
+          "selected_hypothesis": "H_product|H_test|H_spec_conflict|undetermined",
+          "product_violation_evidence": ["positive product counterexample, or empty"],
+          "test_contradiction_evidence": ["positive generated-test counterexample, or empty"],
+          "project_policy_basis": ["specific SPEC/setup/action/assertion fact"],
+          "safe_next_action": "root_cause_analysis|edit_test_harness|reject|ask_user",
+          "editable_paths": ["project-relative paths"],
+          "readonly_paths": ["project-relative evidence paths"],
           "forbidden_actions": ["actions the next role must not take"],
           "rationale": "one concise sentence"
         }}
@@ -309,10 +512,21 @@ def judge_review_instruction(brief: str, round_index: int, final_round: int) -> 
         is present in Included file contents. If command evidence and file
         contents disagree for a static/proxy check, identify the mismatch
         owner instead of blindly repeating the same product-code diagnosis.
+        Immediately after the verdict line, emit exactly one ownership line:
+        `OWNERSHIP: test_harness|product_bug|spec_conflict|insufficient_context|not_applicable`.
+        Use `test_harness` only for a machine-owned generated test whose setup
+        or assertion conflicts with SPEC.md; fixed acceptance tests are never
+        test_harness. Use `not_applicable` when no ownership dispute exists.
         If the result is acceptable
         and command evidence passes, start with "判定: 承認". If not, start
         with "判定: 修正依頼" and list concrete required fixes.
         Express major review points as short P/C/E/A/V propositions and
         Graph Edges before Required fixes.
+
+        Hard output bounds:
+        - At most 3 proposition entries, 3 graph edges, 3 findings, 3 required fixes, and 3 evidence gaps.
+        - Each entry must be one line and cite an existing evidence identifier or path when available.
+        - Never restate the same fact, failure, method, or path under a new item number.
+        - Stop immediately after the bounded Evidence gaps section; do not narrate your reasoning.
         """
     ).strip()

@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import math
 import re
+from pathlib import Path
 from typing import Mapping, Sequence
 
+from .llm_client import parse_api_profile_override
 from .models import RunnerError, StageWorkItem
 from .utils import markdown_fenced_blocks, unique_ordered
 from .workspace import normalize_project_relative_paths
@@ -49,6 +51,18 @@ def _string_list(value: object, field_name: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise RunnerError(f"stage-plan {field_name} must be a list of strings")
     return unique_ordered(item.strip() for item in value if item.strip())
+
+
+def _api_profile_list(value: object, field_name: str) -> list[str]:
+    overrides = _string_list(value, field_name)
+    for override in overrides:
+        try:
+            parse_api_profile_override(override)
+        except (RunnerError, TypeError, ValueError) as exc:
+            raise RunnerError(
+                f"stage-plan {field_name} contains an invalid function override: {override!r}: {exc}"
+            ) from exc
+    return overrides
 
 
 def _marked_stage_plan_payload(spec: str) -> Mapping[str, object] | None:
@@ -129,7 +143,7 @@ def stage_plan_from_spec(spec: str) -> list[StageWorkItem] | None:
             f"{stage_id}.required_observables",
         )
         test_focus = _string_list(raw.get("test_focus"), f"{stage_id}.test_focus")
-        api_profile = _string_list(raw.get("api_profile"), f"{stage_id}.api_profile")
+        api_profile = _api_profile_list(raw.get("api_profile"), f"{stage_id}.api_profile")
         max_rounds_raw = raw.get("max_rounds")
         max_rounds: int | None = None
         if max_rounds_raw is not None:
@@ -149,6 +163,7 @@ def stage_plan_from_spec(spec: str) -> list[StageWorkItem] | None:
                 test_commands=tuple(test_commands),
                 required_observables=tuple(observables),
                 writable_paths=tuple(writable),
+                repair_scope_paths=tuple(writable),
                 readonly_evidence_paths=tuple(readonly),
                 api_profile=tuple(api_profile),
                 max_rounds=max_rounds,
@@ -157,13 +172,62 @@ def stage_plan_from_spec(spec: str) -> list[StageWorkItem] | None:
     return stages
 
 
+def _is_test_path(path: str) -> bool:
+    candidate = path.replace("\\", "/")
+    return candidate.startswith("tests/") or Path(candidate).name.startswith("test_")
+
+
+def _path_affinity(left: str, right: str) -> int:
+    """Return a lexical ownership score without assuming a package name."""
+    left_stem = Path(left).stem.removeprefix("test_").lower()
+    right_stem = Path(right).stem.removeprefix("test_").lower()
+    if left_stem == right_stem:
+        return 100
+    left_tokens = set(filter(None, re.split(r"[^a-z0-9]+", left_stem)))
+    right_tokens = set(filter(None, re.split(r"[^a-z0-9]+", right_stem)))
+    return 10 * len(left_tokens & right_tokens)
+
+
+def _cohesive_path_groups(paths: Sequence[str]) -> list[list[str]]:
+    """Keep conventional tests beside the product path they exercise."""
+    product_paths = [path for path in paths if not _is_test_path(path)]
+    test_paths = [path for path in paths if _is_test_path(path)]
+    if not product_paths or not test_paths:
+        return [[path] for path in paths]
+
+    groups = [[path] for path in product_paths]
+    unmatched_tests: list[str] = []
+    for test_path in test_paths:
+        scores = [_path_affinity(test_path, product_path) for product_path in product_paths]
+        best_score = max(scores, default=0)
+        if best_score <= 0:
+            unmatched_tests.append(test_path)
+            continue
+        groups[scores.index(best_score)].append(test_path)
+    if unmatched_tests:
+        groups[-1].extend(unmatched_tests)
+    return groups
+
+
+def _balanced_group_chunks(groups: Sequence[Sequence[str]], parts: int) -> list[list[str]]:
+    chunk_count = max(1, min(int(parts), len(groups)))
+    chunks: list[list[str]] = [[] for _ in range(chunk_count)]
+    loads = [0] * chunk_count
+    for group in groups:
+        target = min(range(chunk_count), key=lambda index: (loads[index], index))
+        chunks[target].extend(group)
+        loads[target] += len(group)
+    return [chunk for chunk in chunks if chunk]
+
+
 def split_stage_work_item(stage: StageWorkItem, *, parts: int = 2) -> list[StageWorkItem]:
     paths = list(stage.writable_paths or stage.suggested_paths)
     if len(paths) < 2:
         return [stage]
     normalized_parts = max(2, min(int(parts), len(paths)))
-    chunk_size = int(math.ceil(len(paths) / normalized_parts))
-    chunks = [paths[index : index + chunk_size] for index in range(0, len(paths), chunk_size)]
+    groups = _cohesive_path_groups(paths)
+    chunks = _balanced_group_chunks(groups, normalized_parts)
+    repair_scope = tuple(stage.repair_scope_paths or paths)
     children: list[StageWorkItem] = []
     for index, chunk in enumerate(chunks, start=1):
         is_last = index == len(chunks)
@@ -180,6 +244,7 @@ def split_stage_work_item(stage: StageWorkItem, *, parts: int = 2) -> list[Stage
                 test_commands=stage.test_commands if is_last else (),
                 required_observables=stage.required_observables if is_last else (),
                 writable_paths=tuple(chunk),
+                repair_scope_paths=repair_scope,
                 readonly_evidence_paths=stage.readonly_evidence_paths,
                 api_profile=stage.api_profile,
                 max_rounds=stage.max_rounds,

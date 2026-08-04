@@ -41,6 +41,7 @@ class StageRecoveryDecision:
     resume_failed_worktree: bool = False
     artifact_format: str | None = None
     small_patch: bool = False
+    additional_writable_paths: tuple[str, ...] = ()
     metadata: dict[str, object] = field(default_factory=dict)
 
 
@@ -307,6 +308,41 @@ def decide_stage_recovery(
     failure_type = str(failure.get("failure_type") or "unknown")
     prior = set(previous_actions)
     writable = stage.writable_paths or stage.suggested_paths
+    repair_scope = stage.repair_scope_paths or writable
+    evidence_expansion = tuple(
+        path
+        for path in summary.repair_focus_paths
+        if path in repair_scope and path not in writable
+    )
+
+    if failure_type == "runner_configuration_error":
+        return StageRecoveryDecision(
+            action="fail_closed",
+            reason_code="runner_configuration_error",
+            rationale=(
+                "The child runner rejected its executable configuration. Product-code retries "
+                "cannot repair the harness contract, so the parent records evidence and stops."
+            ),
+            metadata={"failure_type": failure_type},
+        )
+
+    if evidence_expansion and "expand_repair_scope" not in prior:
+        return StageRecoveryDecision(
+            action="expand_repair_scope",
+            reason_code="evidence_dependency_closure",
+            rationale=(
+                "Executable failure evidence identifies a coupled path inside the parent "
+                "stage authorization. The next attempt may add only that proven dependency."
+            ),
+            resume_failed_worktree=True,
+            small_patch=True,
+            additional_writable_paths=evidence_expansion,
+            metadata={
+                "failure_type": failure_type,
+                "active_writable_paths": list(writable),
+                "repair_scope_paths": list(repair_scope),
+            },
+        )
 
     if is_protocol_failure_type(failure_type) and "format_repair" not in prior:
         return StageRecoveryDecision(
@@ -331,6 +367,17 @@ def decide_stage_recovery(
                 "a reversible, independently verifiable next action."
             ),
             metadata={"failure_type": failure_type, "writable_path_count": len(writable)},
+        )
+
+    if "root_cause_recovery" in prior:
+        return StageRecoveryDecision(
+            action="fail_closed",
+            reason_code="no_novel_recovery",
+            rationale=(
+                "The same structural recovery has already been attempted without new evidence, "
+                "scope, or artifact policy; replaying it is not an admissible action."
+            ),
+            metadata={"failure_type": failure_type},
         )
 
     return StageRecoveryDecision(

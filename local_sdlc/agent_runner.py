@@ -30,10 +30,20 @@ from .domain_modeling import domain_modeling_decision
 from .policy_triage import (
     apply_project_policy_triage_to_advice as apply_triage_to_advice,
     authorized_test_edit_paths,
+    enforce_test_harness_triage_gate,
+    generated_test_oracle_triage_needed,
+    generated_test_oracle_evidence_document,
+    judge_ownership_classification,
     project_policy_triage_enabled as triage_is_enabled,
     triage_allows_test_harness_edit,
     triage_string_list,
+    validate_project_policy_triage_proposition,
 )
+from .patch_conformance import (
+    failed_patch_conformance_review,
+    parse_patch_conformance_review,
+)
+from .candidate_history import candidate_hypotheses, replayed_regression_hypotheses
 from .budget import *
 from .progress_monitor import *
 from .action_gate import *
@@ -252,6 +262,11 @@ def command_agent(args: argparse.Namespace) -> int:
 
     manifest_text = project_manifest(project)
     existing_project_paths = listed_project_files(project)
+    focused_context_files = unique_ordered(
+        str(path)
+        for path in (resume_manifest.get("focused_context_paths", []) if resume_manifest else [])
+        if isinstance(path, str) and path in existing_project_paths
+    )
     stage_scope_test_paths = unique_ordered(
         path for path in [*required_paths, *new_files] if path.startswith("tests/")
     )
@@ -266,6 +281,12 @@ def command_agent(args: argparse.Namespace) -> int:
         ("Run-bound validated knowledge", knowledge_context_document(knowledge_binding))
     ]
     api_calls = int(resume_manifest.get("api_calls", 0)) if resume_manifest else 0
+    api_call_baseline = api_calls
+
+    def effective_api_calls() -> int:
+        physical_calls = api_call_baseline + llm_generation_request_count(client)
+        return max(api_calls, physical_calls)
+
     final_verdict = "not_judged"
     recovery_strategy = str(recovery_plan.get("strategy") or "")
     force_root_cause_recovery = recovery_strategy in ANALYTIC_RECOVERY_STRATEGIES
@@ -292,6 +313,7 @@ def command_agent(args: argparse.Namespace) -> int:
         int(resume_manifest.get("root_cause_patch_rounds_used", 0)) if resume_manifest else 0
     )
     root_cause_patch_pending = False
+    regression_recovery_pending = False
     last_functional_failure_score = resume_manifest.get("last_functional_failure_score") if resume_manifest else None
     if not isinstance(last_functional_failure_score, int):
         last_functional_failure_score = None
@@ -306,8 +328,15 @@ def command_agent(args: argparse.Namespace) -> int:
     if not isinstance(last_functional_failure_family_signature, str):
         last_functional_failure_family_signature = None
     repeated_same_failure_count = int(resume_manifest.get("repeated_same_failure_count", 0)) if resume_manifest else 0
+    candidate_regressions: list[dict[str, object]] = [
+        item for item in resume_manifest.get("candidate_regressions", []) if isinstance(item, dict)
+    ] if resume_manifest else []
+    candidate_replays: list[dict[str, object]] = [
+        item for item in resume_manifest.get("candidate_replays", []) if isinstance(item, dict)
+    ] if resume_manifest else []
     copied_back: list[str] = []
     changed_paths: list[str] = list(resume_manifest.get("changed_paths", [])) if resume_manifest else []
+    resumed_baseline_changed_paths: list[str] = []
     latest_stream_status: dict[str, object] = {}
     latest_repair_advice: dict[str, object] = {}
     pending_deterministic_repair: dict[str, object] | None = None
@@ -317,6 +346,14 @@ def command_agent(args: argparse.Namespace) -> int:
     project_policy_triages: list[dict[str, object]] = [
         item for item in resume_manifest.get("project_policy_triages", []) if isinstance(item, dict)
     ] if resume_manifest else []
+    patch_conformance_reviews: list[dict[str, object]] = [
+        item for item in resume_manifest.get("patch_conformance_reviews", []) if isinstance(item, dict)
+    ] if resume_manifest else []
+    rejected_patch_plans: list[dict[str, object]] = [
+        item for item in resume_manifest.get("rejected_patch_plans", []) if isinstance(item, dict)
+    ] if resume_manifest else []
+    pending_patch_plan_doc = str(resume_manifest.get("pending_patch_plan_doc") or "") if resume_manifest else ""
+    latest_executable_gate_blockers: list[dict[str, object]] = []
     domain_modeling_state = domain_modeling_decision(args, skills, spec, resume_documents)
     state_transitions: list[dict[str, object]] = list(resume_manifest.get("state_transitions", [])) if resume_manifest else []
     semantic_contracts: list[SemanticContract] = []
@@ -406,6 +443,11 @@ def command_agent(args: argparse.Namespace) -> int:
 
             set_timeout_limit = getattr(client, "set_runtime_timeout_limit", None)
             set_progress_callback = getattr(client, "set_runtime_progress_callback", None)
+            set_completion_fallback = getattr(
+                client,
+                "set_runtime_completion_fallback_callback",
+                None,
+            )
 
             def bind_timeout() -> None:
                 wall_remaining = remaining_wall_seconds(run_dir, budget_control_dirs)
@@ -435,6 +477,41 @@ def command_agent(args: argparse.Namespace) -> int:
 
             if callable(set_progress_callback):
                 set_progress_callback(record_stream_progress)
+            if callable(set_completion_fallback):
+                def authorize_completion_fallback(
+                    agent_level: str,
+                    call_function: str,
+                    reason: str,
+                ) -> None:
+                    fallback_action = f"{action}:reasoning_condensation_fallback"
+                    guard_action(
+                        fallback_action,
+                        action_type="api_call",
+                        risk_class="read_only",
+                        metadata={
+                            "agent_level": agent_level,
+                            "call_function": call_function,
+                            "reason": reason,
+                            "bounded_retry": 1,
+                        },
+                    )
+                    write_partial_manifest(
+                        "llm_completion_fallback_authorized",
+                        {
+                            "api_calls": max(
+                                effective_api_calls() + 1,
+                                api_call_baseline + llm_generation_request_count(client) + 1,
+                            ),
+                            "completion_fallback": {
+                                "agent_level": agent_level,
+                                "call_function": call_function,
+                                "reason": reason,
+                                "action": "condense_reasoning_once_with_thinking_off",
+                            },
+                        },
+                    )
+
+                set_completion_fallback(authorize_completion_fallback)
             bind_timeout()
 
     def write_partial_manifest(status: str, extra: dict[str, object] | None = None) -> None:
@@ -475,6 +552,9 @@ def command_agent(args: argparse.Namespace) -> int:
             "protocol_rounds_used": protocol_rounds_used,
             "adaptive_rounds_used": adaptive_rounds_used,
             "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
+            "regression_recovery_pending": regression_recovery_pending,
+            "candidate_regressions": candidate_regressions,
+            "candidate_replays": candidate_replays,
             "last_functional_failure_score": last_functional_failure_score,
             "last_functional_failure_signature": last_functional_failure_signature,
             "last_functional_failure_family_signature": last_functional_failure_family_signature,
@@ -490,18 +570,21 @@ def command_agent(args: argparse.Namespace) -> int:
             "worktree_mode": args.worktree_mode,
             "worktree_path": str(worktree_path) if worktree_path else None,
             "resumed_worktree_from": str(resume_worktree_source) if resume_worktree_source else None,
+            "resumed_baseline_changed_paths": resumed_baseline_changed_paths,
             "copied_back": copied_back,
             "changed_paths": unique_ordered(changed_paths),
             "completed_rounds": completed_rounds,
             "final_verdict": final_verdict,
             "final_failure_type": final_failure_type,
-            "api_calls": api_calls,
+            "api_calls": effective_api_calls(),
             "model_profile": llm_model_profile_manifest(args),
             "llm_settings": llm_settings_manifest(client),
             "reasoning_records": llm_reasoning_manifest(client),
+            "completion_recoveries": llm_completion_recovery_manifest(client),
             "domain_modeling": domain_modeling_state,
             "test_commands": list(args.test_command or []),
             "context_paths": context_files,
+            "focused_context_paths": focused_context_files,
             "context_slices": {path: ranges for path, ranges in context_slices.items()},
             "required_paths": required_paths,
             "explicit_required_paths": explicit_required_paths,
@@ -519,10 +602,16 @@ def command_agent(args: argparse.Namespace) -> int:
                 verdict_to_manifest(item)
                 for item in verdicts_from_acceptance_matrix(acceptance_matrix)
             ],
-            "acceptance_blockers": acceptance_blockers(acceptance_matrix),
+            "acceptance_blockers": [
+                *acceptance_blockers(acceptance_matrix),
+                *latest_executable_gate_blockers,
+            ],
             "failure_summary": failure_summary(final_verdict, evidence_records, final_failure_type),
             "failure_analyses": failure_analyses,
             "project_policy_triages": project_policy_triages,
+            "patch_conformance_reviews": patch_conformance_reviews,
+            "rejected_patch_plans": rejected_patch_plans,
+            "pending_patch_plan_doc": pending_patch_plan_doc,
             "state_transitions": state_transitions,
             "cancel_requested": cancel_requested(run_dir),
             "cancel_state": load_cancel_state(run_dir) or None,
@@ -620,10 +709,12 @@ def command_agent(args: argparse.Namespace) -> int:
         return transition
 
     def record_acceptance_gate(label: str, filename: str, command_docs: list[tuple[str, str]] | None = None) -> bool:
+        nonlocal latest_executable_gate_blockers
         if not acceptance_criteria:
             return True
         matrix = build_acceptance_matrix(acceptance_criteria, evidence_records)
-        blockers = acceptance_blockers(matrix)
+        latest_executable_gate_blockers = executable_command_gate_blockers(command_docs or [])
+        blockers = [*acceptance_blockers(matrix), *latest_executable_gate_blockers]
         stdout = json.dumps(
             {
                 "ok": not blockers,
@@ -704,7 +795,18 @@ def command_agent(args: argparse.Namespace) -> int:
     def remember_repair_advice(
         advice: RepairAdvice,
         command_docs: Sequence[tuple[str, str]] = (),
+        *,
+        preserve_previous: bool = False,
     ) -> None:
+        if preserve_previous and latest_repair_advice:
+            merged = merge_repair_advice_manifest(
+                latest_repair_advice,
+                advice,
+                command_docs,
+            )
+            latest_repair_advice.clear()
+            latest_repair_advice.update(merged)
+            return
         latest_repair_advice.clear()
         latest_repair_advice.update(repair_advice_to_manifest(advice, command_docs))
 
@@ -994,6 +1096,83 @@ def command_agent(args: argparse.Namespace) -> int:
         write_partial_manifest("patch_plan_written", {"current_round": round_index})
         return planner_doc
 
+    def run_patch_conformance_review(
+        round_index: int,
+        patch_plan_doc: str,
+        candidate_artifact: str,
+    ) -> dict[str, object]:
+        """Independently verify plan semantics before any artifact is applied."""
+
+        nonlocal api_calls
+        review_instruction = patch_conformance_instruction(
+            args.brief,
+            patch_plan_doc,
+            candidate_artifact,
+        )
+        review_partial_path = run_dir / f"03-r{round_index:02d}-patch-conformance.partial.json"
+        if args.stream:
+            written.append(review_partial_path)
+        update_review_stream_status = make_stream_callback(
+            f"patch conformance round {round_index}",
+            review_partial_path,
+            current_round=round_index,
+        )
+        review_doc = ""
+        review_error = ""
+        try:
+            guard_action("patch_conformance_api_call", action_type="api_call", risk_class="read_only")
+            review_doc = run_skill_call(
+                client=client,
+                skill=judge_skill,
+                spec=spec,
+                instruction=review_instruction,
+                agent_level="judge",
+                project_manifest_text=manifest_text,
+                file_context=file_context,
+                documents=documents[-args.document_window :],
+                output_contract=PATCH_CONFORMANCE_OUTPUT_CONTRACT,
+                stream_output_path=review_partial_path if args.stream else None,
+                stream_callback=update_review_stream_status if args.stream else None,
+                stream_guard=root_cause_stream_guard if args.stream else None,
+                call_function="patch_conformance",
+            )
+            api_calls += 1
+            if latest_stream_status:
+                latest_stream_status["status"] = "completed"
+            try:
+                review = parse_patch_conformance_review(review_doc)
+            except RunnerError as exc:
+                review_error = str(exc)
+                review = failed_patch_conformance_review(review_error)
+        except (LLMStreamAbortError, RunnerError) as exc:
+            api_calls += 1
+            review_error = str(exc)
+            review = failed_patch_conformance_review(review_error)
+            if latest_stream_status:
+                latest_stream_status["status"] = "aborted"
+                latest_stream_status["abort_reason"] = review_error
+
+        review["round"] = round_index
+        review["call_function"] = "patch_conformance"
+        if review_error:
+            review["review_error"] = review_error
+        review_path = write_run_document(
+            run_dir,
+            f"03-r{round_index:02d}-patch-conformance.json",
+            json.dumps(review, ensure_ascii=False, indent=2),
+        )
+        written.append(review_path)
+        documents.append(
+            (
+                f"Patch conformance round {round_index}",
+                json.dumps(review, ensure_ascii=False, indent=2),
+            )
+        )
+        review["document"] = display_path(review_path, original_project)
+        patch_conformance_reviews.append(review)
+        write_partial_manifest("patch_conformance_written", {"current_round": round_index})
+        return review
+
     def project_policy_triage_enabled(trigger: str) -> bool:
         mode = str(getattr(args, "project_policy_triage", "auto") or "auto")
         return triage_is_enabled(mode, trigger)
@@ -1014,7 +1193,21 @@ def command_agent(args: argparse.Namespace) -> int:
         parsed.setdefault("trigger", trigger)
         parsed["document"] = display_path(triage_path, original_project)
         parsed["call_function"] = "project_policy_triage"
-        return parsed
+        parsed = validate_project_policy_triage_proposition(parsed)
+        return enforce_test_harness_triage_gate(
+            parsed,
+            unique_ordered([*stage_generated_test_paths, *stage_scope_test_paths]),
+        )
+
+    def latest_judge_review_document() -> str:
+        return next(
+            (
+                document
+                for name, document in reversed(documents)
+                if name.startswith("Judge review round")
+            ),
+            "",
+        )
 
     def run_project_policy_triage(
         round_index: int,
@@ -1074,6 +1267,67 @@ def command_agent(args: argparse.Namespace) -> int:
         written.append(triage_path)
         documents.append((f"Project policy triage round {round_index}", triage_doc))
         record = project_policy_triage_record(triage_doc, round_index, trigger, triage_path)
+        prior_judge_vote = judge_ownership_classification(latest_judge_review_document())
+        primary_vote = str(record.get("case_type", "insufficient_context"))
+        if (
+            trigger == "generated_test_oracle_conflict"
+            and prior_judge_vote not in {"not_applicable", primary_vote}
+        ):
+            arbitration_instruction = project_policy_arbitration_instruction(
+                args.brief,
+                prior_judge_vote,
+                record,
+                evidence_doc,
+            )
+            arbitration_path = run_dir / f"05-r{round_index:02d}-project-policy-arbitration.json"
+            try:
+                guard_action("policy_arbitration_api_call", action_type="api_call", risk_class="read_only")
+                arbitration_doc = run_skill_call(
+                    client=client,
+                    skill=judge_skill,
+                    spec=spec,
+                    instruction=arbitration_instruction,
+                    agent_level="judge",
+                    project_manifest_text=manifest_text,
+                    file_context=file_context,
+                    documents=(),
+                    output_contract=PROJECT_POLICY_TRIAGE_OUTPUT_CONTRACT,
+                    call_function="policy_arbitration",
+                )
+                api_calls += 1
+                arbitration_path = write_run_document(
+                    run_dir,
+                    f"05-r{round_index:02d}-project-policy-arbitration.json",
+                    arbitration_doc,
+                )
+                written.append(arbitration_path)
+                documents.append((f"Project policy arbitration round {round_index}", arbitration_doc))
+                arbitrated = project_policy_triage_record(
+                    arbitration_doc,
+                    round_index,
+                    trigger,
+                    arbitration_path,
+                )
+                arbitrated["call_function"] = "policy_arbitration"
+                arbitrated["vote_conflict"] = {
+                    "prior_judge": prior_judge_vote,
+                    "primary_triage": primary_vote,
+                }
+                record = arbitrated
+            except (LLMStreamAbortError, RunnerError) as exc:
+                record = {
+                    **record,
+                    "case_type": "insufficient_context",
+                    "confidence": "low",
+                    "safe_next_action": "reject",
+                    "editable_paths": [],
+                    "call_function": "policy_arbitration",
+                    "vote_conflict": {
+                        "prior_judge": prior_judge_vote,
+                        "primary_triage": primary_vote,
+                        "arbitration_error": str(exc),
+                    },
+                }
         project_policy_triages.append(record)
         write_partial_manifest("project_policy_triage_written", {"current_round": round_index})
         return record
@@ -1185,6 +1439,18 @@ def command_agent(args: argparse.Namespace) -> int:
     if domain_modeling_state.get("run"):
         route = recommended_sdlc_phases(args.brief, spec)
         domain_skill = required_skill(skills, str(domain_modeling_state["skill"]))
+        domain_partial_path = run_dir / "01-domain-contract.partial.md"
+        if args.stream:
+            written.append(domain_partial_path)
+            latest_stream_status.clear()
+            latest_stream_status.update(
+                {
+                    "label": "domain modeling",
+                    "status": "starting",
+                    "partial_output": display_path(domain_partial_path, original_project),
+                }
+            )
+            write_partial_manifest("domain_streaming")
         guard_action("domain_modeling_api_call", action_type="api_call", risk_class="read_only")
         domain_doc = run_skill_call(
             client=client,
@@ -1198,8 +1464,17 @@ def command_agent(args: argparse.Namespace) -> int:
                 "Return the DDD domain contract document only. "
                 "Do not write implementation code."
             ),
+            stream_output_path=domain_partial_path if args.stream else None,
+            stream_callback=(
+                make_stream_callback("domain modeling", domain_partial_path)
+                if args.stream
+                else None
+            ),
             call_function="plan_work",
         )
+        if args.stream and latest_stream_status:
+            latest_stream_status["status"] = "completed"
+            write_partial_manifest("domain_stream_completed")
         api_calls += 1
         path = write_run_document(run_dir, "01-domain-contract.md", domain_doc)
         written.append(path)
@@ -1213,6 +1488,14 @@ def command_agent(args: argparse.Namespace) -> int:
     html_targets = list(dict.fromkeys([*args.include, *new_files]))
     all_context_targets = list(dict.fromkeys([*args.include, *context_files, *slice_context_files, *new_files]))
     allowed_artifact_paths = list(dict.fromkeys([*args.include, *new_files]))
+    declared_artifact_paths = frozenset(allowed_artifact_paths)
+    if resume_worktree_source is not None:
+        resumed_baseline_changed_paths = changed_allowed_paths_between(
+            project,
+            original_project,
+            allowed_artifact_paths,
+        )
+        changed_paths = unique_ordered([*changed_paths, *resumed_baseline_changed_paths])
     readonly_artifact_paths = list(
         dict.fromkeys(
             [
@@ -1366,6 +1649,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 documents.append(("Initial repair advice", advice_doc))
             last_functional_failure_signature = command_failure_signature(initial_command_docs)
             last_functional_failure_family_signature = command_failure_family_signature(initial_command_docs)
+            last_functional_failure_score = command_failure_score(initial_command_docs)
 
     initial_acceptance_ok = True
     if initial_checks:
@@ -1381,9 +1665,18 @@ def command_agent(args: argparse.Namespace) -> int:
         and all(ok for _name, _doc, ok in initial_checks)
         and initial_acceptance_ok
         and (initial_commands_passed or html_smoke_only_passed)
+        and not resume_manifest
     ):
         final_verdict = "approved"
         completed_rounds = 0
+        if args.apply and args.worktree_mode == "copy" and changed_paths:
+            guard_action(
+                "copy_back",
+                action_type="copy_back",
+                risk_class="project_write",
+                metadata={"approved_paths": unique_ordered(changed_paths)},
+            )
+            copied_back = copy_allowed_paths_back(project, original_project, unique_ordered(changed_paths))
         verification_doc = textwrap.dedent(
             """
             ## Initial Verification Result
@@ -1414,6 +1707,9 @@ def command_agent(args: argparse.Namespace) -> int:
             "protocol_rounds_used": protocol_rounds_used,
             "adaptive_rounds_used": adaptive_rounds_used,
             "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
+            "regression_recovery_pending": regression_recovery_pending,
+            "candidate_regressions": candidate_regressions,
+            "candidate_replays": candidate_replays,
             "last_functional_failure_score": last_functional_failure_score,
             "last_functional_failure_signature": last_functional_failure_signature,
             "last_functional_failure_family_signature": last_functional_failure_family_signature,
@@ -1427,18 +1723,21 @@ def command_agent(args: argparse.Namespace) -> int:
             "worktree_mode": args.worktree_mode,
             "worktree_path": str(worktree_path) if worktree_path else None,
             "resumed_worktree_from": str(resume_worktree_source) if resume_worktree_source else None,
+            "resumed_baseline_changed_paths": resumed_baseline_changed_paths,
             "copied_back": copied_back,
             "changed_paths": unique_ordered(changed_paths),
             "completed_rounds": completed_rounds,
             "final_verdict": final_verdict,
             "final_failure_type": final_failure_type,
-            "api_calls": api_calls,
+            "api_calls": effective_api_calls(),
             "llm_settings": llm_settings_manifest(client),
             "reasoning_records": llm_reasoning_manifest(client),
+            "completion_recoveries": llm_completion_recovery_manifest(client),
             "streaming": dict(latest_stream_status) if latest_stream_status else None,
             "repair_advice": dict(latest_repair_advice) if latest_repair_advice else None,
             "test_commands": test_commands,
             "context_paths": context_files,
+            "focused_context_paths": focused_context_files,
             "context_slices": {path: ranges for path, ranges in context_slices.items()},
             "required_paths": required_paths,
             "explicit_required_paths": explicit_required_paths,
@@ -1458,7 +1757,14 @@ def command_agent(args: argparse.Namespace) -> int:
                 )
             ],
             "failure_summary": failure_summary(final_verdict, evidence_records, final_failure_type),
+            "acceptance_blockers": [
+                *acceptance_blockers(build_acceptance_matrix(acceptance_criteria, evidence_records)),
+                *latest_executable_gate_blockers,
+            ],
+            "failure_analyses": failure_analyses,
             "project_policy_triages": project_policy_triages,
+            "patch_conformance_reviews": patch_conformance_reviews,
+            "pending_patch_plan_doc": pending_patch_plan_doc,
             "state_transitions": state_transitions,
             "cancel_requested": cancel_requested(run_dir),
             "cancel_state": load_cancel_state(run_dir) or None,
@@ -1488,7 +1794,7 @@ def command_agent(args: argparse.Namespace) -> int:
             )
 
         print(f"run_dir: {run_dir}")
-        print(f"api_calls: {api_calls}")
+        print(f"api_calls: {effective_api_calls()}")
         print(f"final_verdict: {final_verdict}")
         if worktree_path:
             print(f"worktree_path: {worktree_path}")
@@ -1507,6 +1813,7 @@ def command_agent(args: argparse.Namespace) -> int:
     ) -> bool:
         nonlocal protocol_rounds_used, functional_rounds_used, adaptive_rounds_used
         nonlocal root_cause_patch_rounds_used, root_cause_patch_pending, last_functional_failure_score
+        nonlocal regression_recovery_pending
         if is_protocol_failure_type(failure_type):
             failure_key = failure_type or "unknown_protocol_failure"
             is_new_protocol_failure = failure_key not in protocol_failure_types_seen
@@ -1526,8 +1833,19 @@ def command_agent(args: argparse.Namespace) -> int:
         functional_rounds_used += 1
         if functional_rounds_used < args.max_rounds and round_index < final_round:
             root_cause_patch_pending = False
-            if failure_score is not None:
+            regression_recovery_pending = False
+            if failure_score is not None and failure_type != "candidate_regression":
                 last_functional_failure_score = failure_score
+            return True
+        if (
+            failure_type == "candidate_regression"
+            and regression_recovery_pending
+            and adaptive_rounds_used < adaptive_round_budget
+            and round_index < final_round
+        ):
+            adaptive_rounds_used += 1
+            regression_recovery_pending = False
+            root_cause_patch_pending = False
             return True
         improved = (
             failure_score is not None
@@ -1562,6 +1880,7 @@ def command_agent(args: argparse.Namespace) -> int:
         return list(
             dict.fromkeys(
                 [
+                    *focused_context_files,
                     *args.include,
                     *existing_writable_targets,
                     *context_files,
@@ -1570,12 +1889,177 @@ def command_agent(args: argparse.Namespace) -> int:
             )
         )
 
+    def reject_replayed_regression(
+        round_index: int,
+        hypotheses: Sequence[Mapping[str, object]],
+    ) -> bool:
+        nonlocal final_verdict, final_failure_type, root_cause_patch_pending
+        matches = replayed_regression_hypotheses(hypotheses, candidate_regressions)
+        if not matches:
+            return False
+        matched_paths = unique_ordered(
+            str(item.get("path") or "") for item in matches if str(item.get("path") or "")
+        )
+        rejected_rounds = unique_ordered(
+            str(item.get("rejected_round"))
+            for item in matches
+            if item.get("rejected_round") is not None
+        )
+        replay_record: dict[str, object] = {
+            "round": round_index,
+            "failure_type": "replayed_regressing_candidate",
+            "candidate_applied": False,
+            "matched_paths": matched_paths,
+            "rejected_rounds": rejected_rounds,
+            "hypotheses": [dict(item) for item in matches],
+        }
+        candidate_replays.append(replay_record)
+        replay_doc = textwrap.dedent(
+            f"""
+            ## Replayed Regressing Candidate
+
+            - status: FAIL
+            - failure_type: replayed_regressing_candidate
+            - candidate_applied: false
+            - matched_paths: {", ".join(matched_paths) or "(none)"}
+            - rejected_rounds: {", ".join(rejected_rounds) or "(unknown)"}
+            - matched_hypothesis_count: {len(matches)}
+
+            Proposition:
+            - Let C be the set of context-free changed-line signatures in this
+              candidate and R be one previously regressing candidate. C is
+              non-empty and C is a subset of R, so this candidate adds no new
+              causal edit.
+
+            Runner action:
+            - Reject the candidate before application and executable tests.
+            - Preserve the restored baseline and all prior evidence.
+            - Route to independent root-cause analysis and a binding patch plan.
+            """
+        ).strip()
+        path = write_run_document(
+            run_dir,
+            f"03-r{round_index:02d}-replayed-regressing-candidate.md",
+            replay_doc,
+        )
+        written.append(path)
+        documents.append((f"Replayed regressing candidate round {round_index}", replay_doc))
+        final_verdict = "patch_failed"
+        final_failure_type = "replayed_regressing_candidate"
+        root_cause_patch_pending = True
+        remember_repair_advice(
+            RepairAdvice(
+                strategy="root_cause_after_regression_replay",
+                focus_files=tuple(matched_paths),
+                instructions=(
+                    "The latest candidate was mechanically equivalent to all or part of a previously regressing candidate and was not applied.",
+                    "Reject that changed-line hypothesis and identify a different state invariant or owner operation.",
+                    "Require an independent patch plan before the next artifact is applied.",
+                ),
+                evidence=(
+                    f"rejected_rounds={','.join(rejected_rounds) or 'unknown'}",
+                    "candidate_applied=false",
+                ),
+            ),
+            preserve_previous=True,
+        )
+        record_transition(final_failure_type, round_index, replay_doc)
+        write_partial_manifest("replayed_regressing_candidate", {"current_round": round_index})
+        return True
+
+    def reject_non_actionable_patch_plan(
+        round_index: int,
+        patch_plan_doc: str,
+        evidence_type: str,
+        evidence: str,
+    ) -> None:
+        """Discard a binding plan after deterministic evidence proves it cannot change source."""
+
+        nonlocal final_verdict, final_failure_type, pending_patch_plan_doc
+        nonlocal root_cause_patch_pending
+        plan_paths = patch_plan_paths_from_text(patch_plan_doc, existing_project_paths)
+        required_paths = unique_ordered(
+            str(path) for path in plan_paths.get("required_paths", []) if str(path)
+        )
+        rejection_record: dict[str, object] = {
+            "round": round_index,
+            "failure_type": "root_cause_plan_non_actionable",
+            "evidence_type": evidence_type,
+            "candidate_applied": False,
+            "required_paths": required_paths,
+            "patch_plan": patch_plan_doc,
+        }
+        rejected_patch_plans.append(rejection_record)
+        pending_patch_plan_doc = ""
+        root_cause_patch_pending = True
+        final_verdict = "patch_failed"
+        final_failure_type = "root_cause_plan_non_actionable"
+        rejection_doc = textwrap.dedent(
+            f"""
+            ## Root Cause Plan Rejection
+
+            - status: FAIL
+            - failure_type: root_cause_plan_non_actionable
+            - evidence_type: {evidence_type}
+            - candidate_applied: false
+            - required_paths: {", ".join(required_paths) or "(none)"}
+
+            Rejected binding plan:
+            {patch_plan_doc}
+
+            Deterministic rejection evidence:
+            {evidence}
+
+            Proposition:
+            - Let P be the binding plan and A its generated candidate. If A is
+              mechanically a no-op against the visible source, P has supplied
+              no executable action for the current state.
+
+            Runner action:
+            - Discard P rather than treating A as a formatting problem.
+            - Preserve the current product baseline and failing command evidence.
+            - Require a fresh root-cause analysis that explains every current
+              failing observation before creating a replacement plan.
+            """
+        ).strip()
+        path = write_run_document(
+            run_dir,
+            f"03-r{round_index:02d}-root-cause-plan-rejected.md",
+            rejection_doc,
+        )
+        written.append(path)
+        documents.append((f"Root cause plan rejection round {round_index}", rejection_doc))
+        remember_repair_advice(
+            RepairAdvice(
+                strategy="root_cause_after_non_actionable_plan",
+                focus_files=tuple(required_paths),
+                instructions=(
+                    "The previous binding plan was discarded because its generated candidate was mechanically a no-op.",
+                    "Do not restate the rejected plan or its causal claim without new contradictory executable evidence.",
+                    "Choose one different invariant that explains every current failing observation.",
+                ),
+                evidence=(
+                    f"rejected_plan_round={round_index}",
+                    f"evidence_type={evidence_type}",
+                    "candidate_applied=false",
+                ),
+            ),
+            preserve_previous=True,
+        )
+        record_transition(final_failure_type, round_index, rejection_doc)
+        write_partial_manifest("root_cause_plan_rejected", {"current_round": round_index})
+
     for round_index in range(start_round, final_round + 1):
         guard_action(
             f"round_{round_index}_start",
             action_type="recovery" if round_index > start_round else "round_start",
         )
         completed_rounds = round_index
+        changed_paths_before_round = list(changed_paths)
+        round_transaction_snapshots: dict[str, bytes | None] = {}
+        round_changed_paths: list[str] = []
+        round_candidate_hypotheses: list[dict[str, object]] = []
+        active_patch_plan_doc = pending_patch_plan_doc
         write_partial_manifest("round_started", {"current_round": round_index})
         active_repair_strategy = str(latest_repair_advice.get("strategy", "")) if latest_repair_advice else ""
         if latest_repair_advice and active_repair_strategy not in TEST_HARNESS_WRITE_STRATEGIES:
@@ -1591,8 +2075,9 @@ def command_agent(args: argparse.Namespace) -> int:
                     existing_paths=tuple(existing_project_paths),
                     allow_extra_new_files=not bool(args.no_extra_files),
                 )
+        binding_semantic_contracts = authoritative_semantic_contracts(semantic_contracts)
         semantic_writable_focus, semantic_readonly_focus = semantic_contract_focus_paths(
-            semantic_contracts,
+            binding_semantic_contracts,
             existing_project_paths,
         )
         advice_writable_focus, advice_readonly_focus = repair_advice_policy_paths(
@@ -1610,6 +2095,7 @@ def command_agent(args: argparse.Namespace) -> int:
             path
             for path in [*semantic_writable_focus, *advice_writable_focus]
             if path not in allowed_artifact_paths
+            and (not args.no_extra_files or path in declared_artifact_paths)
         ]
         added_readonly_focus = [
             path
@@ -1623,7 +2109,16 @@ def command_agent(args: argparse.Namespace) -> int:
                 added_writable_focus,
                 added_readonly_focus,
             )
-            context_files = unique_ordered([*context_files, *added_writable_focus, *added_readonly_focus])
+            context_files = unique_ordered(
+                [
+                    *context_files,
+                    *[
+                        path
+                        for path in [*added_writable_focus, *added_readonly_focus]
+                        if (project / path).is_file()
+                    ],
+                ]
+            )
             artifact_policy = ArtifactPathPolicy(
                 allowed_paths=tuple(allowed_artifact_paths),
                 readonly_paths=tuple(readonly_artifact_paths),
@@ -1898,11 +2393,11 @@ def command_agent(args: argparse.Namespace) -> int:
             ).strip()
 
         semantic_contract_instruction = ""
-        if semantic_contracts:
+        if binding_semantic_contracts:
             semantic_contract_instruction = textwrap.dedent(
                 f"""
                 Semantic contracts from executable evidence:
-                {semantic_contracts_document(semantic_contracts)}
+                {semantic_contracts_document(binding_semantic_contracts)}
 
                 These contracts are fixed for this repair round unless the
                 command evidence proves the test harness itself is invalid.
@@ -2020,8 +2515,8 @@ def command_agent(args: argparse.Namespace) -> int:
             ).strip()
         semantic_repair_mode = bool(
             round_index > 1
-            and semantic_contracts
-            and role_label not in {"format_repair", "root_cause_repair"}
+            and binding_semantic_contracts
+            and role_label not in {"format_repair", "root_cause_repair", "artifact_plan_repair"}
         )
         if semantic_repair_mode:
             role_label = "semantic_repair"
@@ -2030,6 +2525,8 @@ def command_agent(args: argparse.Namespace) -> int:
         if round_index > 1:
             coder_call_function = "format_repair" if role_label == "format_repair" else "repair_artifact"
             if role_label == "root_cause_repair":
+                coder_call_function = "artifact_writer"
+            if role_label == "artifact_plan_repair":
                 coder_call_function = "artifact_writer"
             if semantic_repair_mode:
                 coder_call_function = "semantic_repair"
@@ -2113,6 +2610,22 @@ def command_agent(args: argparse.Namespace) -> int:
                 symbols, or resolved paths. Your chosen_root_cause must be
                 consistent with those probe facts.
 
+                If a Root Cause Plan Rejection document is present, its binding
+                plan is a rejected hypothesis. Do not restate that causal claim
+                unless newer executable evidence directly contradicts the
+                rejection. Name each currently failing test/assertion identity
+                in failing_observation, and choose one invariant that explains
+                all of them. A hypothesis aimed only at an already-passing
+                acceptance observation is invalid.
+
+                Evidence continuity:
+                - Command results and acceptance-gate results supplied to this
+                  role are authoritative even when later diagnostic documents
+                  exist.
+                - Focused context paths are ordered before the general context
+                  set. If a requested path is present there, inspect the visible
+                  content before claiming it is absent.
+
                 Required report schema:
                 ROOT_CAUSE_REPORT
                 - repeated_failure_signature: one line
@@ -2161,7 +2674,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     agent_level="judge",
                     project_manifest_text=manifest_text,
                     file_context=file_context,
-                    documents=documents[-args.document_window :],
+                    documents=root_cause_evidence_documents(documents, args.document_window),
                     output_contract=analysis_contract,
                     stream_output_path=analysis_partial_path if args.stream else None,
                     stream_callback=update_analysis_stream_status if args.stream else None,
@@ -2247,11 +2760,18 @@ def command_agent(args: argparse.Namespace) -> int:
             analysis_missing_requests = extract_missing_context_requests(analysis_doc)
             if analysis_missing_requests:
                 requested_paths = unique_ordered(path for request in analysis_missing_requests for path in request.paths)
+                requested_existing = [
+                    path for path in requested_paths if path in existing_project_paths
+                ]
                 safe_existing = [
                     path
                     for path in requested_paths
                     if path in existing_project_paths and path not in allowed_artifact_paths and path not in context_files
                 ]
+                if requested_existing:
+                    focused_context_files = unique_ordered(
+                        [*requested_existing, *focused_context_files]
+                    )
                 if safe_existing:
                     context_files = unique_ordered([*context_files, *safe_existing])
                     readonly_artifact_paths = unique_ordered([*readonly_artifact_paths, *safe_existing])
@@ -2265,12 +2785,13 @@ def command_agent(args: argparse.Namespace) -> int:
                     f"""
                     ## Root Cause Missing Context
 
-                    - failure_type: missing_context
+                    - failure_type: {"root_cause_context_refocus" if requested_existing else "missing_context"}
                     - requested_paths: {", ".join(requested_paths) or "(none)"}
                     - added_context_paths: {", ".join(safe_existing) or "(none)"}
+                    - prioritized_context_paths: {", ".join(requested_existing) or "(none)"}
 
                     Runner action:
-                    - Collect safe existing project files as read-only context.
+                    - Collect safe existing project files and prioritize every requested existing path.
                     - Retry root-cause analysis before patch generation.
                     """
                 ).strip()
@@ -2278,7 +2799,10 @@ def command_agent(args: argparse.Namespace) -> int:
                 written.append(path)
                 documents.append((f"Root cause missing context round {round_index}", failure_doc))
                 final_verdict = "patch_failed"
-                final_failure_type = "missing_context"
+                final_failure_type = (
+                    "root_cause_context_refocus" if requested_existing else "missing_context"
+                )
+                root_cause_patch_pending = bool(requested_existing)
                 record_transition(final_failure_type, round_index, failure_doc)
                 write_partial_manifest("root_cause_missing_context", {"current_round": round_index})
                 if not consume_failure_budget(final_failure_type, round_index):
@@ -2286,6 +2810,8 @@ def command_agent(args: argparse.Namespace) -> int:
                 continue
 
             patch_plan_doc = run_patch_planner(round_index, role_label, analysis_doc)
+            active_patch_plan_doc = patch_plan_doc
+            pending_patch_plan_doc = patch_plan_doc
             contradiction_doc = patch_plan_mechanical_probe_contradiction_document(patch_plan_doc, documents)
             if contradiction_doc:
                 path = write_run_document(run_dir, f"03-r{round_index:02d}-patch-plan-mechanical-contradiction.md", contradiction_doc)
@@ -2412,6 +2938,25 @@ def command_agent(args: argparse.Namespace) -> int:
                 "BEGIN_SEARCH_REPLACE: or diff --git. No prose. No fences. No JSON. No tests."
             )
 
+        if role_label == "artifact_plan_repair" and active_patch_plan_doc:
+            transition_instruction = textwrap.dedent(
+                f"""
+                {transition_instruction}
+
+                Binding patch plan retained from the rejected candidate:
+                {active_patch_plan_doc}
+
+                Artifact-plan repair rule:
+                - Return a replacement artifact, not an explanation.
+                - Implement every missing obligation in the latest Patch
+                  conformance document.
+                - Do not narrow words such as exactly, all, both, union,
+                  replacement, or synchronization to one branch or deletion.
+                - The independent conformance role will review the replacement
+                  before the runner may apply it.
+                """
+            ).strip()
+
         artifact_failure_instruction = artifact_failure_instruction_from_documents(documents, args.document_window)
         coder_instruction = textwrap.dedent(
             f"""
@@ -2518,6 +3063,26 @@ def command_agent(args: argparse.Namespace) -> int:
                 )
             except LLMStreamAbortError as exc:
                 api_calls += 1
+                if active_patch_plan_doc and exc.code == "stream_identical_search_replace":
+                    if latest_stream_status:
+                        latest_stream_status["status"] = "aborted"
+                        latest_stream_status["abort_reason"] = exc.reason
+                        latest_stream_status["abort_code"] = exc.code
+                    reject_non_actionable_patch_plan(
+                        round_index,
+                        active_patch_plan_doc,
+                        exc.code,
+                        textwrap.dedent(
+                            f"""
+                            - reason: {exc.reason}
+                            - partial_output: {display_path(coder_partial_path, original_project)}
+                            - chunks_received: {exc.stats.chunks_received}
+                            """
+                        ).strip(),
+                    )
+                    if not consume_failure_budget(final_failure_type, round_index):
+                        break
+                    continue
                 salvaged_doc = None
                 if exc.code == "stream_readonly_artifact_path":
                     salvaged_doc = salvage_completed_artifact_prefix_before_readonly_path(
@@ -2581,7 +3146,13 @@ def command_agent(args: argparse.Namespace) -> int:
                     written.append(path)
                     documents.append((f"Stream abort round {round_index}", abort_doc))
                     final_verdict = "patch_failed"
-                    final_failure_type = exc.code
+                    final_failure_type = (
+                        "candidate_no_effect"
+                        if exc.code == "stream_identical_search_replace"
+                        else exc.code
+                    )
+                    if final_failure_type == "candidate_no_effect":
+                        root_cause_patch_pending = True
                     record_transition(final_failure_type, round_index, abort_doc)
                     write_partial_manifest("stream_artifact_aborted", {"current_round": round_index})
                     if not consume_failure_budget(final_failure_type, round_index):
@@ -2672,7 +3243,7 @@ def command_agent(args: argparse.Namespace) -> int:
         lint_findings = lint_artifact_output(
             coder_doc,
             test_commands,
-            semantic_contracts,
+            binding_semantic_contracts,
             semantic_repair_mode=semantic_repair_mode,
             format_repair_mode=format_repair_mode,
             forbidden_actions=[
@@ -2706,8 +3277,22 @@ def command_agent(args: argparse.Namespace) -> int:
             documents.append((f"Artifact lint round {round_index}", lint_doc))
             write_partial_manifest("artifact_lint", {"current_round": round_index})
         if blocking_lint:
+            if active_patch_plan_doc and any(
+                finding.code == "identical_search_replace" for finding in blocking_lint
+            ):
+                reject_non_actionable_patch_plan(
+                    round_index,
+                    active_patch_plan_doc,
+                    "identical_search_replace",
+                    artifact_lint_document(blocking_lint),
+                )
+                if not consume_failure_budget(final_failure_type, round_index):
+                    break
+                continue
             final_verdict = "patch_failed"
             final_failure_type = artifact_lint_failure_type(blocking_lint)
+            if final_failure_type == "candidate_no_effect":
+                root_cause_patch_pending = True
             lint_doc = artifact_lint_document(blocking_lint)
             triage_record = None
             if any(finding.code in {"semantic_repair_test_edit", "test_edit_attempt"} for finding in blocking_lint):
@@ -2745,6 +3330,112 @@ def command_agent(args: argparse.Namespace) -> int:
             if not consume_failure_budget(final_failure_type, round_index):
                 break
             continue
+
+        if active_patch_plan_doc:
+            conformance_review = run_patch_conformance_review(
+                round_index,
+                active_patch_plan_doc,
+                coder_doc,
+            )
+            conformance_status = str(conformance_review.get("status") or "fail")
+            if conformance_status == "insufficient_context":
+                requested_paths = unique_ordered(
+                    str(path)
+                    for path in conformance_review.get("missing_context_paths", [])
+                    if isinstance(path, str)
+                )
+                safe_existing = [
+                    path
+                    for path in requested_paths
+                    if path in existing_project_paths
+                    and path not in allowed_artifact_paths
+                    and path not in context_files
+                ]
+                if safe_existing:
+                    context_files = unique_ordered([*context_files, *safe_existing])
+                    readonly_artifact_paths = unique_ordered([*readonly_artifact_paths, *safe_existing])
+                    artifact_policy = ArtifactPathPolicy(
+                        allowed_paths=tuple(allowed_artifact_paths),
+                        readonly_paths=tuple(readonly_artifact_paths),
+                        existing_paths=tuple(existing_project_paths),
+                        allow_extra_new_files=not bool(args.no_extra_files),
+                    )
+                failure_doc = textwrap.dedent(
+                    f"""
+                    ## Patch Conformance Missing Context
+
+                    - failure_type: missing_context
+                    - requested_paths: {", ".join(requested_paths) or "(none)"}
+                    - added_context_paths: {", ".join(safe_existing) or "(none)"}
+
+                    Runner action:
+                    - Do not apply the candidate.
+                    - Add safe existing paths as read-only context.
+                    - Keep the binding patch plan and regenerate the artifact.
+                    """
+                ).strip()
+                final_verdict = "patch_failed"
+                final_failure_type = "missing_context"
+                record_transition(final_failure_type, round_index, failure_doc)
+                write_partial_manifest("patch_conformance_missing_context", {"current_round": round_index})
+                if not consume_failure_budget(final_failure_type, round_index):
+                    break
+                continue
+            if conformance_status != "pass":
+                missing_obligations = unique_ordered(
+                    str(item)
+                    for item in conformance_review.get("missing_obligations", [])
+                    if isinstance(item, str)
+                )
+                repair_instruction = str(conformance_review.get("repair_instruction") or "").strip()
+                plan_paths = patch_plan_paths_from_text(active_patch_plan_doc, existing_project_paths)
+                review_error = str(conformance_review.get("review_error") or "").strip()
+                final_verdict = "patch_failed"
+                final_failure_type = (
+                    "artifact_plan_review_invalid" if review_error else "artifact_plan_mismatch"
+                )
+                failure_doc = textwrap.dedent(
+                    f"""
+                    ## Patch Plan Conformance Failure
+
+                    - status: FAIL
+                    - failure_type: {final_failure_type}
+                    - missing_obligations: {" | ".join(missing_obligations) or "valid conformance evidence"}
+                    - review_error: {review_error or "(none)"}
+
+                    Runner action:
+                    - Reject the candidate before application.
+                    - Keep the binding patch plan unchanged.
+                    - Route only the named missing obligations to a new
+                      artifact-writer API call.
+                    """
+                ).strip()
+                remember_repair_advice(
+                    RepairAdvice(
+                        strategy="patch_plan_conformance",
+                        focus_files=tuple(plan_paths.get("required_paths", [])),
+                        instructions=tuple(
+                            unique_ordered(
+                                [
+                                    "The previous candidate failed independent patch-plan conformance and was not applied.",
+                                    *[f"Missing plan obligation: {item}" for item in missing_obligations],
+                                    repair_instruction,
+                                    "Implement every binding obligation, not merely one branch or one persistence call.",
+                                ]
+                            )
+                        ),
+                        evidence=(
+                            f"patch_conformance_round={round_index}",
+                            f"candidate_applied=false",
+                        ),
+                    ),
+                    preserve_previous=True,
+                )
+                record_transition(final_failure_type, round_index, failure_doc)
+                write_partial_manifest("patch_conformance_failed", {"current_round": round_index})
+                if not consume_failure_budget(final_failure_type, round_index):
+                    break
+                continue
 
         apply_doc = ""
         apply_ok = True
@@ -2818,6 +3509,11 @@ def command_agent(args: argparse.Namespace) -> int:
             continue
 
         if replacements or artifacts:
+            round_candidate_hypotheses = candidate_hypotheses(replacements, artifacts)
+            if args.apply and reject_replayed_regression(round_index, round_candidate_hypotheses):
+                if not consume_failure_budget(final_failure_type, round_index):
+                    break
+                continue
             apply_docs: list[str] = []
             artifact_summaries: list[str] = []
             if replacements:
@@ -2881,8 +3577,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     [replacement.path for replacement in replacements]
                     + [artifact.path for artifact in artifacts]
                 )
-                transaction_snapshots = snapshot_artifact_targets(project, transaction_paths)
-                round_changed_paths: list[str] = []
+                round_transaction_snapshots = snapshot_artifact_targets(project, transaction_paths)
                 for replacement in replacements:
                     try:
                         apply_docs.append(apply_search_replace_artifact(project, replacement, run_dir, round_index))
@@ -2897,8 +3592,9 @@ def command_agent(args: argparse.Namespace) -> int:
                     except RunnerError as exc:
                         apply_ok = False
                         apply_docs.append(f"## File Artifact Apply Result\n\nFAIL applying `{artifact.path}`:\n\n```text\n{exc}\n```")
-                if not apply_ok and transaction_snapshots:
-                    restored_paths = restore_artifact_targets(project, transaction_snapshots)
+                round_changed_paths = unique_ordered(round_changed_paths)
+                if not apply_ok and round_transaction_snapshots:
+                    restored_paths = restore_artifact_targets(project, round_transaction_snapshots)
                     apply_docs.append(
                         "## Artifact Transaction Rollback\n\n"
                         "PASS: restored artifact target(s) because at least one artifact in the round failed.\n"
@@ -2953,6 +3649,12 @@ def command_agent(args: argparse.Namespace) -> int:
             written.append(patch_path)
             documents.append((f"Patch round {round_index}", patch))
             patch_changed_paths = changed_paths_from_unified_diff(patch)
+            round_candidate_hypotheses = candidate_hypotheses(patch=patch)
+
+            if args.apply and reject_replayed_regression(round_index, round_candidate_hypotheses):
+                if not consume_failure_budget(final_failure_type, round_index):
+                    break
+                continue
 
             if args.apply:
                 guard_action(
@@ -2961,6 +3663,8 @@ def command_agent(args: argparse.Namespace) -> int:
                     risk_class="project_write",
                     metadata={"isolated": args.worktree_mode == "copy"},
                 )
+                round_changed_paths = unique_ordered(patch_changed_paths)
+                round_transaction_snapshots = snapshot_artifact_targets(project, patch_changed_paths)
                 try:
                     apply_patch_file(project, patch_path)
                     missing_after_apply = missing_changed_paths_after_patch(project, patch_changed_paths)
@@ -2973,6 +3677,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     apply_doc = f"## Patch Apply Result\n\nPASS: applied `{display_path(patch_path, project)}`"
                 except RunnerError as exc:
                     apply_ok = False
+                    restored_paths = restore_artifact_targets(project, round_transaction_snapshots)
                     apply_doc = textwrap.dedent(
                         f"""
                         ## Patch Apply Result
@@ -2991,6 +3696,12 @@ def command_agent(args: argparse.Namespace) -> int:
                         - for truncated files, return BEGIN_APPEND_FILE/END_APPEND_FILE.
                         """
                     ).strip()
+                    if restored_paths:
+                        apply_doc += (
+                            "\n\n## Patch Transaction Rollback\n\n"
+                            "PASS: restored changed target(s) after patch apply failure.\n"
+                            + "\n".join(f"- restored: `{path}`" for path in restored_paths)
+                        )
             else:
                 apply_doc = f"## Patch Apply Result\n\nDRY_RUN: patch saved but not applied: `{display_path(patch_path, project)}`"
 
@@ -3006,6 +3717,13 @@ def command_agent(args: argparse.Namespace) -> int:
             if not consume_failure_budget(final_failure_type, round_index):
                 break
             continue
+
+        # A binding plan remains active across format/conformance retries, but
+        # is consumed once a conforming artifact is successfully applied. Test
+        # failures after this point require fresh executable evidence and, when
+        # repeated, a fresh root-cause plan.
+        if active_patch_plan_doc:
+            pending_patch_plan_doc = ""
 
         command_docs: list[tuple[str, str]] = []
         command_ok = True
@@ -3075,15 +3793,33 @@ def command_agent(args: argparse.Namespace) -> int:
                 filename_prefix=f"05-r{round_index:02d}",
                 round_index=round_index,
             )
-            new_contracts = extract_semantic_contracts_from_command_docs(command_docs, project)
+            new_contracts = extract_semantic_contracts_from_command_docs(
+                command_docs,
+                project,
+                unique_ordered([*stage_generated_test_paths, *stage_scope_test_paths]),
+            )
             if new_contracts:
-                existing_texts = {contract.text for contract in semantic_contracts}
                 for contract in new_contracts:
-                    if contract.text not in existing_texts:
+                    existing_index = next(
+                        (
+                            index
+                            for index, existing in enumerate(semantic_contracts)
+                            if existing.text == contract.text
+                        ),
+                        None,
+                    )
+                    if existing_index is None:
                         semantic_contracts.append(
                             dataclasses.replace(contract, contract_id=f"C{len(semantic_contracts) + 1:02d}")
                         )
-                        existing_texts.add(contract.text)
+                    elif (
+                        semantic_contracts[existing_index].kind == "provisional_test_oracle"
+                        and contract.kind != "provisional_test_oracle"
+                    ):
+                        semantic_contracts[existing_index] = dataclasses.replace(
+                            contract,
+                            contract_id=semantic_contracts[existing_index].contract_id,
+                        )
                 contracts_doc = semantic_contracts_document(semantic_contracts)
                 path = write_run_document(run_dir, f"05-r{round_index:02d}-semantic-contracts.md", contracts_doc)
                 written.append(path)
@@ -3096,15 +3832,21 @@ def command_agent(args: argparse.Namespace) -> int:
             )
             if advice:
                 if advice.strategy in TEST_HARNESS_WRITE_STRATEGIES:
-                    triage_evidence = "\n\n".join(
-                        [
-                            repair_advice_document(advice),
-                            *[document for _name, document in command_docs],
-                        ]
+                    triage_evidence = generated_test_oracle_evidence_document(
+                        project,
+                        spec,
+                        unique_ordered([*stage_generated_test_paths, *stage_scope_test_paths]),
+                        command_docs,
+                        latest_judge_review_document(),
+                    )
+                    triage_trigger = (
+                        "generated_test_oracle_conflict"
+                        if advice.strategy == "test_oracle_review"
+                        else "test_harness_ownership"
                     )
                     triage_record = run_project_policy_triage(
                         round_index,
-                        "test_harness_ownership",
+                        triage_trigger,
                         triage_evidence,
                         f"decide whether `{advice.strategy}` may edit generated tests",
                     )
@@ -3142,6 +3884,94 @@ def command_agent(args: argparse.Namespace) -> int:
                 "repeated_same_failure_count": repeated_same_failure_count,
             },
         )
+
+        if (
+            args.apply
+            and round_transaction_snapshots
+            and candidate_behavior_regressed(
+                last_functional_failure_score,
+                current_failure_score,
+                round_changed_paths,
+            )
+        ):
+            previous_score = last_functional_failure_score
+            restored_paths = restore_artifact_targets(project, round_transaction_snapshots)
+            rollback_mismatches = artifact_snapshot_mismatches(project, round_transaction_snapshots)
+            changed_paths = changed_paths_before_round
+            rollback_ok = not rollback_mismatches
+            regression_record: dict[str, object] = {
+                "round": round_index,
+                "previous_failure_score": previous_score,
+                "candidate_failure_score": current_failure_score,
+                "changed_paths": list(round_changed_paths),
+                "restored_paths": restored_paths,
+                "rollback_verified": rollback_ok,
+                "rollback_mismatches": rollback_mismatches,
+                "failure_signature": current_failure_signature,
+                "failure_family_signature": current_failure_family_signature,
+                "candidate_hypotheses": [dict(item) for item in round_candidate_hypotheses],
+            }
+            candidate_regressions.append(regression_record)
+            rollback_doc = textwrap.dedent(
+                f"""
+                ## Candidate Regression Rollback
+
+                - status: {"PASS" if rollback_ok else "FAIL"}
+                - failure_type: {"candidate_regression" if rollback_ok else "rollback_verification_failed"}
+                - previous_failure_score: {previous_score}
+                - candidate_failure_score: {current_failure_score}
+                - changed_paths: {", ".join(round_changed_paths) or "(none)"}
+                - restored_paths: {", ".join(restored_paths) or "(none)"}
+                - rollback_mismatches: {", ".join(rollback_mismatches) or "(none)"}
+
+                Proposition:
+                - Same command vector and candidate_failure_score > previous_failure_score
+                  implies that this candidate is behaviorally worse.
+
+                Runner action:
+                - Reject this candidate without copying it back.
+                - Restore the exact pre-round artifact bytes.
+                - Require the next plan to use the observed regression as a
+                  forbidden approach and verify every referenced interface.
+                """
+            ).strip()
+            rollback_path = write_run_document(
+                run_dir,
+                f"05-r{round_index:02d}-candidate-regression-rollback.md",
+                rollback_doc,
+            )
+            written.append(rollback_path)
+            documents.append((f"Candidate regression rollback round {round_index}", rollback_doc))
+            final_verdict = "test_failed"
+            final_failure_type = "candidate_regression" if rollback_ok else "rollback_verification_failed"
+            record_transition(final_failure_type, round_index, rollback_doc)
+            if not rollback_ok:
+                write_partial_manifest("rollback_verification_failed", {"current_round": round_index})
+                break
+            remember_repair_advice(
+                RepairAdvice(
+                    strategy="regression_recovery",
+                    focus_files=tuple(round_changed_paths),
+                    instructions=(
+                        "The previous candidate increased executable failures and was mechanically rolled back.",
+                        "Do not repeat the rolled-back candidate or assume methods that are absent from visible interfaces.",
+                        "Before emitting a patch, verify every referenced function, method, and data representation against current file context.",
+                        "Produce a different smallest patch against the restored pre-round state.",
+                    ),
+                    evidence=(
+                        f"previous_failure_score={previous_score}",
+                        f"candidate_failure_score={current_failure_score}",
+                        "rollback_verified=true",
+                    ),
+                ),
+                command_docs,
+                preserve_previous=True,
+            )
+            regression_recovery_pending = True
+            write_partial_manifest("candidate_regression_rolled_back", {"current_round": round_index})
+            if not consume_failure_budget("candidate_regression", round_index, previous_score):
+                break
+            continue
 
         failure_analysis_doc = ""
         if command_docs and not command_ok and same_functional_failure and (current_failure_signature or current_failure_family_signature):
@@ -3225,47 +4055,23 @@ def command_agent(args: argparse.Namespace) -> int:
 
         stage_owned_test_paths = unique_ordered([*stage_generated_test_paths, *stage_scope_test_paths])
         repeated_stage_test_failures = stage_test_paths_in_command_docs(command_docs, stage_owned_test_paths)
-        already_triaged_stage_tests = any(
-            str(record.get("trigger", "")) == "generated_test_oracle_conflict"
-            for record in project_policy_triages[-3:]
+        oracle_triage_needed = generated_test_oracle_triage_needed(
+            project_policy_triages,
+            current_failure_signature,
         )
         if (
             command_docs
             and not command_ok
             and same_functional_failure
             and repeated_stage_test_failures
-            and not already_triaged_stage_tests
+            and oracle_triage_needed
         ):
-            triage_evidence = "\n\n".join(
-                [
-                    "## Generated Test Oracle Conflict Candidate",
-                    "- repeated_failure: true",
-                    "- stage_owned_test_paths: " + ", ".join(repeated_stage_test_failures),
-                    "- current_failure_signature: " + (current_failure_signature or "(unknown)"),
-                    "- current_failure_family_signature: " + (current_failure_family_signature or "(unknown)"),
-                    repair_advice_document(
-                        RepairAdvice(
-                            strategy=str(latest_repair_advice.get("strategy") or "root_cause_patch"),
-                            focus_files=tuple(
-                                str(path)
-                                for path in latest_repair_advice.get("focus_files", [])
-                                if isinstance(path, str)
-                            ),
-                            instructions=tuple(
-                                str(item)
-                                for item in latest_repair_advice.get("instructions", [])
-                                if isinstance(item, str)
-                            ),
-                            evidence=tuple(
-                                str(item)
-                                for item in latest_repair_advice.get("evidence", [])
-                                if isinstance(item, str)
-                            ),
-                        )
-                    ) if latest_repair_advice else "## Repair Advice\n(none)",
-                    failure_analysis_doc if failure_analysis_doc else "## Structured Failure Analysis\n(none)",
-                    *[document for _name, document in command_docs],
-                ]
+            triage_evidence = generated_test_oracle_evidence_document(
+                project,
+                spec,
+                repeated_stage_test_failures,
+                command_docs,
+                latest_judge_review_document(),
             )
             triage_record = run_project_policy_triage(
                 round_index,
@@ -3273,12 +4079,16 @@ def command_agent(args: argparse.Namespace) -> int:
                 triage_evidence,
                 "decide whether repeated stage-owned test failure is a product bug or a generated test-oracle contradiction",
             )
-            if triage_allows_test_harness_edit(triage_record):
-                triage_editable = [
-                    path
-                    for path in triage_string_list(triage_record, "editable_paths")
-                    if path in repeated_stage_test_failures
-                ] or repeated_stage_test_failures
+            if triage_record is not None:
+                triage_record["failure_signature"] = current_failure_signature or ""
+                triage_record["failure_family_signature"] = current_failure_family_signature or ""
+                write_partial_manifest("project_policy_triage_bound_to_failure", {"current_round": round_index})
+            triage_editable = [
+                path
+                for path in triage_string_list(triage_record, "editable_paths")
+                if path in repeated_stage_test_failures
+            ] if triage_allows_test_harness_edit(triage_record) else []
+            if triage_editable:
                 triage_readonly = [
                     path
                     for path in triage_string_list(triage_record, "readonly_paths")
@@ -3405,7 +4215,16 @@ def command_agent(args: argparse.Namespace) -> int:
         elif final_verdict == "needs_changes":
             final_failure_type = "judge_requested_changes"
         transition_failure_type = "stage_test_failed" if not command_ok else final_failure_type
+        if not command_ok and same_functional_failure:
+            transition_failure_type = "repeated_same_failure"
         record_transition(transition_failure_type, round_index, judge_doc)
+        # The recorded transition is also the executable state for the next
+        # round. Keeping only the underlying assertion/error type here would
+        # bypass root-cause routing in normal (LLM-judge) mode.
+        final_failure_type = transition_failure_type
+        if not command_ok:
+            last_functional_failure_signature = current_failure_signature
+            last_functional_failure_family_signature = current_failure_family_signature
         write_partial_manifest(final_verdict, {"current_round": round_index})
         if not consume_failure_budget(transition_failure_type, round_index, current_failure_score):
             break
@@ -3434,6 +4253,9 @@ def command_agent(args: argparse.Namespace) -> int:
         "protocol_rounds_used": protocol_rounds_used,
         "adaptive_rounds_used": adaptive_rounds_used,
         "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
+        "regression_recovery_pending": regression_recovery_pending,
+        "candidate_regressions": candidate_regressions,
+        "candidate_replays": candidate_replays,
         "last_functional_failure_score": last_functional_failure_score,
         "last_functional_failure_signature": last_functional_failure_signature,
         "last_functional_failure_family_signature": last_functional_failure_family_signature,
@@ -3449,21 +4271,24 @@ def command_agent(args: argparse.Namespace) -> int:
         "worktree_mode": args.worktree_mode,
         "worktree_path": str(worktree_path) if worktree_path else None,
         "resumed_worktree_from": str(resume_worktree_source) if resume_worktree_source else None,
+        "resumed_baseline_changed_paths": resumed_baseline_changed_paths,
         "copied_back": copied_back,
         "changed_paths": unique_ordered(changed_paths),
         "completed_rounds": completed_rounds,
         "final_verdict": final_verdict,
         "final_failure_type": final_failure_type,
-        "api_calls": api_calls,
+        "api_calls": effective_api_calls(),
         "model_profile": llm_model_profile_manifest(args),
         "llm_settings": llm_settings_manifest(client),
         "reasoning_records": llm_reasoning_manifest(client),
+        "completion_recoveries": llm_completion_recovery_manifest(client),
         "knowledge_snapshot": knowledge_binding_manifest(knowledge_binding),
         "domain_modeling": domain_modeling_state,
         "streaming": dict(latest_stream_status) if latest_stream_status else None,
         "repair_advice": dict(latest_repair_advice) if latest_repair_advice else None,
         "test_commands": test_commands,
         "context_paths": context_files,
+        "focused_context_paths": focused_context_files,
         "context_slices": {path: ranges for path, ranges in context_slices.items()},
         "required_paths": required_paths,
         "explicit_required_paths": explicit_required_paths,
@@ -3481,10 +4306,16 @@ def command_agent(args: argparse.Namespace) -> int:
             verdict_to_manifest(item)
             for item in verdicts_from_acceptance_matrix(final_acceptance_matrix)
         ],
-        "acceptance_blockers": acceptance_blockers(final_acceptance_matrix),
+        "acceptance_blockers": [
+            *acceptance_blockers(final_acceptance_matrix),
+            *latest_executable_gate_blockers,
+        ],
         "failure_summary": failure_summary(final_verdict, evidence_records, final_failure_type),
         "failure_analyses": failure_analyses,
         "project_policy_triages": project_policy_triages,
+        "patch_conformance_reviews": patch_conformance_reviews,
+        "rejected_patch_plans": rejected_patch_plans,
+        "pending_patch_plan_doc": pending_patch_plan_doc,
         "state_transitions": state_transitions,
         "cancel_requested": cancel_requested(run_dir),
         "cancel_state": load_cancel_state(run_dir) or None,
@@ -3514,7 +4345,7 @@ def command_agent(args: argparse.Namespace) -> int:
         )
 
     print(f"run_dir: {run_dir}")
-    print(f"api_calls: {api_calls}")
+    print(f"api_calls: {effective_api_calls()}")
     print(f"final_verdict: {final_verdict}")
     if worktree_path:
         print(f"worktree_path: {worktree_path}")

@@ -89,6 +89,8 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - `python3 -m local_sdlc ...` は `local_sdlc.py ...` と同じ CLI を起動し、将来の package install / console script 起動に備える。
 - 自律 Supervisor Runtime は goal を `PLANNED -> RUNNING -> PROGRESSING -> STALLED -> RECOVERY_PLANNED -> RESUMED -> VERIFYING -> COMPLETED` または `USER_CANCELLED` / `SAFETY_BLOCKED` / `APPROVAL_REQUIRED` / `BLOCKED` の状態機械として扱う。
 - 自律 Supervisor Runtime は `progress.jsonl`、`run.partial.json`、子プロセス状態、stream stats、evidence 変化を使い、長時間思考と停滞を区別する。
+- 同一 agent run の固定 command vector に対して、適用候補後の失敗数が直前状態より増えた場合は `candidate_regression` と判定する。Runner は当該ラウンドの全変更対象を変更前 bytes へ復元し、一致検証が成功した場合だけ bounded adaptive recovery で別案へ進む。復元不一致は `rollback_verification_failed` として fail closed にする。
+- S99 final integration repair は修復前に固定 final command vector を precheck し、その failure score を candidate regression 比較の基準として保存する。
 - Safety/Suppression Harness は各 action 実行前に `SafetyDecision` を生成し、`safety_decisions.jsonl` に保存する。
 - 人間が goal/job/stage を cancel した場合、既存プロセスを停止し、その後の新規 API call、command、resume、retry、stage split、copy back を開始しない。
 - `require_approval` の action は人間承認が記録されるまで実行しない。LLM 出力、Judge 承認、成功予測は人間承認の代替にならない。
@@ -122,7 +124,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - [x] 生成テストハーネス編集のようなプロジェクト依存判断では Project Policy Triage を独立 API call として保存し、LLM 分類を runner の機械検証に通してから次行動へ反映する
 - [x] `--model-profile qwen-agent` / `--model-profile ornith-agent` / `--model-profile nemotron3-super-agent` で名前付き model/API preset を切り替えられる
 - [x] `--model-profile deepseek-v4-flash-agent` が `deepseek-v4-flash-0731` と 16K 向けの bounded function profile を選択し、Qwen profile を変更しない
-- [x] `--model-profile deepseek-v4-flash-agent-deep` は分析 function だけ thinking on とし、役割に応じて `reasoning_effort=high|max` と 8,192 tokens を送信し、生成物 function は thinking off を維持する
+- [x] `--model-profile deepseek-v4-flash-agent-deep` は open-ended planning / counterexample / root-cause analysis だけ thinking on とし、短い JSON/Markdown を返す failure classification / policy triage / arbitration / Judge と生成物 function は thinking off を維持する
 - [x] 名前付き profile の request model が `/v1/models` に存在しない場合、chat completion を送信する前に理由付きで拒否する
 - [x] DeepSeek が常駐中に Qwen profile、Qwen が常駐中に DeepSeek profile を選んだ誤操作を `doctor` が検出できる
 - [x] `--api-profile failure_analysis:model=...` で、生成物作成とは別モデルを特定 function/API call に割り当てられる
@@ -205,6 +207,8 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - 分析系 API call は、サービング層が `reasoning_content` と `content` を分離できる場合に thinking on を許可する
 - 成果物生成系 API call は、patch / JSON / `BEGIN_FILE` の機械可読性を守るため thinking off を維持する
 - `reasoning_content` は監査用 metadata として保存するが、後続スキルに渡す本文・artifact・handoff document にはそのまま混ぜない
+- thinking on の分析 call が `reasoning_content != empty and content = empty` で終了した場合、同一 role / system prompt / input document と末尾6,000文字以内の同一call推論を使い、thinking off・低温度・最大2,048 tokensで結論へ圧縮する再試行を一度だけ行う。この推論抜粋は同一callの回復専用であり、後続スキルのhandoffには含めない
+- reasoning-only fallback は独立 API call として Action Gate と API 予算を再通過し、物理 request 件数と回復理由を manifest に保存する。fallback の再帰実行は認めない
 - 将来の mixed-model 運用のため、function/API call 単位の model override を維持する
 - 名前付き model profile では、各 API call の request model が直前の `/v1/models` 実測一覧に存在することを必須とする。単一常駐環境では異なる model への function override を暗黙に代替または自動起動しない
 - model profile の切替と LLM サーバー上の常駐 model の切替は別操作として扱う。runner はモデルサーバーやコンテナを自動で起動・停止しない
@@ -219,6 +223,7 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 - goal と子 stage の予算消費は1回のロック区間で判定・記録し、一方だけ消費する部分成功を許さない
 - 予算停止は吸収状態とし、同じ run directory の resume や上限引き上げで解除しない
 - wall-clock の残量は API call と command の単一実行 timeout にも反映し、1 action が残り時間を超えて占有し続けない
+- テストコマンドは exit code だけでなく、実際に1件以上のテストを実行した非空証拠を必要とする。認識済み runner の0件実行は合格にしない
 - goal と子 stage は変更不可能な `max_idle_seconds` を持ち、意味のある progress vector がその時間変化しなければ `STALLED` を永続化する
 - progress vector は stage/function/round の遷移、LLM stream bytes/chunks、文書・証拠数、変更パス・受け入れ証拠の安定hashなど、機械観測可能な値だけで構成する
 - 経過時間、status file の mtime、監視ログ自身の書き込みは progress と数えない
@@ -386,9 +391,11 @@ OpenAI 互換 LLM API を使い、仕様作成・実装・検証・失敗分析�
 | DeepSeek安定版/分析版を切り替え、単一常駐modelとの不一致を生成前に拒否する | `tests.test_model_profiles`、手動: `doctor --model-profile deepseek-v4-flash-agent` / `doctor --model-profile qwen-agent --skip-probes` | PASS |
 | 特定 function/API call だけ model を上書きできる | `test_api_profile_can_override_model_for_one_function` | PASS |
 | run manifest に model profile と function-level override が残る | `test_llm_model_profile_manifest_reports_overrides` | PASS |
-| 同じ実行失敗、または同じ失敗テスト群が繰り返された場合、Failure Analysis を独立 API call として保存し、Root cause 修復へ文書経由で渡す | `test_agent_routes_repeated_same_failure_to_root_cause_repair`, `test_command_failure_family_signature_ignores_assertion_payload_drift` | PASS |
+| 同じ実行失敗、または同じ失敗テスト群が繰り返された場合、command-only/LLM Judgeの両経路でFailure Analysisを独立 API callとして保存し、Root cause修復へ文書経由で渡す | `test_agent_routes_repeated_same_failure_to_root_cause_repair`, `test_agent_llm_judge_mode_carries_failure_signature_between_rounds`, `test_command_failure_family_signature_ignores_assertion_payload_drift` | PASS |
 | 安全に一意復元できる fenced SEARCH/REPLACE 形式の生成物は正規化して適用可能な生成物として扱い、危険な loose function replacement と混同しない | `test_extract_fenced_search_replace_normalizes_extra_colon_path`, `test_loose_python_function_replacement_does_not_swallow_conflict_markers` | PASS |
-| 生成テストハーネス所有権のようなプロジェクト依存判断では Project Policy Triage を独立 API call として保存し、repair advice に反映できる | `test_agent_runs_project_policy_triage_for_generated_test_harness_ownership` | PASS |
+| 生成テストハーネス所有権のようなプロジェクト依存判断では Project Policy Triage を独立 API call として保存する。LLMの提案はAction Gateでstage-owned testに限定し、固定受け入れテストは編集不可とする | `test_agent_runs_project_policy_triage_for_generated_test_harness_ownership`, `test_test_harness_action_gate_rejects_non_stage_owned_test`, `test_test_harness_action_gate_keeps_only_stage_owned_test` | PASS |
+| stage-owned生成テストのassertionは固定semantic contractへ直結させず、一次証拠によるoracle判定と命題gateを通す。Judge/Triage不一致は独立arbitrationへ送る | `test_stage_generated_assertion_is_provisional_not_binding`, `tests.test_agent_components` | PASS |
+| stage API profileはworkload既定値であり、明示的runtime `--api-profile` が同一functionの設定を上書きできる | `test_runtime_api_profile_overrides_same_stage_function` | PASS |
 | 受け入れ条件ごとの証拠不足を gate として扱い、未証明のまま承認しない | `test_acceptance_criteria_parse_plain_bullets_and_gate_unverified`, `test_agent_manifest_records_acceptance_matrix_and_failure_classifier` | PASS |
 | browser-tetris-smoke が Start 後の可視 active piece 不在を失敗として扱う | `test_browser_tetris_smoke_requires_visible_active_piece` | PASS |
 | acceptance gate blocker を次ラウンドの repair advice / RepairAction へ変換できる | `test_repair_advice_converts_acceptance_gate_blockers_to_actions`, `test_agent_records_acceptance_repair_actions_for_next_round` | PASS |
@@ -1002,7 +1009,8 @@ local_sdlc/
 7. Verdict Engine が Requirement と Evidence を照合する
 8. blocker があれば Repair Action を生成する
 9. 同種失敗が繰り返されたら Failure Analysis / Project Policy Triage を呼ぶ
-10. 完了または上限到達時に Regression Memory を更新する
+10. 候補が失敗数を増やした場合は変更前 snapshot へ戻し、回帰候補を禁止根拠として再計画する
+11. 完了または上限到達時に Regression Memory を更新する
 ```
 
 ### 実装フェーズ
@@ -1445,8 +1453,16 @@ AutonomyPass :=
 
 - SPEC.md の `Implementation Stages` は versioned JSON contract として検証し、
   不正な stage ID、危険な相対 path、空の writable scope を実行前に拒否する。
+- stage の `api_profile` は `function:key=value,...` 形式の関数別上書きとして
+  計画読込時に検証し、関数名だけの曖昧な指定を API call 前に拒否する。
 - 1 stage の writable path 数が上限を超える場合は、API call 前に機械的に分割する。
-- artifact protocol failure の次 action は concise legacy format repair とする。
+- artifact protocol failure の次 action は failure family ごとの bounded format repair とする。marker-based search/replace の malformed / periodic runaway は同じ形式を再試行せず、単一 JSON search_replace envelope へ切り替える。
+- candidate regression の rollback は active strategy だけを更新し、既存の mechanical evidence、forbidden hypothesis、owner-file focus を上書き消去してはならない。
+- root-cause analysis には、単純な文書 recency window とは独立して最新の失敗コマンド、acceptance gate、observation summary、mechanical probe、rejected candidate evidence を上限付きで固定する。
+- `MISSING_CONTEXT` が既に context 集合へ含まれる既存 path を要求した場合も、内容が global character budget で切れた可能性を認め、その path を次 round の context 先頭へ昇格して root-cause analysis を再実行する。
+- search と replacement が同一の candidate は、他の content mismatch を併発していても `effect(A,S)=empty` を優先し、apply/test/format repair を行わず root-cause analysis へ戻す。
+- mechanical probe が class method の不在を確定した場合、型を機械的に追跡できる receiver への unresolved call は apply 前に拒否する。ただし owner が既に method を持つ場合、または同一 artifact transaction が owner に method を定義する場合はこの拒否条件から除外する。
+- stream guard は同一行/tokenだけでなく周期的な複数行 block の反復を generic size limit より先に判定する。
 - multi-path stage の functional failure は stage split、1 path まで縮小済みなら
   root-cause recovery とし、同じ通常 retry を繰り返さない。
 - persistent STALLED は元 run を変更せず、`recovery_plan.json` に結びついた新しい
@@ -1463,6 +1479,13 @@ AutonomyPass :=
 ### 受け入れ条件
 
 - [x] artifact protocol failure の次 attempt は format repair に限定される。
+- [x] malformed / periodic marker output の次 attempt は単一 JSON search_replace に切り替わる。
+- [x] candidate regression 後も以前の mechanical API evidence と owner-file focus が manifest に残る。
+- [x] root-cause analysis は document window 外の最新 executable failure evidence を保持する。
+- [x] 既に宣言済みだが切り捨てられた context path は先頭へ再配置され、coder ではなく root-cause analysis が再実行される。
+- [x] identical search/replace は併存する lint finding より zero-effect 分類を優先する。
+- [x] typed receiver が mechanically absent API を呼び、owner または同一 transaction に定義がない artifact は apply 前に拒否される。
+- [x] periodic multi-line runaway は `stream_artifact_too_large` より先に `stream_repeated_text_runaway` として停止する。
 - [x] multi-path stage failure はユーザー質問なしで分割される。
 - [x] single-path stage failure は root-cause evidence を引き継いだ新 attempt になる。
 - [x] persistent STALLED parent は evidence-bound な別 run へ再開できる。
@@ -1470,7 +1493,7 @@ AutonomyPass :=
 - [x] approval-required / safety-blocked / budget-exhausted は actionable blocked data を持つ。
 - [x] `run-stages` の既定 worktree mode は `copy` である。
 - [x] autonomy audit が unauthorized external intervention を区別して数える。
-- [x] 既存 unit/integration test 597件が成功する。
+- [x] unit/integration test 649件が成功する。
 
 ### 検証
 
@@ -1478,6 +1501,67 @@ AutonomyPass :=
   strict completion、intervention audit の直接テスト。
 - `tests.test_stage_runner`: 自動 root-cause recovery、format repair、goal stall recovery、
   unverified completion rejection、default isolation の結合テスト。
-- `python3 -m unittest discover -s tests`: `Ran 597 tests ... OK`。
+- `python3 -m unittest discover -s tests`: `Ran 649 tests ... OK`。
 - 次の汎化検証は、harness を commit で固定した後の Mini Git、再固定後の
   held-out DAG job engine の順に行う。
+
+## Executable Gate and Patch-Plan Conformance (2026-08-03)
+
+### 目的
+
+証拠対応表が一部の要件を PASS と推定しても、同じ判定周期で実行した検証コマンドが
+失敗している状態を承認しない。また、Root Cause / Patch Planner が正しい全体計画を
+作っていても、Coder がその一部だけを実装した候補を適用しない。
+
+### 判定命題
+
+```text
+ExecutableGatePass(D) :=
+  ForAll(d in D, status(d) = PASS)
+
+PlanConformant(A, P) :=
+  ForAll(o in Obligations(P),
+    Evidence(Implements(A, o))
+    and not Exists(Counterexample(A, o)))
+
+ApplyAllowed(A) :=
+  ArtifactSyntaxPass(A)
+  and ArtifactPolicyPass(A)
+  and (NoBindingPlan or PlanConformant(A, BindingPlan))
+
+Complete :=
+  AcceptanceMatrixPass
+  and ExecutableGatePass(CurrentVerificationVector)
+  and SafetyPass
+  and BudgetPass
+  and not STALLED
+```
+
+### 実装契約
+
+- Acceptance Evidence Gate は current verification vector 内の `FAIL` / `BLOCKED`
+  command を、要件対応表とは独立した executable blocker として保存する。
+- aggregate gate は完了可否を決めるが、失敗原因の要約では SyntaxError 等の具体的な
+  executable evidence を上書きしない。
+- Root Cause から生成した `PATCH_PLAN` は、候補が承認されるまで binding document
+  として保持する。
+- `patch_conformance` は Judge skill を使う独立 API call とし、Coder と同じ応答や
+  自己評価を流用しない。
+- conformance review は obligation ごとの status、candidate evidence、counterexample、
+  missing obligation を返す。JSON不正、証拠なしPASS、未解決義務を含むPASSは fail-closed
+  とする。
+- conformance failure の候補は apply 前に破棄し、binding plan を変えずに
+  `artifact_plan_repair` へ遷移する。LLM reviewer 自身には適用権限を与えない。
+- `--resume-worktree-path` は manifest がなくても、宣言済み writable path のうち本体と
+  byte差分があるものだけを baseline changed paths として継承する。最終 gate 合格前には
+  copy back しない。
+- DeepSeek の root-cause analysis は thinking を維持しつつ 4,096 tokens / effort=high
+  に制限し、reasoning-only の場合だけ1回の非thinking要約へ移る。
+
+### 受け入れ条件
+
+- [x] 対応済み acceptance item があっても current executable command が失敗すれば gate は FAIL する。
+- [x] 不完全な候補は apply されず、同じ binding plan から再生成された適合候補だけが適用される。
+- [x] malformed conformance review と証拠なしPASSは fail-closed になる。
+- [x] aggregate acceptance failure が具体的な executable failure type を履歴上で隠さない。
+- [x] manifestなしの resume worktree でも、過去の許可対象変更が最終承認後に欠落せず copy back される。

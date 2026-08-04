@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 from pathlib import Path
 
@@ -170,13 +171,56 @@ def command_run_stages(args: argparse.Namespace) -> int:
             return 1, pending_safety_decisions(child_run_dir), blocked_safety_decisions(child_run_dir), dict(exc.stop), read_stall_state(child_run_dir)
         except ProgressStalled as exc:
             return 1, pending_safety_decisions(child_run_dir), blocked_safety_decisions(child_run_dir), read_budget_stop(child_run_dir), dict(exc.stall)
-        except RunnerError:
+        except RunnerError as exc:
             child_pending = pending_safety_decisions(child_run_dir)
             child_blocked = blocked_safety_decisions(child_run_dir)
             child_stall = read_stall_state(child_run_dir)
-            if not child_pending and not child_blocked and not child_stall:
-                raise
-            return 1, child_pending, child_blocked, read_budget_stop(child_run_dir), child_stall
+            if child_pending or child_blocked or child_stall:
+                return 1, child_pending, child_blocked, read_budget_stop(child_run_dir), child_stall
+            error_document = write_run_document(
+                child_run_dir,
+                "00-runner-error.md",
+                "# Child Runner Error\n\n"
+                "- failure_type: `runner_configuration_error`\n"
+                f"- message: {str(exc).strip()}\n",
+            )
+            partial_manifest: dict[str, object] = {}
+            partial_path = child_run_dir / "run.partial.json"
+            if partial_path.exists():
+                try:
+                    parsed_partial = json.loads(partial_path.read_text(encoding="utf-8"))
+                    if isinstance(parsed_partial, dict):
+                        partial_manifest = parsed_partial
+                except json.JSONDecodeError:
+                    partial_manifest = {}
+            partial_documents = [
+                str(path)
+                for path in partial_manifest.get("documents", [])
+                if isinstance(path, str)
+            ]
+            write_run_document(
+                child_run_dir,
+                "run.json",
+                json.dumps(
+                    {
+                        **partial_manifest,
+                        "status": "failed",
+                        "final_verdict": "runner_configuration_error",
+                        "api_calls": int(partial_manifest.get("api_calls", 0) or 0),
+                        "changed_paths": list(partial_manifest.get("changed_paths", []) or []),
+                        "required_paths": list(partial_manifest.get("required_paths", []) or []),
+                        "documents": unique_ordered([*partial_documents, error_document.name]),
+                        "failure_summary": {
+                            "failure_type": "runner_configuration_error",
+                            "message": str(exc).strip(),
+                            "evidence_document": error_document.name,
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+            return 1, [], [], {}, {}
         return (
             exit_code,
             pending_safety_decisions(child_run_dir),
@@ -266,6 +310,23 @@ def command_run_stages(args: argparse.Namespace) -> int:
                 and source_worktree
                 and Path(source_worktree).is_dir()
             )
+            # A Supervisor recovery is a new, independently bounded attempt.
+            # The child manifest stores cumulative counters, so each configured
+            # ceiling must be raised by the already-consumed amount. Otherwise
+            # a resumed child receives a fresh outer recovery authorization but
+            # has no inner repair budget with which to act on it.
+            stage_args.max_rounds = int(source_manifest.get("functional_rounds_used", 0) or 0) + int(
+                stage_args.max_rounds
+            )
+            stage_args.protocol_repair_rounds = int(
+                source_manifest.get("protocol_rounds_used", 0) or 0
+            ) + int(stage_args.protocol_repair_rounds)
+            stage_args.adaptive_rounds = int(
+                source_manifest.get("adaptive_rounds_used", 0) or 0
+            ) + int(stage_args.adaptive_rounds)
+            stage_args.root_cause_patch_rounds = int(
+                source_manifest.get("root_cause_patch_rounds_used", 0) or 0
+            ) + int(stage_args.root_cause_patch_rounds)
             stage_args.skip_pm = True
             stage_args.small_patch = bool(stage_args.small_patch or recovery_decision.small_patch)
             if recovery_decision.artifact_format:
@@ -377,6 +438,20 @@ def command_run_stages(args: argparse.Namespace) -> int:
                     runtime_stages.extend(children)
                     execution_queue[0:0] = [(child, None, None) for child in children]
                     continue
+                if decision.action == "expand_repair_scope":
+                    expanded_paths = tuple(
+                        unique_ordered(
+                            [
+                                *(stage.writable_paths or stage.suggested_paths),
+                                *decision.additional_writable_paths,
+                            ]
+                        )
+                    )
+                    stage = dataclasses.replace(
+                        stage,
+                        suggested_paths=expanded_paths,
+                        writable_paths=expanded_paths,
+                    )
                 execution_queue.insert(0, (stage, stage_dir, decision))
                 continue
             if args.stop_on_failure:

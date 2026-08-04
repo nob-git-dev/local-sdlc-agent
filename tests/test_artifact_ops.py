@@ -331,6 +331,44 @@ END_SEARCH_REPLACE"""
         self.assertEqual(replacements[0].search, "old, still inside string")
         self.assertEqual(replacements[0].replace, "new")
 
+    def test_json_artifacts_repairs_only_missing_terminal_container_closers(self):
+        output = """{
+  "artifacts": [
+    {
+      "type": "search_replace",
+      "path": "app.py",
+      "search": "old",
+      "replace": "new"
+    }
+}"""
+
+        replacements, files = self.local_sdlc.extract_json_artifacts(output, ("app.py",))
+
+        self.assertEqual(files, [])
+        self.assertEqual(len(replacements), 1)
+        self.assertEqual(replacements[0].replace, "new")
+
+    def test_json_artifacts_repairs_missing_terminal_array_and_object_closers(self):
+        output = """{
+  "artifacts": [
+    {
+      "type": "replace_file",
+      "path": "app.py",
+      "content": "print('ok')\\n"
+    }"""
+
+        replacements, files = self.local_sdlc.extract_json_artifacts(output, ("app.py",))
+
+        self.assertEqual(replacements, [])
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].content, "print('ok')\n")
+
+    def test_json_artifacts_do_not_repair_truncated_string(self):
+        output = '{"artifacts":[{"type":"replace_file","path":"app.py","content":"unfinished}'
+
+        with self.assertRaisesRegex(self.local_sdlc.RunnerError, "invalid JSON artifact"):
+            self.local_sdlc.extract_json_artifacts(output, ("app.py",))
+
     def test_multi_pair_search_replace_recovers_end_marker_typo(self):
         output = """BEGIN_SEARCH_REPLACE: app.py
 <<<<<<< SEARCH
@@ -361,13 +399,17 @@ def two():
         self.assertIn("def two", artifacts[1].search)
 
     def test_search_replace_recovers_extra_gt_end_marker(self):
-        output = """BEGIN_SEARCH_REPLACE: app.py
-<<<<<<< SEARCH
-old
-=======
-new
->>>>>>>> REPLACE
-END_SEARCH_REPLACE"""
+        output = "\n".join(
+            [
+                "BEGIN_SEARCH_REPLACE: app.py",
+                ("<" * 7) + " SEARCH",
+                "old",
+                "=" * 7,
+                "new",
+                (">" * 8) + " REPLACE",
+                "END_SEARCH_REPLACE",
+            ]
+        )
 
         artifacts = self.local_sdlc.extract_search_replace_artifacts(
             output,
@@ -378,6 +420,55 @@ END_SEARCH_REPLACE"""
         self.assertEqual(artifacts[0].path, "app.py")
         self.assertEqual(artifacts[0].search, "old")
         self.assertEqual(artifacts[0].replace, "new")
+
+    def test_search_replace_recovers_terminal_end_marker_used_as_pair_end(self):
+        output = "\n".join(
+            [
+                "BEGIN_SEARCH_REPLACE: app.py",
+                ("<" * 7) + " SEARCH",
+                "old",
+                "=" * 7,
+                "new",
+                "END_SEARCH_REPLACE",
+            ]
+        )
+
+        artifacts = self.local_sdlc.extract_search_replace_artifacts(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(allowed_paths=("app.py",), existing_paths=("app.py",)),
+        )
+        findings = self.local_sdlc.lint_artifact_output(
+            output,
+            [],
+            [],
+            semantic_repair_mode=True,
+        )
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].path, "app.py")
+        self.assertEqual(artifacts[0].search, "old")
+        self.assertEqual(artifacts[0].replace, "new")
+        self.assertEqual({finding.code for finding in findings}, set())
+
+    def test_artifact_lint_rejects_unchanged_whole_file_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "app.py").write_text("print('same')\n", encoding="utf-8")
+            output = json.dumps(
+                {
+                    "artifacts": [
+                        {
+                            "type": "replace_file",
+                            "path": "app.py",
+                            "content": "print('same')\n\n",
+                        }
+                    ]
+                }
+            )
+
+            findings = self.local_sdlc.lint_artifact_output(output, [], [], project=project)
+
+        self.assertIn("unchanged_replace_file", {finding.code for finding in findings})
 
     def test_file_artifact_html_fallback_ignores_search_replace_protocol(self):
         output = """BEGIN_SEARCH_REPLACE: tetris.html

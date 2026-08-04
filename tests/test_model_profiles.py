@@ -7,7 +7,7 @@ from unittest import mock
 
 from local_sdlc.cli import build_parser, command_doctor
 from local_sdlc.llm_client import LocalLLMClient, build_config
-from local_sdlc.models import LLMConfig, LLMRoleOverride, RunnerError
+from local_sdlc.models import LLMConfig, LLMReasoningOnlyError, LLMRoleOverride, RunnerError
 
 
 DEEPSEEK_MODEL = "deepseek-v4-flash-0731"
@@ -59,15 +59,8 @@ class ModelProfileTests(unittest.TestCase):
         high_functions = (
             "route_task",
             "explore_code",
-            "project_policy_triage",
         )
-        max_functions = (
-            "plan_work",
-            "failure_analysis",
-            "patch_planner",
-            "root_cause_analysis",
-            "judge_review",
-        )
+        max_functions = ("plan_work",)
         for function_name in high_functions + max_functions:
             with self.subTest(function_name=function_name):
                 settings = client.call_settings("default", function_name)
@@ -76,6 +69,26 @@ class ModelProfileTests(unittest.TestCase):
                 self.assertEqual(settings.temperature, 1.0)
                 expected_effort = "high" if function_name in high_functions else "max"
                 self.assertEqual(settings.reasoning_effort, expected_effort)
+        root_cause = client.call_settings("default", "root_cause_analysis")
+        self.assertFalse(root_cause.disable_thinking)
+        self.assertEqual(root_cause.max_tokens, 8192)
+        self.assertEqual(root_cause.temperature, 1.0)
+        self.assertEqual(root_cause.reasoning_effort, "high")
+        structured_functions = {
+            "failure_analysis": 4096,
+            "patch_planner": 4096,
+            "patch_conformance": 4096,
+            "project_policy_triage": 4096,
+            "policy_arbitration": 4096,
+            "judge_review": 4096,
+        }
+        for function_name, max_tokens in structured_functions.items():
+            with self.subTest(function_name=function_name):
+                settings = client.call_settings("default", function_name)
+                self.assertTrue(settings.disable_thinking)
+                self.assertEqual(settings.max_tokens, max_tokens)
+                self.assertEqual(settings.temperature, 0.0)
+                self.assertIsNone(settings.reasoning_effort)
         for function_name in (
             "generate_artifact",
             "repair_artifact",
@@ -115,7 +128,7 @@ class ModelProfileTests(unittest.TestCase):
         client._request = fake_request
         result = client.complete(
             [{"role": "user", "content": "analyze"}],
-            call_function="failure_analysis",
+            call_function="root_cause_analysis",
         )
 
         self.assertEqual(result, "done")
@@ -123,8 +136,100 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual(payloads[0]["temperature"], 1.0)
         self.assertEqual(
             payloads[0]["chat_template_kwargs"],
-            {"enable_thinking": True, "reasoning_effort": "max"},
+            {"enable_thinking": True, "reasoning_effort": "high"},
         )
+
+    def test_reasoning_only_analysis_retries_once_with_thinking_off(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self._config(Path(temp), "deepseek-v4-flash-agent-deep")
+
+        client = LocalLLMClient(config)
+        payloads = []
+        fallback_events = []
+
+        def fake_request(method, path, payload=None, timeout=None):
+            if path == "/models":
+                return {"data": [{"id": DEEPSEEK_MODEL}]}
+            payloads.append(payload)
+            if len(payloads) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "reasoning_content": "long private analysis",
+                                "content": None,
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": "判定: 承認"}}]}
+
+        client._request = fake_request
+        client.set_runtime_completion_fallback_callback(
+            lambda agent, function, reason: fallback_events.append((agent, function, reason))
+        )
+
+        result = client.complete(
+            [{"role": "user", "content": "review"}],
+            agent_level="judge",
+            call_function="root_cause_analysis",
+        )
+
+        self.assertEqual(result, "判定: 承認")
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(
+            payloads[0]["chat_template_kwargs"],
+            {"enable_thinking": True, "reasoning_effort": "high"},
+        )
+        self.assertEqual(payloads[1]["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(payloads[1]["temperature"], 0.0)
+        self.assertEqual(payloads[1]["max_tokens"], 2048)
+        fallback_messages = payloads[1]["messages"]
+        self.assertIn("long private analysis", fallback_messages[-2]["content"])
+        self.assertIn("same-call condensation", fallback_messages[-2]["content"])
+        self.assertIn("Return only the final answer", fallback_messages[-1]["content"])
+        self.assertEqual(client.generation_request_count, 2)
+        self.assertEqual(client.last_completion_attempts, 2)
+        self.assertEqual(
+            fallback_events,
+            [("judge", "root_cause_analysis", "reasoning_only_output")],
+        )
+        self.assertEqual(client.reasoning_records[0]["reasoning_content"], "long private analysis")
+        self.assertEqual(
+            client.completion_recovery_records[0]["action"],
+            "condense_reasoning_once_with_thinking_off",
+        )
+        self.assertEqual(client.completion_recovery_records[0]["reasoning_excerpt_chars"], 21)
+
+    def test_reasoning_only_no_thinking_call_fails_without_retry_loop(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self._config(Path(temp), "deepseek-v4-flash-agent")
+
+        client = LocalLLMClient(config)
+        payloads = []
+
+        def fake_request(method, path, payload=None, timeout=None):
+            if path == "/models":
+                return {"data": [{"id": DEEPSEEK_MODEL}]}
+            payloads.append(payload)
+            return {
+                "choices": [
+                    {"message": {"reasoning_content": "unexpected", "content": None}}
+                ]
+            }
+
+        client._request = fake_request
+
+        with self.assertRaises(LLMReasoningOnlyError):
+            client.complete(
+                [{"role": "user", "content": "review"}],
+                agent_level="judge",
+                call_function="judge_review",
+            )
+
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(client.generation_request_count, 1)
+        self.assertEqual(client.completion_recovery_records, [])
 
     def test_qwen_profile_remains_unchanged(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -98,6 +98,12 @@ def stage_writable_paths(stage: StageWorkItem) -> tuple[str, ...]:
     return stage_required_paths(stage)
 
 
+def stage_repair_scope_paths(stage: StageWorkItem) -> tuple[str, ...]:
+    if stage.repair_scope_paths:
+        return stage.repair_scope_paths
+    return stage_writable_paths(stage)
+
+
 def stage_readonly_evidence_paths(stage: StageWorkItem) -> tuple[str, ...]:
     return stage.readonly_evidence_paths
 
@@ -113,6 +119,7 @@ def stage_work_item_manifest(stage: StageWorkItem) -> dict[str, object]:
         "test_commands": auto_stage_test_commands(stage),
         "required_observables": list(stage_required_observables(stage)),
         "writable_paths": list(stage_writable_paths(stage)),
+        "repair_scope_paths": list(stage_repair_scope_paths(stage)),
         "readonly_evidence_paths": list(stage_readonly_evidence_paths(stage)),
         "api_profile": list(stage.api_profile),
         "max_rounds": stage.max_rounds,
@@ -337,7 +344,10 @@ def build_stage_agent_args(
         max_tokens=args.max_tokens,
         enable_thinking=args.enable_thinking,
         stream=args.stream,
-        api_profile=list(unique_ordered([*list(getattr(args, "api_profile", []) or []), *stage.api_profile])),
+        # Stage plans provide workload defaults; an explicit runtime override
+        # must win so model-specific safety/performance tuning can be changed
+        # without rewriting the product specification.
+        api_profile=list(unique_ordered([*stage.api_profile, *list(getattr(args, "api_profile", []) or [])])),
         pm_max_tokens=args.pm_max_tokens,
         coder_max_tokens=args.coder_max_tokens,
         judge_max_tokens=args.judge_max_tokens,
@@ -411,6 +421,12 @@ def read_stage_agent_manifest(stage: StageWorkItem, run_dir: Path, exit_code: in
     except (TypeError, ValueError):
         api_calls = 0
     failure = manifest.get("failure_summary")
+    repair_advice = manifest.get("repair_advice")
+    repair_focus_paths: tuple[str, ...] = ()
+    if isinstance(repair_advice, dict):
+        raw_focus = repair_advice.get("focus_files", [])
+        if isinstance(raw_focus, list):
+            repair_focus_paths = tuple(path for path in raw_focus if isinstance(path, str))
     return StageRunSummary(
         stage_id=stage.stage_id,
         title=stage.title,
@@ -421,6 +437,7 @@ def read_stage_agent_manifest(stage: StageWorkItem, run_dir: Path, exit_code: in
         final_verdict=final_verdict,
         changed_paths=changed_paths,
         required_paths=required_paths,
+        repair_focus_paths=repair_focus_paths,
         failure_summary=failure if isinstance(failure, dict) else None,
     )
 
@@ -536,7 +553,7 @@ def build_integration_repair_args(
         no_replace_file=False,
         no_extra_files=args.no_extra_files,
         apply=args.apply,
-        precheck=False,
+        precheck=True,
         test_command=list(args.test_command or []),
         command_timeout=args.command_timeout,
         redis_smoke=args.redis_smoke,
@@ -673,7 +690,11 @@ def acceptance_blockers(matrix: Sequence[dict[str, object]]) -> list[dict[str, o
 def failure_summary(final_verdict: str, evidence: Sequence[dict[str, object]], fallback: str | None = None) -> dict[str, object] | None:
     if final_verdict == "approved":
         return None
-    for item in reversed(evidence):
+    failed_items = [item for item in reversed(evidence) if item.get("status") == "fail"]
+    # Aggregate acceptance gates decide completion but should not obscure the
+    # concrete executable failure that explains what must be repaired.
+    primary_items = [item for item in failed_items if item.get("kind") != "acceptance_gate"]
+    for item in [*primary_items, *failed_items]:
         if item.get("status") == "fail":
             return {
                 "failure_type": item.get("failure_type") or fallback or "unknown",

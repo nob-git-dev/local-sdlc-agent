@@ -52,6 +52,8 @@ from .stages import *
 from .stage_planning import *
 from .autonomy_runtime import *
 from .action_gate import *
+from .policy_triage import *
+from .patch_conformance import *
 from . import agent_runner as _agent_runner
 from . import phase_runner as _phase_runner
 from . import stage_runner as _stage_runner

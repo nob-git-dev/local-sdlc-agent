@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Sequence
 
 from .models import RepairAdvice
-from .utils import unique_ordered
-from .workspace import normalize_new_files
+from .utils import truncate_text, unique_ordered
+from .workspace import normalize_new_files, resolve_project_path
 
 
 PROJECT_POLICY_TRIAGE_TRIGGERS = frozenset(
@@ -17,6 +19,121 @@ PROJECT_POLICY_TRIAGE_TRIGGERS = frozenset(
         "generated_test_oracle_conflict",
     }
 )
+
+
+JUDGE_OWNERSHIP_VALUES = frozenset(
+    {"test_harness", "product_bug", "spec_conflict", "insufficient_context", "not_applicable"}
+)
+
+
+def judge_ownership_classification(document: str) -> str:
+    """Extract the judge's explicit ownership vote without interpreting prose."""
+    match = re.search(
+        r"(?mi)^\s*(?:[-*]\s*)?OWNERSHIP\s*:\s*([a-z_]+)\s*$",
+        document,
+    )
+    if not match:
+        return "not_applicable"
+    value = match.group(1).lower()
+    return value if value in JUDGE_OWNERSHIP_VALUES else "not_applicable"
+
+
+def generated_test_oracle_evidence_document(
+    project: Path,
+    spec: str,
+    test_paths: Sequence[str],
+    command_docs: Sequence[tuple[str, str]],
+    prior_judge_document: str = "",
+    *,
+    max_test_chars: int = 16000,
+    max_spec_chars: int = 24000,
+) -> str:
+    """Build neutral primary evidence for generated-test ownership triage.
+
+    Deliberately exclude repair advice and prior failure-analysis conclusions.
+    Those documents are hypotheses under review and caused circular ownership
+    decisions when they were presented as evidence.
+    """
+    normalized_tests = [
+        path for path in normalize_new_files(test_paths) if path.startswith("tests/")
+    ]
+    sections = [
+        "## Ownership Facts",
+        "",
+        "- SPEC.md is fixed external policy.",
+        "- acceptance_tests/ is fixed read-only evidence.",
+        "- The paths below are machine-verified stage-owned generated tests.",
+        "- A generated assertion is provisional until its setup, action, and expected proposition agree with SPEC.md.",
+        "- Repair advice and prior failure-analysis conclusions are intentionally excluded from this evidence packet.",
+        "- stage_owned_generated_tests: " + (", ".join(normalized_tests) or "(none)"),
+        "",
+        "## Fixed Specification",
+        "",
+        truncate_text(spec, max_spec_chars),
+    ]
+    for path in normalized_tests:
+        source_path = resolve_project_path(project, path)
+        try:
+            source = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source = "(unavailable)"
+        sections.extend(
+            [
+                "",
+                f"## Generated Test Source: {path}",
+                "",
+                truncate_text(source, max_test_chars),
+            ]
+        )
+    sections.extend(["", "## Executable Command Evidence", ""])
+    sections.extend(truncate_text(document, 12000) for _name, document in command_docs)
+    if prior_judge_document:
+        sections.extend(
+            [
+                "",
+                "## Independent Prior Judge Vote (advisory)",
+                "",
+                truncate_text(prior_judge_document, 12000),
+            ]
+        )
+    return "\n".join(sections)
+
+
+def validate_project_policy_triage_proposition(
+    record: dict[str, object],
+) -> dict[str, object]:
+    """Fail closed when a generated-oracle verdict lacks positive evidence."""
+    normalized = dict(record)
+    if str(normalized.get("trigger", "")) != "generated_test_oracle_conflict":
+        return normalized
+    case_type = str(normalized.get("case_type", ""))
+    selected = str(normalized.get("selected_hypothesis", ""))
+    product_evidence = normalized.get("product_violation_evidence", [])
+    test_evidence = normalized.get("test_contradiction_evidence", [])
+    product_items = [item for item in product_evidence if isinstance(item, str) and item.strip()] if isinstance(product_evidence, list) else []
+    test_items = [item for item in test_evidence if isinstance(item, str) and item.strip()] if isinstance(test_evidence, list) else []
+    valid = True
+    reason = ""
+    if case_type == "product_bug" and (selected != "H_product" or not product_items):
+        valid = False
+        reason = "product_bug requires selected_hypothesis=H_product and positive product_violation_evidence"
+    elif case_type == "test_harness" and (selected != "H_test" or not test_items):
+        valid = False
+        reason = "test_harness requires selected_hypothesis=H_test and positive test_contradiction_evidence"
+    if valid:
+        normalized["proposition_gate"] = {"status": "pass"}
+        return normalized
+    normalized.update(
+        {
+            "case_type": "insufficient_context",
+            "confidence": "low",
+            "safe_next_action": "reject",
+            "editable_paths": [],
+            "proposition_gate": {"status": "reject", "reason": reason},
+            "rationale": reason,
+        }
+    )
+    return normalized
 
 
 def project_policy_triage_enabled(mode: str, trigger: str) -> bool:
@@ -52,6 +169,55 @@ def authorized_test_edit_paths(records: Sequence[dict[str, object]]) -> list[str
         if triage_allows_test_harness_edit(record):
             paths.extend(triage_string_list(record, "editable_paths"))
     return unique_ordered(path for path in paths if path.startswith("tests/"))
+
+
+def generated_test_oracle_triage_needed(
+    records: Sequence[dict[str, object]],
+    failure_signature: str | None,
+) -> bool:
+    """Re-triage only when the concrete executable counterexample changed."""
+    if not failure_signature:
+        return not any(
+            str(record.get("trigger", "")) == "generated_test_oracle_conflict"
+            for record in records
+        )
+    return not any(
+        str(record.get("trigger", "")) == "generated_test_oracle_conflict"
+        and str(record.get("failure_signature", "")) == failure_signature
+        for record in records
+    )
+
+
+def enforce_test_harness_triage_gate(
+    record: dict[str, object],
+    stage_owned_test_paths: Sequence[str],
+) -> dict[str, object]:
+    """Limit advisory LLM decisions to machine-owned generated test paths."""
+    normalized = dict(record)
+    if not triage_allows_test_harness_edit(normalized):
+        return normalized
+    owned = {
+        path
+        for path in normalize_new_files(stage_owned_test_paths)
+        if path.startswith("tests/")
+    }
+    requested = triage_string_list(normalized, "editable_paths")
+    approved = [path for path in requested if path in owned]
+    rejected = [path for path in requested if path not in owned]
+    normalized["editable_paths"] = approved
+    normalized["action_gate"] = {
+        "stage_owned_test_paths": sorted(owned),
+        "approved_editable_paths": approved,
+        "rejected_editable_paths": rejected,
+    }
+    if approved:
+        return normalized
+    normalized["safe_next_action"] = "reject"
+    normalized["confidence"] = "low"
+    normalized["rationale"] = (
+        "Test edit denied because no requested path is a machine-verified stage-owned test harness."
+    )
+    return normalized
 
 
 def apply_project_policy_triage_to_advice(

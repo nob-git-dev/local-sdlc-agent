@@ -11,6 +11,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from local_sdlc.agent_prompts import project_policy_triage_instruction
 from tests.helpers import ENTRYPOINT_PATH, ROOT, LocalSDLCTestCase, product_name_pattern
 
 
@@ -72,6 +73,37 @@ class LocalSDLCTest(LocalSDLCTestCase):
         score = self.local_sdlc.command_failure_score([("Command result", doc)])
 
         self.assertEqual(score, 2)
+
+    def test_executable_command_gate_blockers_override_mapped_acceptance_pass(self):
+        passed = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests",
+            0,
+            "",
+            "OK\n",
+            0.01,
+        )
+        failed = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s acceptance_tests",
+            1,
+            "",
+            "FAILED (failures=2)\n",
+            0.01,
+        )
+
+        blockers = self.local_sdlc.executable_command_gate_blockers(
+            [("unit", passed), ("fixed acceptance", failed)]
+        )
+
+        self.assertEqual(len(blockers), 1)
+        self.assertEqual(blockers[0]["status"], "fail")
+        self.assertEqual(blockers[0]["evidence_scope"], "executable_command")
+        self.assertIn("acceptance_tests", blockers[0]["text"])
+
+    def test_candidate_behavior_regression_requires_more_failures_and_changed_paths(self):
+        self.assertTrue(self.local_sdlc.candidate_behavior_regressed(3, 5, ["app.py"]))
+        self.assertFalse(self.local_sdlc.candidate_behavior_regressed(3, 3, ["app.py"]))
+        self.assertFalse(self.local_sdlc.candidate_behavior_regressed(3, 5, []))
+        self.assertFalse(self.local_sdlc.candidate_behavior_regressed(None, 5, ["app.py"]))
 
     def test_command_failure_signature_normalizes_paths_and_lines(self):
         doc1 = self.local_sdlc.command_result_document(
@@ -233,6 +265,50 @@ class LocalSDLCTest(LocalSDLCTestCase):
         self.assertIn("Timeout Localization", diagnostic)
         self.assertIn("tests.test_lexer.TestLexer.test_fast: PASS", diagnostic)
         self.assertIn("tests.test_lexer.TestLexer.test_hangs: TIMEOUT", diagnostic)
+
+    def test_unittest_zero_test_success_is_rejected_as_vacuous_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            document, ok = self.local_sdlc.run_checked_command(
+                project,
+                "python3 -m unittest discover -s . -p 'test_missing.py' -v",
+                timeout=10,
+            )
+
+        parsed = self.local_sdlc.parse_command_result_document(document)
+        self.assertFalse(ok)
+        self.assertEqual(parsed["status"], "FAIL")
+        self.assertNotEqual(parsed["exit_code"], "0")
+        self.assertIn("discovered zero tests", parsed["stderr"])
+        self.assertEqual(
+            self.local_sdlc.classify_failure(
+                1,
+                parsed.get("stdout", ""),
+                parsed.get("stderr", ""),
+            ),
+            "missing_test_harness",
+        )
+
+    def test_unittest_positive_test_count_remains_valid_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "test_sample.py").write_text(
+                "import unittest\n\n"
+                "class SampleTest(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            document, ok = self.local_sdlc.run_checked_command(
+                project,
+                "python3 -m unittest discover -s . -p 'test_sample.py' -v",
+                timeout=10,
+            )
+
+        parsed = self.local_sdlc.parse_command_result_document(document)
+        self.assertTrue(ok)
+        self.assertEqual(parsed["status"], "PASS")
+        self.assertEqual(parsed["exit_code"], "0")
 
     def test_skill_messages_put_skill_body_in_system_role(self):
         skill = self.local_sdlc.Skill(
@@ -1338,6 +1414,24 @@ END_SEARCH_REPLACE"""
         self.assertIn("pytest_fixture", codes)
         self.assertTrue(any(finding.severity == "error" for finding in findings))
 
+    def test_artifact_lint_allows_product_local_named_tmp_path_with_unittest(self):
+        output = textwrap.dedent(
+            """
+            BEGIN_FILE: app.py
+            def write_atomically(target):
+                tmp_path = target.with_suffix('.tmp')
+                return tmp_path
+            END_FILE
+            """
+        ).strip()
+
+        findings = self.local_sdlc.lint_artifact_output(
+            output,
+            ["python3 -m unittest discover -s tests"],
+        )
+
+        self.assertNotIn("pytest_fixture", {finding.code for finding in findings})
+
     def test_artifact_lint_catches_identical_search_replace(self):
         output = """BEGIN_SEARCH_REPLACE: app.py
 <<<<<<< SEARCH
@@ -1605,6 +1699,38 @@ minisqlite.errors.SQLSyntaxError: Unexpected character '*' at L1:8
         self.assertTrue(any("must tokenize '*' as a STAR token" in text for text in texts))
         self.assertFalse(any("string-compatible" in text for text in texts))
 
+    def test_stage_generated_assertion_is_provisional_not_binding(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "app.py").write_text("def value(): return 2\n", encoding="utf-8")
+            (project / "tests").mkdir()
+            test_file = project / "tests" / "test_app.py"
+            test_file.write_text(
+                "import unittest\n\nclass AppTests(unittest.TestCase):\n"
+                "    def test_value(self):\n        self.assertEqual(value(), 1)\n",
+                encoding="utf-8",
+            )
+            doc = self.local_sdlc.command_result_document(
+                "python3 -m unittest discover -s tests -p test_app.py",
+                1,
+                "",
+                (
+                    f'Traceback\n  File "{test_file}", line 5, in test_value\n'
+                    "    self.assertEqual(value(), 1)\nAssertionError: 2 != 1\n"
+                ),
+                0.01,
+            )
+
+            contracts = self.local_sdlc.extract_semantic_contracts_from_command_docs(
+                [("Command result", doc)],
+                project,
+                ["tests/test_app.py"],
+            )
+
+        self.assertTrue(contracts)
+        self.assertTrue(all(contract.kind == "provisional_test_oracle" for contract in contracts))
+        self.assertEqual(self.local_sdlc.authoritative_semantic_contracts(contracts), [])
+
     def test_extract_semantic_contracts_infers_product_from_test_traceback(self):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp)
@@ -1791,6 +1917,24 @@ AssertionError: 1 != 3
         )
 
         findings = self.local_sdlc.lint_artifact_output(output, [], [])
+
+        self.assertIn("identical_search_replace", {finding.code for finding in findings})
+
+    def test_artifact_lint_treats_trailing_whitespace_only_patch_as_noop(self):
+        output = "\n".join(
+            [
+                "BEGIN_SEARCH_REPLACE: app.py",
+                ("<" * 7) + " SEARCH",
+                "VALUE = 1",
+                "=" * 7,
+                "VALUE = 1",
+                "",
+                (">" * 7) + " REPLACE",
+                "END_SEARCH_REPLACE",
+            ]
+        )
+
+        findings = self.local_sdlc.lint_artifact_output(output, [])
 
         self.assertIn("identical_search_replace", {finding.code for finding in findings})
 
@@ -2065,6 +2209,30 @@ AssertionError: 1 != 3
         output = " ".join("REINDEX" for _index in range(90))
 
         result = self.local_sdlc.artifact_stream_guard(output)
+
+        self.assertTrue(result.should_abort)
+        self.assertEqual(result.code, "stream_repeated_text_runaway")
+        self.assertGreaterEqual(result.score, 80)
+
+    def test_artifact_stream_guard_prioritizes_periodic_runaway_over_size(self):
+        repeated_block = (
+            "=======\n"
+            "        self.index.load()\n"
+            "        for path, oid in tree.items():\n"
+            "            self.index.set(path, oid)\n"
+            "        self.index.save()\n"
+        )
+        output = (
+            "BEGIN_SEARCH_REPLACE: pkg/repository.py\n"
+            "<<<<<<< SEARCH\n"
+            "        return None\n"
+            + (repeated_block * 30)
+        )
+
+        result = self.local_sdlc.artifact_stream_guard(
+            output,
+            search_replace_artifact_threshold=1000,
+        )
 
         self.assertTrue(result.should_abort)
         self.assertEqual(result.code, "stream_repeated_text_runaway")
@@ -2471,6 +2639,158 @@ AssertionError: 1 != 3
 
         self.assertNotIn("forbidden_absent_api_addition", codes)
 
+    def test_mechanical_absent_api_facts_pair_api_with_owner_path(self):
+        facts = self.local_sdlc.mechanically_absent_api_facts_from_texts(
+            [
+                "absent API from mechanical probe: Index.replace_with_tree",
+                "API surface probed from: minigit/index.py",
+            ]
+        )
+
+        self.assertEqual(facts, [("Index", "replace_with_tree", "minigit/index.py")])
+
+    def test_regression_recovery_merges_previous_mechanical_advice(self):
+        previous = {
+            "strategy": "root_cause_patch",
+            "focus_files": ["pkg/repository.py", "pkg/index.py"],
+            "instructions": ["Use the mechanically observed API surface."],
+            "evidence": [
+                "absent API from mechanical probe: Index.replace_with_tree",
+                "API surface probed from: pkg/index.py",
+            ],
+        }
+        current = self.local_sdlc.RepairAdvice(
+            strategy="regression_recovery",
+            focus_files=("pkg/repository.py",),
+            instructions=("Do not repeat the rolled-back candidate.",),
+            evidence=("rollback_verified=true",),
+        )
+
+        merged = self.local_sdlc.merge_repair_advice_manifest(previous, current)
+
+        self.assertEqual(merged["strategy"], "regression_recovery")
+        self.assertEqual(merged["focus_files"][0], "pkg/index.py")
+        self.assertIn("pkg/repository.py", merged["focus_files"])
+        self.assertIn("Use the mechanically observed API surface.", merged["instructions"])
+        self.assertTrue(
+            any("`Index.replace_with_tree` is absent" in item for item in merged["instructions"])
+        )
+        self.assertIn("rollback_verified=true", merged["evidence"])
+        self.assertIn(
+            "absent API from mechanical probe: Index.replace_with_tree",
+            merged["evidence"],
+        )
+
+    def test_artifact_lint_blocks_typed_call_to_mechanically_absent_api(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            project = Path(temp)
+            (project / "pkg").mkdir()
+            (project / "pkg" / "index.py").write_text(
+                "class Index:\n    def save(self):\n        pass\n",
+                encoding="utf-8",
+            )
+            (project / "pkg" / "repository.py").write_text(
+                "from pkg.index import Index\n\n"
+                "class Repository:\n"
+                "    def __init__(self):\n"
+                "        self.index = Index()\n"
+                "\n"
+                "    def commit(self):\n"
+                "        return None\n",
+                encoding="utf-8",
+            )
+            output = (
+                "BEGIN_SEARCH_REPLACE: pkg/repository.py\n"
+                "<<<<<<< SEARCH\n"
+                "    def commit(self):\n"
+                "        return None\n"
+                "=======\n"
+                "    def commit(self):\n"
+                "        self.index.replace_with_tree({})\n"
+                ">>>>>>> REPLACE\n"
+                "END_SEARCH_REPLACE\n"
+            )
+
+            findings = self.local_sdlc.lint_artifact_output(
+                output,
+                [],
+                [],
+                forbidden_actions=[
+                    "absent API from mechanical probe: Index.replace_with_tree",
+                    "API surface probed from: pkg/index.py",
+                    (
+                        "Treat missing `Index.replace_with_tree` as a product API/call-site "
+                        "inconsistency because product code references it."
+                    ),
+                ],
+                project=project,
+            )
+
+        self.assertIn(
+            "unresolved_absent_api_call",
+            {finding.code for finding in findings},
+        )
+
+    def test_artifact_lint_allows_absent_api_defined_on_owner_in_same_transaction(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            project = Path(temp)
+            (project / "pkg").mkdir()
+            (project / "pkg" / "index.py").write_text(
+                "class Index:\n    def save(self):\n        pass\n",
+                encoding="utf-8",
+            )
+            (project / "pkg" / "repository.py").write_text(
+                "from pkg.index import Index\n\n"
+                "class Repository:\n"
+                "    def __init__(self):\n"
+                "        self.index = Index()\n",
+                encoding="utf-8",
+            )
+            output = json.dumps(
+                {
+                    "artifacts": [
+                        {
+                            "type": "search_replace",
+                            "path": "pkg/index.py",
+                            "search": "    def save(self):\n        pass",
+                            "replace": (
+                                "    def replace_with_tree(self, tree):\n        pass\n\n"
+                                "    def save(self):\n        pass"
+                            ),
+                        },
+                        {
+                            "type": "search_replace",
+                            "path": "pkg/repository.py",
+                            "search": "        self.index = Index()",
+                            "replace": (
+                                "        self.index = Index()\n"
+                                "        self.index.replace_with_tree({})"
+                            ),
+                        },
+                    ]
+                }
+            )
+
+            findings = self.local_sdlc.lint_artifact_output(
+                output,
+                [],
+                [],
+                forbidden_actions=[
+                    "absent API from mechanical probe: Index.replace_with_tree",
+                    "API surface probed from: pkg/index.py",
+                    (
+                        "Treat missing `Index.replace_with_tree` as a product API/call-site "
+                        "inconsistency because product code references it."
+                    ),
+                ],
+                project=project,
+            )
+
+        self.assertNotIn(
+            "unresolved_absent_api_call",
+            {finding.code for finding in findings},
+        )
+
     def test_artifact_lint_blocks_repair_advice_forbidden_symbol_edit(self):
         output = (
             '{"artifacts":['
@@ -2625,6 +2945,10 @@ AssertionError: 1 != 3
 
         self.assertIn("artifact_path_content_mismatch", codes)
         self.assertIn("identical_search_replace", codes)
+        self.assertEqual(
+            self.local_sdlc.artifact_lint_failure_type(findings),
+            "candidate_no_effect",
+        )
 
     def test_root_cause_stream_guard_aborts_oversized_report(self):
         output = "ROOT_CAUSE_REPORT\n" + ("- detail\n" * 2000)
@@ -2737,15 +3061,15 @@ AssertionError: 1 != 3
         self.assertIn("No BEGIN_FILE", contract)
         self.assertIn("No diff", contract)
 
-    def test_strict_artifact_output_instruction_forbids_malformed_search_replace_retry(self):
+    def test_strict_artifact_output_instruction_switches_malformed_search_replace_to_json(self):
         instruction, contract = self.local_sdlc.strict_artifact_output_instruction({"malformed_search_replace"})
 
         self.assertIsNotNone(instruction)
         self.assertIsNotNone(contract)
-        self.assertIn("SEARCH_REPLACE FAILURE MODE", instruction)
-        self.assertIn("After the path line", instruction)
-        self.assertIn("BEGIN_SEARCH_REPLACE", contract)
-        self.assertIn("No JSON", contract)
+        self.assertIn("JSON ATOMIC RECOVERY MODE", instruction)
+        self.assertIn('"type":"search_replace"', instruction)
+        self.assertIn("one JSON search_replace artifact", contract)
+        self.assertIn("No marker artifacts", contract)
 
     def test_strict_artifact_output_instruction_handles_stage_scope_violation(self):
         instruction, contract = self.local_sdlc.strict_artifact_output_instruction({"stage_scope_violation"})
@@ -3344,14 +3668,54 @@ AssertionError: 1 != 3
         failure_type = self.local_sdlc.classify_failure(1, "", "ImportError: Start directory is not importable: 'tests'")
         advice = self.local_sdlc.repair_advice_from_command_docs(
             [("Command result", doc)],
-            ["python3 -m unittest discover -s tests"],
+            ["python3 -m unittest discover -s tests -p 'test_objects.py'"],
+            generated_test_paths=("tests/test_objects.py",),
         )
 
         self.assertEqual(failure_type, "missing_test_harness")
         self.assertIsNotNone(advice)
         self.assertEqual(advice.strategy, "create_test_harness")
-        self.assertIn("tests/__init__.py", advice.focus_files)
-        self.assertTrue(any("unittest-compatible tests directory" in item for item in advice.instructions))
+        self.assertEqual(advice.focus_files, ("tests/test_objects.py",))
+        self.assertNotIn("tests/__init__.py", advice.focus_files)
+        self.assertFalse(any("minisqlite" in path for path in advice.focus_files))
+        self.assertTrue(any("stage-authorized" in item for item in advice.instructions))
+
+    def test_repair_advice_uses_project_paths_instead_of_benchmark_package_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "minigit").mkdir()
+            (project / "tests").mkdir()
+            (project / "minigit" / "repository.py").write_text(
+                "class Repository:\n    def commit(self):\n        raise NotImplementedError\n",
+                encoding="utf-8",
+            )
+            (project / "tests" / "test_repository.py").write_text(
+                "# fixed test evidence\n",
+                encoding="utf-8",
+            )
+            doc = self.local_sdlc.command_result_document(
+                "python3 -m unittest discover -s tests -p test_repository.py",
+                1,
+                "",
+                "Traceback (most recent call last):\n"
+                "  File \"/tmp/isolated/project/minigit/repository.py\", line 3, in commit\n"
+                "    raise NotImplementedError\n"
+                "NotImplementedError: commit is not implemented\n"
+                "  File \"/tmp/isolated/project/tests/test_repository.py\", line 8, in test_commit\n",
+                0.1,
+            )
+
+            advice = self.local_sdlc.repair_advice_from_command_docs(
+                [("Command result", doc)],
+                ["python3 -m unittest discover -s tests -p test_repository.py"],
+                project,
+                ("tests/test_repository.py",),
+            )
+
+        self.assertIsNotNone(advice)
+        assert advice is not None
+        self.assertIn("minigit/repository.py", advice.focus_files)
+        self.assertFalse(any("minisqlite" in path for path in advice.focus_files))
 
     def test_classify_assertion_not_found_as_test_assertion(self):
         stderr = """FAIL: test_root_split_creates_new_root (test_btree.TestBTree.test_root_split_creates_new_root)
@@ -3433,6 +3797,14 @@ FAILED (failures=1)
         blockers = self.local_sdlc.acceptance_blockers(matrix)
         self.assertTrue(any(item["id"] == "A03" for item in blockers))
         self.assertEqual(next(item for item in matrix if item["id"] == "A02")["status"], "pass")
+
+    def test_non_browser_reopen_requirement_does_not_request_html_evidence(self):
+        covers = self.local_sdlc.acceptance_required_covers(
+            "Two commits persist across reopen and form the correct parent chain."
+        )
+
+        self.assertNotIn("html_visible", covers)
+        self.assertEqual(covers, [])
 
     def test_repair_advice_converts_acceptance_gate_blockers_to_actions(self):
         payload = {
@@ -4113,6 +4485,77 @@ FAILED (failures=1)
         self.assertEqual(triage["safe_next_action"], "edit_test_harness")
         self.assertEqual(triage["editable_paths"], ["tests/test_btree.py"])
         self.assertTrue(any("tests/test_pager.py" in item for item in triage["project_policy_basis"]))
+
+    def test_test_harness_action_gate_rejects_non_stage_owned_test(self):
+        triage = {
+            "case_type": "test_harness",
+            "confidence": "high",
+            "safe_next_action": "edit_test_harness",
+            "editable_paths": ["tests/fixed_acceptance.py"],
+        }
+
+        gated = self.local_sdlc.enforce_test_harness_triage_gate(
+            triage,
+            ["tests/generated_stage_test.py"],
+        )
+
+        self.assertEqual(gated["safe_next_action"], "reject")
+        self.assertEqual(gated["editable_paths"], [])
+        self.assertEqual(
+            gated["action_gate"]["rejected_editable_paths"],
+            ["tests/fixed_acceptance.py"],
+        )
+
+    def test_test_harness_action_gate_keeps_only_stage_owned_test(self):
+        triage = {
+            "case_type": "test_harness",
+            "confidence": "high",
+            "safe_next_action": "edit_test_harness",
+            "editable_paths": ["tests/generated_stage_test.py", "tests/fixed_acceptance.py"],
+        }
+
+        gated = self.local_sdlc.enforce_test_harness_triage_gate(
+            triage,
+            ["tests/generated_stage_test.py"],
+        )
+
+        self.assertEqual(gated["safe_next_action"], "edit_test_harness")
+        self.assertEqual(gated["editable_paths"], ["tests/generated_stage_test.py"])
+
+    def test_generated_test_oracle_triage_repeats_only_for_new_concrete_failure(self):
+        records = [
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "failure_signature": "same-test|AssertionError:first",
+            }
+        ]
+
+        self.assertFalse(
+            self.local_sdlc.generated_test_oracle_triage_needed(
+                records,
+                "same-test|AssertionError:first",
+            )
+        )
+        self.assertTrue(
+            self.local_sdlc.generated_test_oracle_triage_needed(
+                records,
+                "same-test|AssertionError:second",
+            )
+        )
+
+    def test_generated_test_oracle_prompt_requires_state_counterexample(self):
+        instruction = project_policy_triage_instruction(
+            "repair checkout",
+            "generated_test_oracle_conflict",
+            "classify owner",
+            [],
+            [],
+            "failing generated test evidence",
+        )
+
+        self.assertIn("Mandatory generated-test counterexample procedure", instruction)
+        self.assertIn("Derive the state selected by the action target", instruction)
+        self.assertIn("prior repair advice saying tests are readonly is not evidence", instruction)
 
     def test_patch_plan_rejects_formula_contradicted_by_storage_probe(self):
         probe = """
@@ -5198,6 +5641,79 @@ Required fixes:
         self.assertIn("Initial command 1", calls[0][1]["content"])
         self.assertIn("SyntaxError", calls[0][1]["content"])
 
+    def test_agent_precheck_creates_only_declared_test_harness_paths(self):
+        class FakeClient:
+            def __init__(self, config):
+                self.config = config
+
+            def complete(self, messages, **_kwargs):
+                return (
+                    "BEGIN_FILE: app.py\n"
+                    "VALUE = 42\n"
+                    "END_FILE\n"
+                    "BEGIN_FILE: tests/test_app.py\n"
+                    "import unittest\n"
+                    "from app import VALUE\n\n"
+                    "class AppTests(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertEqual(VALUE, 42)\n"
+                    "END_FILE"
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            run_dir = project / "run"
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "create a small tested module",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--new-file",
+                        "app.py",
+                        "--new-file",
+                        "tests/test_app.py",
+                        "--require-path",
+                        "app.py",
+                        "--require-path",
+                        "tests/test_app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--domain-modeling",
+                        "never",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--no-extra-files",
+                        "--artifact-format",
+                        "legacy",
+                        "--test-command",
+                        "python3 -m unittest discover -s tests -p 'test_app.py' -v",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            unexpected_init_exists = (project / "tests" / "__init__.py").exists()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(manifest["final_verdict"], "approved")
+        self.assertEqual(
+            manifest["repair_advice"]["focus_files"],
+            ["tests/test_app.py"],
+        )
+        self.assertFalse(unexpected_init_exists)
+
     def test_agent_precheck_pass_skips_coder(self):
         class FakeClient:
             def __init__(self, _config):
@@ -5246,6 +5762,98 @@ Required fixes:
         self.assertEqual(manifest["final_verdict"], "approved")
         self.assertEqual(manifest["completed_rounds"], 0)
         self.assertTrue(any(path.endswith("01-initial-verification.md") for path in manifest["documents"]))
+
+    def test_agent_resume_does_not_short_circuit_on_local_precheck_alone(self):
+        calls = []
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, messages):
+                calls.append(messages)
+                return json.dumps(
+                    {
+                        "artifacts": [
+                            {
+                                "type": "replace_file",
+                                "path": "app.py",
+                                "content": "print('recovered')\n",
+                            }
+                        ]
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            (project / "app.py").write_text("print('locally valid')\n", encoding="utf-8")
+            source_run = project / "source-run"
+            source_run.mkdir()
+            (source_run / "run.json").write_text(
+                json.dumps(
+                    {
+                        "api_calls": 0,
+                        "completed_rounds": 0,
+                        "final_verdict": "needs_changes",
+                        "final_failure_type": "judge_requested_changes",
+                        "documents": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            target_run = project / "target-run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "complete the semantic recovery",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--domain-modeling",
+                        "never",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--max-rounds",
+                        "1",
+                        "--protocol-repair-rounds",
+                        "0",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "0",
+                        "--artifact-format",
+                        "json",
+                        "--test-command",
+                        f"{sys.executable} -m py_compile app.py",
+                        "--resume",
+                        str(source_run),
+                        "--run-dir",
+                        str(target_run),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((target_run / "run.json").read_text(encoding="utf-8"))
+            app_text = (project / "app.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(app_text, "print('recovered')\n")
+        self.assertEqual(manifest["completed_rounds"], 1)
+        self.assertFalse(any(path.endswith("01-initial-verification.md") for path in manifest["documents"]))
 
     def test_agent_accepts_json_artifacts_when_requested(self):
         calls = []
@@ -6081,6 +6689,259 @@ Required fixes:
             ],
         )
 
+    def test_agent_rolls_back_worse_candidate_and_uses_bounded_adaptive_retry(self):
+        calls = []
+        outputs = [
+            "BEGIN_FILE: app.py\n\ndef value():\n    return 1\n\ndef other():\n    return 0\nEND_FILE",
+            "BEGIN_FILE: app.py\n\ndef value():\n    return 0\n\ndef other():\n    return 0\nEND_FILE",
+            "BEGIN_FILE: app.py\n\ndef value():\n    return 1\n\ndef other():\n    return 2\nEND_FILE",
+        ]
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                calls.append((agent_level, call_function))
+                return outputs[len(calls) - 1]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            (project / "app.py").write_text(
+                "def value():\n    return 0\n\ndef other():\n    return 0\n",
+                encoding="utf-8",
+            )
+            (project / "test_app.py").write_text(
+                textwrap.dedent(
+                    """
+                    import unittest
+                    import app
+
+                    class AppTests(unittest.TestCase):
+                        def test_value(self):
+                            self.assertEqual(app.value(), 1)
+
+                        def test_other(self):
+                            self.assertEqual(app.other(), 2)
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "repair both app behaviors",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--max-rounds",
+                        "2",
+                        "--adaptive-rounds",
+                        "1",
+                        "--test-command",
+                        f"{sys.executable} -B -m unittest test_app.py",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            final_source = (project / "app.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0)
+        self.assertIn("return 1", final_source)
+        self.assertIn("return 2", final_source)
+        self.assertEqual(manifest["adaptive_rounds_used"], 1)
+        self.assertEqual(len(manifest["candidate_regressions"]), 1)
+        self.assertTrue(manifest["candidate_regressions"][0]["rollback_verified"])
+        self.assertEqual(manifest["candidate_regressions"][0]["previous_failure_score"], 1)
+        self.assertEqual(manifest["candidate_regressions"][0]["candidate_failure_score"], 2)
+        self.assertIn(
+            "candidate_regression",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("coder", "generate_artifact"),
+                ("coder", "repair_artifact"),
+                ("coder", "repair_artifact"),
+            ],
+        )
+
+    def test_agent_rejects_regression_replay_before_apply_and_routes_root_cause(self):
+        calls = []
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                calls.append((agent_level, call_function))
+                if call_function == "generate_artifact":
+                    search = "FLAG = 0\n\ndef value():"
+                    replace = "FLAG = -1\n\ndef value():"
+                elif call_function == "repair_artifact":
+                    search = "FLAG = 0"
+                    replace = "FLAG = -1"
+                elif call_function == "root_cause_analysis":
+                    return textwrap.dedent(
+                        """
+                        ROOT_CAUSE_REPORT
+                        - repeated_failure_signature: replayed shared-state edit
+                        - failing_observation: changing FLAG breaks both behaviors
+                        - rejected_hypotheses:
+                          - changing shared FLAG
+                        - chosen_root_cause: value needs an independent return value
+                        - patch_target: app.py value function
+                        - patch_rule: return 1 from value without changing FLAG
+                        - stop_rule: stop if value is not visible
+                        """
+                    ).strip()
+                elif call_function == "patch_planner":
+                    return textwrap.dedent(
+                        """
+                        PATCH_PLAN
+                        - proposition: value returns 1 while other keeps FLAG 0
+                        - required_path: app.py
+                        - readonly_paths: test_app.py
+                        - forbidden_paths: test_app.py
+                        - patch_type: search_replace
+                        - minimal_patch_goal: change only value return expression to 1
+                        - stop_rule: stop if value is not visible
+                        """
+                    ).strip()
+                elif call_function == "artifact_writer":
+                    search = "def value():\n    return FLAG"
+                    replace = "def value():\n    return 1"
+                elif call_function == "patch_conformance":
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "change only value to return 1",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate changes value and leaves FLAG unchanged",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
+                else:
+                    raise AssertionError(f"unexpected call_function: {call_function}")
+                return textwrap.dedent(
+                    f"""
+                    BEGIN_SEARCH_REPLACE: app.py
+                    <<<<<<< SEARCH
+                    {search}
+                    =======
+                    {replace}
+                    >>>>>>> REPLACE
+                    END_SEARCH_REPLACE
+                    """
+                ).strip()
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "app.py").write_text(
+                "FLAG = 0\n\ndef value():\n    return FLAG\n\ndef other():\n    return FLAG\n",
+                encoding="utf-8",
+            )
+            (project / "test_app.py").write_text(
+                textwrap.dedent(
+                    """
+                    import unittest
+                    import app
+
+                    class AppTests(unittest.TestCase):
+                        def test_value(self):
+                            self.assertEqual(app.value(), 1)
+
+                        def test_other(self):
+                            self.assertEqual(app.other(), 0)
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "repair independent behavior",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--context",
+                        "test_app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--max-rounds",
+                        "2",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "1",
+                        "--test-command",
+                        f"{sys.executable} -B -m unittest test_app.py",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            final_source = (project / "app.py").read_text(encoding="utf-8")
+            replay_round_ran_tests = (run_dir / "05-r02-command-01.md").exists()
+
+        self.assertEqual(result, 0)
+        self.assertIn("return 1", final_source)
+        self.assertNotIn("FLAG = -1", final_source)
+        self.assertFalse(replay_round_ran_tests)
+        self.assertEqual(len(manifest["candidate_regressions"]), 1)
+        self.assertTrue(manifest["candidate_regressions"][0]["candidate_hypotheses"])
+        self.assertEqual(len(manifest["candidate_replays"]), 1)
+        self.assertFalse(manifest["candidate_replays"][0]["candidate_applied"])
+        self.assertIn(("judge", "root_cause_analysis"), calls)
+        self.assertIn(("judge", "patch_planner"), calls)
+        self.assertIn(("judge", "patch_conformance"), calls)
+
     def test_agent_reserves_root_cause_patch_round_after_failure_analysis(self):
         calls = []
 
@@ -6146,6 +7007,25 @@ Required fixes:
                         - stop_rule: stop if app.py is not visible
                         """
                     ).strip()
+                if call_function == "patch_conformance":
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "set VALUE to new",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate replaces VALUE mid with new",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
                 if len([call for call in calls if call[1] in {"generate_artifact", "artifact_writer"}]) == 1:
                     return textwrap.dedent(
                         """
@@ -6222,6 +7102,689 @@ Required fixes:
         self.assertIn(("judge", "root_cause_analysis"), calls)
         self.assertIn(("judge", "patch_planner"), calls)
         self.assertIn(("coder", "artifact_writer"), calls)
+        self.assertIn(("judge", "patch_conformance"), calls)
+        self.assertEqual(manifest["patch_conformance_reviews"][0]["status"], "pass")
+
+    def test_agent_rejects_plan_incomplete_candidate_before_application(self):
+        calls = []
+        artifact_writer_calls = 0
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                nonlocal artifact_writer_calls
+                calls.append((agent_level, call_function))
+                if call_function == "failure_analysis":
+                    return json.dumps(
+                        {
+                            "failure_id": "R01-F01",
+                            "round": 1,
+                            "failure_type": "repeated_same_failure",
+                            "failure_signature": "value not new",
+                            "observed_facts": ["VALUE mid still fails"],
+                            "attempted_actions": [
+                                {"round": 1, "action": "changed old to mid", "result": "failed"}
+                            ],
+                            "rejected_hypotheses": [
+                                {"hypothesis": "mid is sufficient", "reason": "command still failed"}
+                            ],
+                            "active_constraints": ["do not edit tests"],
+                            "next_required_action": {
+                                "role": "root_cause_analysis",
+                                "goal": "set the exact required value",
+                                "required_paths": ["app.py"],
+                                "readonly_paths": [],
+                                "forbidden_paths": [],
+                                "next_patch_type": "search_replace",
+                                "minimal_patch_goal": "set VALUE exactly to new",
+                                "forbidden_focus": ["VALUE=mid"],
+                                "required_focus": ["app.py VALUE assignment"],
+                            },
+                            "formal_constraints": ["VALUE == new"],
+                        }
+                    )
+                if call_function == "root_cause_analysis":
+                    return textwrap.dedent(
+                        """
+                        ROOT_CAUSE_REPORT
+                        - repeated_failure_signature: value not new
+                        - failing_observation: the command requires VALUE new
+                        - rejected_hypotheses:
+                          - VALUE mid is insufficient
+                        - chosen_root_cause: VALUE is not exactly new
+                        - patch_target: app.py VALUE assignment
+                        - patch_rule: set VALUE exactly to new
+                        - stop_rule: stop if app.py is unavailable
+                        """
+                    ).strip()
+                if call_function == "patch_planner":
+                    return textwrap.dedent(
+                        """
+                        PATCH_PLAN
+                        - proposition: VALUE must be exactly new
+                        - required_path: app.py
+                        - readonly_paths: (none)
+                        - forbidden_paths: tests/test_app.py
+                        - patch_type: search_replace
+                        - minimal_patch_goal: replace VALUE mid with VALUE new
+                        - stop_rule: stop if the exact assignment is unavailable
+                        """
+                    ).strip()
+                if call_function == "patch_conformance":
+                    if artifact_writer_calls == 1:
+                        return json.dumps(
+                            {
+                                "status": "fail",
+                                "obligations": [
+                                    {
+                                        "id": "O1",
+                                        "requirement": "set VALUE exactly to new",
+                                        "status": "not_satisfied",
+                                        "candidate_evidence": "candidate sets VALUE to partial",
+                                        "counterexample": "VALUE remains different from new",
+                                    }
+                                ],
+                                "missing_obligations": ["set VALUE exactly to new"],
+                                "missing_context_paths": [],
+                                "safe_next_action": "repair_artifact",
+                                "repair_instruction": "Replace mid directly with new.",
+                            }
+                        )
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "set VALUE exactly to new",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate replaces mid directly with new",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
+                if call_function == "generate_artifact":
+                    search, replacement = 'VALUE = "old"', 'VALUE = "mid"'
+                elif call_function == "artifact_writer":
+                    artifact_writer_calls += 1
+                    search = 'VALUE = "mid"'
+                    replacement = 'VALUE = "partial"' if artifact_writer_calls == 1 else 'VALUE = "new"'
+                else:
+                    raise AssertionError(f"unexpected call_function: {call_function}")
+                return textwrap.dedent(
+                    f"""
+                    BEGIN_SEARCH_REPLACE: app.py
+                    <<<<<<< SEARCH
+                    {search}
+                    =======
+                    {replacement}
+                    >>>>>>> REPLACE
+                    END_SEARCH_REPLACE
+                    """
+                ).strip()
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "app.py").write_text('VALUE = "old"\n', encoding="utf-8")
+            run_dir = project / "run"
+            command = (
+                f"{sys.executable} -c \"import pathlib, sys; "
+                "text = pathlib.Path('app.py').read_text(); "
+                "sys.exit(0 if 'VALUE = \\\"new\\\"' in text else 1)\""
+            )
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "fix app exactly",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--max-rounds",
+                        "1",
+                        "--protocol-repair-rounds",
+                        "1",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "1",
+                        "--test-command",
+                        command,
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            source = (project / "app.py").read_text(encoding="utf-8")
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(source, 'VALUE = "new"\n')
+        self.assertNotIn("partial", source)
+        self.assertEqual(
+            [review["status"] for review in manifest["patch_conformance_reviews"]],
+            ["fail", "pass"],
+        )
+        self.assertIn(
+            "artifact_plan_mismatch",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
+        self.assertEqual(artifact_writer_calls, 2)
+        self.assertEqual(calls.count(("judge", "patch_conformance")), 2)
+
+    def test_agent_discards_non_actionable_plan_and_runs_fresh_root_cause(self):
+        calls = []
+        root_cause_calls = 0
+        patch_plan_calls = 0
+        artifact_writer_calls = 0
+        local_sdlc_module = self.local_sdlc
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                nonlocal root_cause_calls, patch_plan_calls, artifact_writer_calls
+                calls.append((agent_level, call_function))
+                if call_function == "failure_analysis":
+                    return json.dumps(
+                        {
+                            "failure_id": "R01-F01",
+                            "round": 1,
+                            "failure_type": "repeated_same_failure",
+                            "failure_signature": "value not new",
+                            "observed_facts": ["VALUE mid still fails"],
+                            "attempted_actions": [
+                                {"round": 1, "action": "changed old to mid", "result": "failed"}
+                            ],
+                            "rejected_hypotheses": [],
+                            "active_constraints": ["do not edit tests"],
+                            "next_required_action": {
+                                "role": "root_cause_analysis",
+                                "goal": "explain the failing value",
+                                "required_paths": ["app.py"],
+                                "readonly_paths": [],
+                                "forbidden_paths": [],
+                                "next_patch_type": "search_replace",
+                                "minimal_patch_goal": "make the check pass",
+                                "forbidden_focus": [],
+                                "required_focus": ["app.py VALUE assignment"],
+                            },
+                            "formal_constraints": ["the candidate must change behavior"],
+                        }
+                    )
+                if call_function == "root_cause_analysis":
+                    root_cause_calls += 1
+                    cause = "VALUE already has the required value" if root_cause_calls == 1 else "VALUE must be new"
+                    rule = "leave VALUE as mid" if root_cause_calls == 1 else "replace VALUE mid with VALUE new"
+                    return textwrap.dedent(
+                        f"""
+                        ROOT_CAUSE_REPORT
+                        - repeated_failure_signature: value not new
+                        - failing_observation: command requires VALUE new
+                        - rejected_hypotheses:
+                          - old value is sufficient
+                        - chosen_root_cause: {cause}
+                        - patch_target: app.py VALUE assignment
+                        - patch_rule: {rule}
+                        - stop_rule: stop if app.py is unavailable
+                        """
+                    ).strip()
+                if call_function == "patch_planner":
+                    patch_plan_calls += 1
+                    goal = "leave VALUE as mid" if patch_plan_calls == 1 else "replace VALUE mid with VALUE new"
+                    return textwrap.dedent(
+                        f"""
+                        PATCH_PLAN
+                        - proposition: If VALUE controls the check, {goal}
+                        - required_path: app.py
+                        - readonly_paths: (none)
+                        - forbidden_paths: tests/test_app.py
+                        - patch_type: search_replace
+                        - minimal_patch_goal: {goal}
+                        - stop_rule: stop if the assignment is unavailable
+                        """
+                    ).strip()
+                if call_function == "artifact_writer":
+                    artifact_writer_calls += 1
+                    if artifact_writer_calls == 1:
+                        partial = textwrap.dedent(
+                            """
+                            BEGIN_SEARCH_REPLACE: app.py
+                            <<<<<<< SEARCH
+                            VALUE = "mid"
+                            =======
+                            VALUE = "mid"
+                            >>>>>>> REPLACE
+                            """
+                        ).strip()
+                        raise local_sdlc_module.LLMStreamAbortError(
+                            "search and replacement are identical",
+                            partial,
+                            local_sdlc_module.LLMStreamStats(
+                                chunks_received=8,
+                                content_chunks=8,
+                                reasoning_chunks=0,
+                                bytes_received=len(partial.encode("utf-8")),
+                                first_chunk_at=1.0,
+                                last_chunk_at=2.0,
+                                duration_seconds=1.0,
+                            ),
+                            code="stream_identical_search_replace",
+                            score=1,
+                            threshold=1,
+                        )
+                    replacement = 'VALUE = "new"'
+                    return textwrap.dedent(
+                        f"""
+                        BEGIN_SEARCH_REPLACE: app.py
+                        <<<<<<< SEARCH
+                        VALUE = "mid"
+                        =======
+                        {replacement}
+                        >>>>>>> REPLACE
+                        END_SEARCH_REPLACE
+                        """
+                    ).strip()
+                if call_function == "patch_conformance":
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "set VALUE to new",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate replaces mid with new",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
+                if call_function == "generate_artifact":
+                    return textwrap.dedent(
+                        """
+                        BEGIN_SEARCH_REPLACE: app.py
+                        <<<<<<< SEARCH
+                        VALUE = "old"
+                        =======
+                        VALUE = "mid"
+                        >>>>>>> REPLACE
+                        END_SEARCH_REPLACE
+                        """
+                    ).strip()
+                raise AssertionError(f"unexpected call_function: {call_function}")
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "app.py").write_text('VALUE = "old"\n', encoding="utf-8")
+            run_dir = project / "run"
+            command = (
+                f"{sys.executable} -c \"import pathlib, sys; "
+                "text = pathlib.Path('app.py').read_text(); "
+                "sys.exit(0 if 'VALUE = \\\"new\\\"' in text else 1)\""
+            )
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "fix app",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--stream",
+                        "--max-rounds",
+                        "1",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "2",
+                        "--test-command",
+                        command,
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            source = (project / "app.py").read_text(encoding="utf-8")
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(source, 'VALUE = "new"\n')
+        self.assertEqual(root_cause_calls, 2)
+        self.assertEqual(patch_plan_calls, 2)
+        self.assertEqual(artifact_writer_calls, 2)
+        self.assertEqual(len(manifest["rejected_patch_plans"]), 1)
+        self.assertFalse(manifest["rejected_patch_plans"][0]["candidate_applied"])
+        self.assertIn(
+            "root_cause_plan_non_actionable",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
+        self.assertEqual(calls.count(("judge", "patch_conformance")), 1)
+
+    def test_agent_routes_initial_zero_effect_candidate_to_root_cause(self):
+        calls = []
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                calls.append((agent_level, call_function))
+                if call_function == "generate_artifact":
+                    replacement = 'VALUE = "old"'
+                elif call_function == "root_cause_analysis":
+                    return textwrap.dedent(
+                        """
+                        ROOT_CAUSE_REPORT
+                        - repeated_failure_signature: value is not new
+                        - failing_observation: executable check requires VALUE new
+                        - rejected_hypotheses:
+                          - an identical replacement has zero effect
+                        - chosen_root_cause: VALUE still contains old
+                        - patch_target: app.py VALUE assignment
+                        - patch_rule: replace VALUE old with VALUE new
+                        - stop_rule: stop if the assignment is unavailable
+                        """
+                    ).strip()
+                elif call_function == "patch_planner":
+                    return textwrap.dedent(
+                        """
+                        PATCH_PLAN
+                        - proposition: If VALUE remains old, change it so the executable check observes new
+                        - required_path: app.py
+                        - readonly_paths: (none)
+                        - forbidden_paths: tests/test_app.py
+                        - patch_type: search_replace
+                        - minimal_patch_goal: replace VALUE old with VALUE new
+                        - stop_rule: stop if the assignment is unavailable
+                        """
+                    ).strip()
+                elif call_function == "artifact_writer":
+                    replacement = 'VALUE = "new"'
+                elif call_function == "patch_conformance":
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "replace old with new",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate changes the assignment",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
+                else:
+                    raise AssertionError(f"unexpected call_function: {call_function}")
+                return textwrap.dedent(
+                    f"""
+                    BEGIN_SEARCH_REPLACE: app.py
+                    <<<<<<< SEARCH
+                    VALUE = "old"
+                    =======
+                    {replacement}
+                    >>>>>>> REPLACE
+                    END_SEARCH_REPLACE
+                    """
+                ).strip()
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "app.py").write_text('VALUE = "old"\n', encoding="utf-8")
+            run_dir = project / "run"
+            command = (
+                f"{sys.executable} -c \"import pathlib, sys; "
+                "text = pathlib.Path('app.py').read_text(); "
+                "sys.exit(0 if 'VALUE = \\\"new\\\"' in text else 1)\""
+            )
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "fix app",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--max-rounds",
+                        "2",
+                        "--adaptive-rounds",
+                        "0",
+                        "--test-command",
+                        command,
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            source = (project / "app.py").read_text(encoding="utf-8")
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(source, 'VALUE = "new"\n')
+        self.assertFalse((run_dir / "04-r01-apply.md").exists())
+        self.assertIn(("judge", "root_cause_analysis"), calls)
+        self.assertIn(("judge", "patch_planner"), calls)
+        self.assertIn(
+            "candidate_no_effect",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
+
+    def test_agent_refocuses_already_declared_context_and_retries_root_cause(self):
+        root_cause_calls = 0
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, messages, agent_level="default", call_function="default", **_kwargs):
+                nonlocal root_cause_calls
+                prompt = json.dumps(messages, ensure_ascii=False)
+                if call_function == "generate_artifact":
+                    replacement = 'VALUE = "old"'
+                elif call_function == "root_cause_analysis":
+                    root_cause_calls += 1
+                    self.assert_failure_evidence(prompt)
+                    if root_cause_calls == 1:
+                        if "CONTEXT_MARKER" in prompt:
+                            raise AssertionError("the unfocused context unexpectedly fit in the first request")
+                        return "MISSING_CONTEXT: tests/test_app.py reason: assertion details were truncated"
+                    if "CONTEXT_MARKER" not in prompt:
+                        raise AssertionError("requested context was not prioritized on retry")
+                    return textwrap.dedent(
+                        """
+                        ROOT_CAUSE_REPORT
+                        - repeated_failure_signature: value is not new
+                        - failing_observation: executable check exits nonzero while VALUE remains old
+                        - rejected_hypotheses:
+                          - an identical replacement has zero effect
+                        - chosen_root_cause: the product assignment still stores old
+                        - patch_target: app.py VALUE assignment
+                        - patch_rule: replace VALUE old with VALUE new
+                        - stop_rule: stop if the exact assignment is unavailable
+                        """
+                    ).strip()
+                elif call_function == "patch_planner":
+                    return textwrap.dedent(
+                        """
+                        PATCH_PLAN
+                        - proposition: Changing the assignment makes the executable check observe new
+                        - required_path: app.py
+                        - readonly_paths: tests/test_app.py
+                        - forbidden_paths: tests/test_app.py
+                        - patch_type: search_replace
+                        - minimal_patch_goal: replace VALUE old with VALUE new
+                        - stop_rule: stop if the assignment is unavailable
+                        """
+                    ).strip()
+                elif call_function == "artifact_writer":
+                    replacement = 'VALUE = "new"'
+                elif call_function == "patch_conformance":
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "replace old with new",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate changes the assignment",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
+                else:
+                    raise AssertionError(f"unexpected call_function: {call_function}")
+                return textwrap.dedent(
+                    f"""
+                    BEGIN_SEARCH_REPLACE: app.py
+                    <<<<<<< SEARCH
+                    VALUE = "old"
+                    =======
+                    {replacement}
+                    >>>>>>> REPLACE
+                    END_SEARCH_REPLACE
+                    """
+                ).strip()
+
+            @staticmethod
+            def assert_failure_evidence(prompt):
+                if "status: FAIL" not in prompt or "Initial command 1" not in prompt:
+                    raise AssertionError("executable failure evidence was not pinned")
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "app.py").write_text(
+                'VALUE = "old"\n' + "# filler line\n" * 80,
+                encoding="utf-8",
+            )
+            (project / "tests").mkdir()
+            (project / "tests" / "test_app.py").write_text(
+                "# CONTEXT_MARKER\n# expected VALUE is new\n",
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+            command = (
+                f"{sys.executable} -c \"import pathlib, sys; "
+                "text = pathlib.Path('app.py').read_text(); "
+                "sys.exit(0 if 'VALUE = \\\"new\\\"' in text else 1)\""
+            )
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "fix app",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--context",
+                        "tests/test_app.py",
+                        "--max-context-chars",
+                        "160",
+                        "--document-window",
+                        "1",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--max-rounds",
+                        "2",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "2",
+                        "--test-command",
+                        command,
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            source = (project / "app.py").read_text(encoding="utf-8")
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertIn('VALUE = "new"', source)
+        self.assertEqual(root_cause_calls, 2)
+        self.assertEqual(manifest["focused_context_paths"][0], "tests/test_app.py")
+        self.assertIn(
+            "root_cause_context_refocus",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
 
     def test_agent_streams_pm_coder_and_judge_partials(self):
         calls = []
@@ -6704,10 +8267,12 @@ Required fixes:
             root = Path(temp)
             project, skills_dir = self.make_agent_project(root)
             (project / "app.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+            (project / "carried.py").write_text("CARRIED = 'old'\n", encoding="utf-8")
             previous_worktree = root / "interrupted-worktree"
             previous_worktree.mkdir()
             (previous_worktree / "SPEC.md").write_text("# SPEC\n", encoding="utf-8")
             (previous_worktree / "app.py").write_text("VALUE = 'partial'\n", encoding="utf-8")
+            (previous_worktree / "carried.py").write_text("CARRIED = 'approved-partial'\n", encoding="utf-8")
             run_dir = project / "run"
 
             original_client = self.local_sdlc.LocalLLMClient
@@ -6723,6 +8288,8 @@ Required fixes:
                         str(skills_dir),
                         "--include",
                         "app.py",
+                        "--include",
+                        "carried.py",
                         "--apply",
                         "--skip-pm",
                         "--judge-mode",
@@ -6743,11 +8310,77 @@ Required fixes:
 
             manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             fixed = (project / "app.py").read_text(encoding="utf-8")
+            carried = (project / "carried.py").read_text(encoding="utf-8")
 
         self.assertEqual(result, 0)
         self.assertEqual(fixed, "VALUE = 'final'\n")
-        self.assertEqual(manifest["copied_back"], ["app.py"])
+        self.assertEqual(carried, "CARRIED = 'approved-partial'\n")
+        self.assertEqual(manifest["copied_back"], ["app.py", "carried.py"])
+        self.assertEqual(manifest["resumed_baseline_changed_paths"], ["app.py", "carried.py"])
         self.assertEqual(manifest["resumed_worktree_from"], str(previous_worktree.resolve()))
+
+    def test_agent_copies_approved_resume_baseline_when_precheck_already_passes(self):
+        class FakeClient:
+            def __init__(self, config):
+                self.config = config
+
+            def complete(self, _messages, **_kwargs):
+                raise AssertionError("coder API must not run after a passing resume precheck")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            (project / "app.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+            previous_worktree = root / "passing-worktree"
+            previous_worktree.mkdir()
+            (previous_worktree / "SPEC.md").write_text("# SPEC\n", encoding="utf-8")
+            (previous_worktree / "app.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "finish an already verified resume",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--resume-worktree-path",
+                        str(previous_worktree),
+                        "--worktree-mode",
+                        "copy",
+                        "--precheck",
+                        "--test-command",
+                        (
+                            f"{sys.executable} -c \"from pathlib import Path; "
+                            "assert \\\"VALUE = 'ready'\\\" in Path('app.py').read_text()\""
+                        ),
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            fixed = (project / "app.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0)
+        self.assertEqual(fixed, "VALUE = 'ready'\n")
+        self.assertEqual(manifest["completed_rounds"], 0)
+        self.assertEqual(manifest["api_calls"], 0)
+        self.assertEqual(manifest["resumed_baseline_changed_paths"], ["app.py"])
+        self.assertEqual(manifest["copied_back"], ["app.py"])
 
     def test_agent_applies_patch_and_runs_test_command(self):
         calls = []
@@ -7189,6 +8822,25 @@ END_SEARCH_REPLACE"""
                         - stop_rule: stop if app.py context is missing
                         """
                     ).strip()
+                if call_function == "patch_conformance":
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "set VALUE to new",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate replaces VALUE mid with new",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
                 return textwrap.dedent(
                     """
                     BEGIN_SEARCH_REPLACE: app.py
@@ -7258,10 +8910,185 @@ END_SEARCH_REPLACE"""
         self.assertIn("Patch plan round 2", calls[4][2])
         self.assertIn("Latest PATCH_PLAN", calls[4][2])
         self.assertIn("Current supervisor transition rule", calls[4][2])
+        self.assertEqual(calls[5][0], "judge")
+        self.assertEqual(calls[5][1], "patch_conformance")
+        self.assertEqual(manifest["patch_conformance_reviews"][0]["status"], "pass")
         self.assertIn("repeated_same_failure", {item["failure_type"] for item in manifest["state_transitions"]})
         self.assertGreaterEqual(manifest["repeated_same_failure_count"], 1)
         self.assertEqual(manifest["failure_analyses"][0]["call_function"], "failure_analysis")
         self.assertEqual(manifest["failure_analyses"][0]["next_required_action"]["forbidden_focus"], ["VALUE=mid"])
+
+    def test_agent_llm_judge_mode_carries_failure_signature_between_rounds(self):
+        calls = []
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, messages, agent_level="default", call_function="default", **_kwargs):
+                calls.append((agent_level, call_function))
+                if call_function == "failure_analysis":
+                    return json.dumps(
+                        {
+                            "failure_id": "R02-F01",
+                            "round": 2,
+                            "failure_type": "repeated_same_failure",
+                            "failure_signature": "same fail",
+                            "observed_facts": ["The executable failure remained unchanged."],
+                            "attempted_actions": [
+                                {"round": 1, "action": "changed old to mid", "result": "same fail"},
+                                {"round": 2, "action": "changed mid to new", "result": "same fail"},
+                            ],
+                            "rejected_hypotheses": [
+                                {"hypothesis": "value replacement repairs behavior", "reason": "failure remained"}
+                            ],
+                            "active_constraints": ["do not repeat the same value-only patch"],
+                            "next_required_action": {
+                                "role": "root_cause_analysis",
+                                "goal": "inspect the actual failing invariant",
+                                "required_paths": ["app.py"],
+                                "readonly_paths": ["check.py"],
+                                "forbidden_paths": [],
+                                "next_patch_type": "search_replace",
+                                "minimal_patch_goal": "repair the shared cause",
+                                "forbidden_focus": ["VALUE-only patch"],
+                                "required_focus": ["failing invariant"],
+                            },
+                            "formal_constraints": ["same(F_1,F_2) => reject(value_only_patch)"],
+                        }
+                    )
+                if call_function == "root_cause_analysis":
+                    return textwrap.dedent(
+                        """
+                        ROOT_CAUSE_REPORT
+                        - repeated_failure_signature: same fail
+                        - failing_observation: changing VALUE did not change the command failure
+                        - rejected_hypotheses:
+                          - another value-only replacement
+                        - chosen_root_cause: the failing invariant is outside VALUE
+                        - patch_target: app.py behavior branch
+                        - patch_rule: change the branch named by executable evidence
+                        - stop_rule: stop if the behavior branch is not visible
+                        """
+                    ).strip()
+                if call_function == "patch_planner":
+                    return textwrap.dedent(
+                        """
+                        PATCH_PLAN
+                        - proposition: If VALUE-only changes preserve the failure, change the behavior branch instead
+                        - required_path: app.py
+                        - readonly_paths: check.py
+                        - forbidden_paths: (none)
+                        - patch_type: search_replace
+                        - minimal_patch_goal: change the behavior branch instead of VALUE-only data
+                        - stop_rule: stop if the branch is not visible
+                        """
+                    ).strip()
+                if call_function == "patch_conformance":
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "change the behavior branch",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate changes the planned branch",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
+                if call_function == "judge_review":
+                    return "## Verdict\nneeds_changes\n\n## Findings\nExecutable check still fails."
+                if call_function == "generate_artifact":
+                    search, replacement = 'VALUE = "old"', 'VALUE = "mid"'
+                else:
+                    search, replacement = 'VALUE = "mid"', 'VALUE = "new"'
+                return textwrap.dedent(
+                    f"""
+                    BEGIN_SEARCH_REPLACE: app.py
+                    <<<<<<< SEARCH
+                    {search}
+                    =======
+                    {replacement}
+                    >>>>>>> REPLACE
+                    END_SEARCH_REPLACE
+                    """
+                ).strip()
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "app.py").write_text('VALUE = "old"\n', encoding="utf-8")
+            (project / "check.py").write_text(
+                textwrap.dedent(
+                    """
+                    import sys
+                    from pathlib import Path
+
+                    source = Path("app.py").read_text(encoding="utf-8")
+                    message = "initial fail" if 'VALUE = "old"' in source else "same fail"
+                    sys.stderr.write(message + "\\n")
+                    raise RuntimeError(message)
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "repair a persistent failure with an independent judge",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--skip-pm",
+                        "--domain-modeling",
+                        "never",
+                        "--include",
+                        "app.py",
+                        "--context",
+                        "check.py",
+                        "--apply",
+                        "--precheck",
+                        "--max-rounds",
+                        "3",
+                        "--protocol-repair-rounds",
+                        "0",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "0",
+                        "--test-command",
+                        f"{sys.executable} check.py",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 1)
+        self.assertIn(("judge", "failure_analysis"), calls)
+        self.assertIn(("judge", "root_cause_analysis"), calls)
+        self.assertIn(("judge", "patch_planner"), calls)
+        self.assertIn(("coder", "artifact_writer"), calls)
+        self.assertIn(("judge", "patch_conformance"), calls)
+        self.assertEqual(manifest["patch_conformance_reviews"][0]["status"], "pass")
+        self.assertIn("repeated_same_failure", {item["failure_type"] for item in manifest["state_transitions"]})
+        self.assertGreaterEqual(manifest["repeated_same_failure_count"], 1)
 
     def test_agent_runs_project_policy_triage_for_generated_test_harness_ownership(self):
         calls = []
@@ -7353,6 +9180,10 @@ END_SEARCH_REPLACE"""
                         "command-only",
                         "--include",
                         "minisqlite/storage/btree.py",
+                        "--include",
+                        "tests/test_btree.py",
+                        "--require-path",
+                        "tests/test_btree.py",
                         "--context",
                         "minisqlite/storage/pager.py",
                         "--apply",

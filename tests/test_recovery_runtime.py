@@ -434,7 +434,7 @@ class RecoveryRuntimeTests(LocalSDLCTestCase):
                             {
                                 "type": "replace_file",
                                 "path": "app.py",
-                                "content": "VALUE = 1\n",
+                                "content": "VALUE = 2\n",
                             }
                         ]
                     }
@@ -672,7 +672,7 @@ class RecoveryRuntimeTests(LocalSDLCTestCase):
                             {
                                 "type": "replace_file",
                                 "path": "app.py",
-                                "content": "VALUE = 1\n",
+                                "content": "VALUE = 2\n",
                             }
                         ]
                     }

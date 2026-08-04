@@ -74,6 +74,39 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertEqual(stage_args.model_profile, "qwen-agent")
         self.assertEqual(stage_args.protocol_repair_rounds, 3)
 
+    def test_final_integration_repair_prechecks_baseline_failure_score(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp), "# Project\n")
+            (project / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "repair final acceptance",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--test-command",
+                    f"{sys.executable} -c pass",
+                ]
+            )
+            stage = self.local_sdlc.StageWorkItem(
+                stage_id="S01",
+                title="Core",
+                goal="Implement core behavior.",
+                suggested_paths=("app.py",),
+                test_focus=("final",),
+            )
+
+            repair_args = self.local_sdlc.build_integration_repair_args(
+                args,
+                [stage],
+                [],
+                project / "run",
+            )
+
+        self.assertTrue(repair_args.precheck)
+
     def test_stage_work_item_policy_flows_to_agent_args(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -115,13 +148,47 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertEqual(stage_args.require_path, ["app.py"])
         self.assertEqual(
             stage_args.api_profile,
-            ["judge_review:max_tokens=2048", "generate_artifact:max_tokens=4096"],
+            ["generate_artifact:max_tokens=4096", "judge_review:max_tokens=2048"],
         )
         self.assertEqual(stage_args.max_rounds, 7)
         self.assertIn("## Required Observables", stage_args.brief)
         self.assertIn("command:python3 app.py", stage_args.brief)
         self.assertIn("## Readonly Evidence Paths", stage_args.brief)
         self.assertIn("tests/test_app.py", stage_args.brief)
+
+    def test_runtime_api_profile_overrides_same_stage_function(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp), "# Project\n")
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "task",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--api-profile",
+                    "failure_analysis:max_tokens=4096,temperature=0,thinking=off",
+                ]
+            )
+            stage = self.local_sdlc.StageWorkItem(
+                stage_id="S01",
+                title="Stage",
+                goal="Goal",
+                suggested_paths=("app.py",),
+                test_focus=("unit",),
+                writable_paths=("app.py",),
+                api_profile=("failure_analysis:max_tokens=8192,temperature=1,thinking=on",),
+            )
+
+            stage_args = self.local_sdlc.build_stage_agent_args(
+                args, stage, project / "run", [], []
+            )
+            overrides = self.local_sdlc.build_function_overrides(stage_args)
+
+        self.assertEqual(overrides["failure_analysis"].max_tokens, 4096)
+        self.assertEqual(overrides["failure_analysis"].temperature, 0.0)
+        self.assertTrue(overrides["failure_analysis"].disable_thinking)
 
     def test_stage_agent_args_pass_absolute_project_and_spec_file(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -484,6 +551,78 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertEqual(manifest["completed_stages"][0]["final_verdict"], "safety_blocked")
         self.assertEqual(manifest["blocked_safety_decisions"][0]["stage_id"], "S01")
 
+    def test_run_stages_records_unhandled_child_runner_error_and_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, "# Mini SQLite Engine\n")
+            run_dir = project / "run"
+
+            def fake_command_agent(_stage_args):
+                _stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+                (_stage_args.run_dir / "run.partial.json").write_text(
+                    json.dumps(
+                        {
+                            "api_calls": 2,
+                            "documents": ["01-pm-control.md", "01-domain-contract.md"],
+                            "changed_paths": [],
+                            "required_paths": ["minisqlite/errors.py"],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                raise self.local_sdlc.RunnerError("invalid function profile")
+
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages",
+                    "fail closed on invalid child configuration",
+                    "--project",
+                    str(project),
+                    "--skills-dir",
+                    str(skills_dir),
+                    "--from-stage",
+                    "S01",
+                    "--to-stage",
+                    "S01",
+                    "--apply",
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            child_dir = run_dir / "s01-core-errors-and-result-objects"
+            child_manifest = json.loads((child_dir / "run.json").read_text(encoding="utf-8"))
+            decisions = self.local_sdlc.read_autonomy_decisions(run_dir)
+            error_document_exists = (child_dir / "00-runner-error.md").exists()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(manifest["status"], "stage_failed")
+        self.assertEqual(manifest["execution_attempt_count"], 1)
+        self.assertEqual(manifest["api_calls"], 2)
+        self.assertEqual(
+            manifest["completed_stages"][0]["final_verdict"],
+            "runner_configuration_error",
+        )
+        self.assertEqual(
+            child_manifest["failure_summary"]["failure_type"],
+            "runner_configuration_error",
+        )
+        self.assertEqual(child_manifest["api_calls"], 2)
+        self.assertIn("01-domain-contract.md", child_manifest["documents"])
+        self.assertIn("00-runner-error.md", child_manifest["documents"])
+        self.assertTrue(error_document_exists)
+        self.assertEqual([item["action"] for item in decisions], ["fail_closed"])
+
     def test_run_stages_executes_each_stage_as_agent_run(self):
         calls = []
         outputs = [
@@ -677,6 +816,10 @@ class StageRunnerTests(LocalSDLCTestCase):
                     "api_calls": 1,
                     "final_verdict": "test_failed",
                     "failure_summary": {"failure_type": "command_failed"},
+                    "functional_rounds_used": 3,
+                    "protocol_rounds_used": 2,
+                    "adaptive_rounds_used": 1,
+                    "root_cause_patch_rounds_used": 1,
                 }
                 exit_code = 1
             else:
@@ -739,6 +882,10 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertEqual(calls[1].resume, calls[0].run_dir)
         self.assertTrue(calls[1].small_patch)
         self.assertTrue(calls[1].skip_pm)
+        self.assertEqual(calls[1].max_rounds, calls[0].max_rounds + 3)
+        self.assertEqual(calls[1].protocol_repair_rounds, calls[0].protocol_repair_rounds + 2)
+        self.assertEqual(calls[1].adaptive_rounds, calls[0].adaptive_rounds + 1)
+        self.assertEqual(calls[1].root_cause_patch_rounds, calls[0].root_cause_patch_rounds + 1)
         self.assertEqual(manifest["status"], "approved")
         self.assertTrue(manifest["autonomy"]["zero_unauthorized_external_interventions"])
         self.assertIn("root_cause_recovery", actions)

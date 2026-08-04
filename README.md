@@ -8,6 +8,10 @@ OpenAI互換APIへ切り替えられます。PM / Coder / Judge / Failure Analys
 Project Policy Triage などを別々の system prompt と API call で実行し、仕様書・実行ログ・
 変更パッチなどの文書化された生成物を介して開発を進めます。
 
+各修復候補は隔離領域で検証されます。同じテスト群に対する失敗数が直前より増えた場合、
+候補を自動的に変更前へ戻して byte 単位で復元を確認し、限られた追加予算で別案を試します。
+悪化した候補や未承認の変更が元プロジェクトへコピーされることはありません。
+
 > **Project status:** source-available research preview. Non-commercial use is free
 > under the public license terms. Commercial use requires a separate license. No
 > production warranty is provided.
@@ -98,12 +102,19 @@ python3 local_sdlc.py doctor
 # DeepSeek安定版: 全API callでthinking off、生成上限8,192 tokens
 python3 local_sdlc.py doctor --model-profile deepseek-v4-flash-agent
 
-# DeepSeek分析版: 分析は役割別high/max・最大8,192、生成物作成はthinking off
+# DeepSeek分析版: open-ended分析のみthinking on、短い分類/Judgeと生成物はthinking off
 python3 local_sdlc.py doctor --model-profile deepseek-v4-flash-agent-deep
 
 # Qwenへ戻した後
 python3 local_sdlc.py doctor --model-profile qwen-agent
 ```
+
+分析系の thinking call が reasoning だけで出力枠を使い切り、結論本文を返さなかった場合は、
+同じロール・同じ system prompt・同じ入力文書に、そのcallの推論末尾だけを回復用入力として添え、
+`thinking=off`・最大2,048 tokensで結論へ圧縮する再試行を一度だけ行います。推論抜粋は後続スキルへ
+渡しません。この再試行も独立した API call として予算、Action Gate、`api_calls`、
+`completion_recoveries` に記録されます。生成物系 call は最初から thinking off のため、この
+fallback の対象にはなりません。
 
 `local_sdlc.json`を使う場合は、`llm.model`を空にしたまま`llm.model_profile`だけを変更します。
 名前付きプロファイルと`/v1/models`の実測モデルが一致しない場合、Doctorと生成処理はAPI call前に
@@ -223,6 +234,10 @@ python3 local_sdlc.py progress-status --run-dir .sdlc-runner/runs/<run-id>
 単一処理のtimeoutにも反映します。`STALLED`になった元runは通常のresumeでは解除されません。
 自動回復を有効にすると、停止証拠に結び付いた変更不能な回復計画を保存し、新しいrunで再開します。
 
+テスト証拠は終了コードだけでは合格になりません。たとえば `unittest` が `Ran 0 tests` と
+報告した場合は、終了コードの実装差にかかわらず空の成功として拒否し、テストハーネスを作成または
+修復する対象に戻します。
+
 ```bash
 python3 local_sdlc.py agent "修正して" \
   --include app.py --apply \
@@ -247,6 +262,14 @@ python3 local_sdlc.py agent "停止原因を分析して修正" \
 同じfailure familyが閾値以上続いた場合、通常のretryは許さず、独立したfailure analysisを先に実行します。
 分析済みでも同じ系列が続けばroot cause recoveryへ進みます。元runのcancel状態と回復予算は引き継ぎ、
 新しいrunの進捗時計だけを新しく始めます。
+
+変更後に同じテスト群の失敗数が増えた場合、その候補は自動的に破棄され、変更前のバイト列へ戻したことを
+確認してから別案へ進みます。このとき、それ以前に機械検査で確定したAPI情報や対象ファイルは失われません。
+存在しないことが確認済みのメソッドを、型が確認できるオブジェクトへ新しく呼び出す変更は、定義側も同じ
+変更単位で実装されていない限り適用前に拒否されます。
+
+生成途中に同じ複数行が周期的に繰り返された場合は、単なる長文ではなく出力暴走として早期停止します。
+次の形式修復では同じ記法を繰り返さず、1ファイル・1変更だけのJSON形式へ切り替えます。
 
 ### 仕様書からの自律段階実行
 
@@ -276,7 +299,10 @@ python3 local_sdlc.py run-stages "SPEC.mdを実装して受け入れ条件を満
       "readonly_evidence_paths": ["SPEC.md", "tests/acceptance/"],
       "test_commands": ["python3 -m unittest tests.test_model"],
       "required_observables": ["unit tests pass"],
-      "api_profile": ["plan_stage", "generate_artifact"],
+      "api_profile": [
+        "plan_work:max_tokens=8192,thinking=on",
+        "generate_artifact:max_tokens=8192,temperature=0.05,thinking=off"
+      ],
       "max_rounds": 4
     }
   ]
@@ -405,6 +431,11 @@ Qwen / DeepSeek / Ornith などのモデル差し替えは、散在する個別 
 `仕様 → 設計 → 実装 → レビュー → デプロイ` を**品質ゲート**で進めます。
 各フェーズは `context: fork` で隔離実行され、引き継ぎは SPEC.md と git だけを経由します。
 完了は「動いた」ではなく、**受け入れ条件を一つずつ照合して**判断します。
+
+検証コマンドが1つでも失敗していれば、要件との対応表がPASSに見えても完了にはしません。
+また、原因分析から修正計画を作った場合は、Coderとは別のAPI呼び出しが候補差分を
+義務ごとに確認します。不完全な差分はファイルへ適用せず、同じ計画を保ったまま再生成します。
+LLMのレビューは助言であり、最終的な適用・完了権限は機械的なゲートに残ります。
 
 ### 3. 行動の憲法 — 失敗から確立した判断軸（全 12 条）
 

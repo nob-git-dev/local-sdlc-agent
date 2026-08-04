@@ -14,7 +14,7 @@ from .models import *
 from .python_project_analysis import *
 from .utils import truncate_text, unique_ordered
 from .verification import parse_command_result_document
-from .workspace import normalize_new_files
+from .workspace import normalize_new_files, normalize_project_relative_paths
 
 def first_artifact_marker_offset(text: str) -> int:
     markers = [
@@ -134,6 +134,17 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
         ("Extract usable intent from the failed output.", "Route to format_repair or repair_coder."),
     ),
     "missing_context": FailureTransition("missing_context", "runner", "collect_context_then_retry", "runner"),
+    "root_cause_context_refocus": FailureTransition(
+        "root_cause_context_refocus",
+        "root_cause_repair",
+        "prioritize_requested_context_and_retry_root_cause",
+        "runner",
+        (
+            "Place every requested existing path before the general context set.",
+            "Keep executable failure evidence pinned even when newer diagnostic documents exist.",
+            "Retry root-cause analysis before generating another artifact.",
+        ),
+    ),
     "semantic_repair_missing_context": FailureTransition(
         "semantic_repair_missing_context",
         "runner",
@@ -207,6 +218,61 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
         "supervisor",
         ("Keep only the smallest product-code edit that satisfies one semantic contract.",),
     ),
+    "artifact_plan_mismatch": FailureTransition(
+        "artifact_plan_mismatch",
+        "artifact_plan_repair",
+        "rewrite_artifact_to_satisfy_binding_patch_plan",
+        "supervisor",
+        (
+            "Do not apply the previous candidate.",
+            "Keep the binding patch plan unchanged.",
+            "Implement every missing behavioral obligation named by the independent conformance review.",
+            "Return one replacement artifact; touching the planned path alone is not conformance.",
+        ),
+    ),
+    "artifact_plan_review_invalid": FailureTransition(
+        "artifact_plan_review_invalid",
+        "artifact_plan_repair",
+        "regenerate_artifact_after_fail_closed_conformance_review",
+        "supervisor",
+        (
+            "Do not apply a candidate without valid independent conformance evidence.",
+            "Keep the binding patch plan unchanged and return one replacement artifact.",
+        ),
+    ),
+    "candidate_no_effect": FailureTransition(
+        "candidate_no_effect",
+        "root_cause_repair",
+        "reject_no_effect_candidate_and_reconsider_root_cause",
+        "supervisor",
+        (
+            "The candidate is mechanically valid enough to inspect but changes no source behavior.",
+            "Do not spend format-repair rounds preserving a zero-effect semantic intent.",
+            "Use current executable failures to choose a causal invariant before generating another candidate.",
+        ),
+    ),
+    "stream_identical_search_replace": FailureTransition(
+        "stream_identical_search_replace",
+        "root_cause_repair",
+        "reject_streamed_no_effect_candidate_and_reconsider_root_cause",
+        "supervisor",
+        (
+            "The streamed candidate proved that search and replacement are identical.",
+            "Reject it before completion, application, and tests.",
+            "Treat this as zero semantic effect and reconsider the root cause, not the artifact grammar.",
+        ),
+    ),
+    "root_cause_plan_non_actionable": FailureTransition(
+        "root_cause_plan_non_actionable",
+        "root_cause_repair",
+        "discard_non_actionable_plan_and_reconsider_root_cause",
+        "supervisor",
+        (
+            "The binding plan produced a mechanically no-op artifact, so the plan is not actionable against the visible source.",
+            "Discard the binding plan instead of spending format-repair rounds on it.",
+            "Choose a different root cause that explains every current failing observation, then create a new binding plan.",
+        ),
+    ),
     "format_repair_missing_context": FailureTransition(
         "format_repair_missing_context",
         "runner",
@@ -237,22 +303,22 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
     "format_repair_malformed_search_replace": FailureTransition(
         "format_repair_malformed_search_replace",
         "format_repair",
-        "rewrite_malformed_search_replace_grammar",
+        "switch_malformed_search_replace_to_json_atomic_artifact",
         "runner",
         (
             "Preserve the previous edit intent.",
-            "Use exact grammar: BEGIN_SEARCH_REPLACE path line, then `<<<<<<< SEARCH`, then search, `=======`, replace, `>>>>>>> REPLACE`.",
-            "Do not emit `: def`, `: class`, or any colon-prefixed code body after the path line.",
+            "Switch protocol and return one JSON search_replace artifact envelope.",
+            "Do not retry BEGIN_SEARCH_REPLACE markers in this round.",
         ),
     ),
     "artifact_orphan_search_replace": FailureTransition(
         "artifact_orphan_search_replace",
         "format_repair",
-        "rewrite_orphan_search_replace_with_path_header",
+        "switch_orphan_search_replace_to_json_atomic_artifact",
         "runner",
         (
             "The output contained `<<<<<<< SEARCH` without `BEGIN_SEARCH_REPLACE: path`.",
-            "Preserve the edit intent and add the required file path header.",
+            "Preserve the edit intent and return one path-qualified JSON search_replace artifact.",
         ),
     ),
     "format_repair_unbalanced_file_artifact": FailureTransition(
@@ -272,9 +338,12 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
     "stream_repeated_text_runaway": FailureTransition(
         "stream_repeated_text_runaway",
         "format_repair",
-        "abort_repeated_text_and_rewrite_as_valid_artifact",
+        "abort_repeated_text_and_switch_to_json_atomic_artifact",
         "runner",
-        ("The stream repeated text excessively.", "Return one concise artifact; no long enumerations."),
+        (
+            "The marker-based stream repeated text excessively.",
+            "Switch protocol and return one concise JSON search_replace artifact; no long enumerations.",
+        ),
     ),
     "stream_repeated_json_search_replace": FailureTransition(
         "stream_repeated_json_search_replace",
@@ -412,21 +481,21 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
     "stream_artifact_malformed_search_replace": FailureTransition(
         "stream_artifact_malformed_search_replace",
         "format_repair",
-        "abort_malformed_search_replace_and_rewrite_grammar",
+        "abort_malformed_search_replace_and_switch_to_json_atomic_artifact",
         "runner",
         (
             "The streamed search/replace grammar was malformed.",
-            "After `BEGIN_SEARCH_REPLACE: path`, emit `<<<<<<< SEARCH` immediately; do not emit colon-prefixed code.",
+            "Switch protocol and return one JSON search_replace artifact envelope.",
         ),
     ),
     "stream_orphan_search_replace": FailureTransition(
         "stream_orphan_search_replace",
         "format_repair",
-        "abort_orphan_search_replace_and_rewrite_with_path_header",
+        "abort_orphan_search_replace_and_switch_to_json_atomic_artifact",
         "runner",
         (
             "The stream started a search/replace body without a file path header.",
-            "Start with `BEGIN_SEARCH_REPLACE: path/to/file` before `<<<<<<< SEARCH`.",
+            "Switch protocol and return one path-qualified JSON search_replace artifact.",
         ),
     ),
     "stream_root_cause_too_large": FailureTransition(
@@ -448,6 +517,39 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
             "The patch plan contradicted deterministic Mechanical Probe observations.",
             "Treat the probe observations as fixed propositions.",
             "Choose a different root-cause patch or request missing context; do not repeat the rejected formula.",
+        ),
+    ),
+    "unresolved_absent_api_call": FailureTransition(
+        "unresolved_absent_api_call",
+        "root_cause_repair",
+        "reject_unresolved_absent_api_and_use_verified_interface",
+        "runner",
+        (
+            "The candidate called an API that a deterministic probe proved absent.",
+            "Use an existing owner-class method, or define the required method on its owner in the same candidate only when the specification requires that interface.",
+            "Do not repeat the rejected call-site-only hypothesis.",
+        ),
+    ),
+    "candidate_regression": FailureTransition(
+        "candidate_regression",
+        "repair_coder",
+        "retain_prior_evidence_and_choose_non_regressing_hypothesis",
+        "supervisor",
+        (
+            "The previous candidate increased failures and was rolled back byte-for-byte.",
+            "Retain all earlier mechanical constraints and reject the rolled-back hypothesis.",
+            "Choose a different smallest action against the restored state.",
+        ),
+    ),
+    "replayed_regressing_candidate": FailureTransition(
+        "replayed_regressing_candidate",
+        "root_cause_repair",
+        "reject_before_apply_and_reconsider_root_cause",
+        "supervisor",
+        (
+            "The candidate contains no changed-line hypothesis beyond a previously regressing candidate.",
+            "Do not apply or test the replayed candidate.",
+            "Use independent root-cause analysis and a binding patch plan before another artifact is generated.",
         ),
     ),
     "stage_test_failed": FailureTransition("stage_test_failed", "repair_coder", "repair_stage_failure", "supervisor"),
@@ -497,7 +599,7 @@ def transition_for_failure(failure_type: str | None) -> FailureTransition:
 def is_protocol_failure_type(failure_type: str | None) -> bool:
     if not failure_type:
         return False
-    if failure_type.startswith(("format_repair_", "semantic_repair_", "stream_")):
+    if failure_type.startswith(("format_repair_", "semantic_repair_", "artifact_plan_", "stream_")):
         return True
     return failure_type in {
         "artifact_invalid",
@@ -552,6 +654,23 @@ def semantic_contracts_document(contracts: Sequence[SemanticContract]) -> str:
             lines.append("  - evidence: " + "; ".join(contract.evidence))
     return "\n".join(lines)
 
+
+def authoritative_semantic_contracts(
+    contracts: Sequence[SemanticContract],
+) -> list[SemanticContract]:
+    """Return contracts that may constrain product repair without triage.
+
+    Assertions from stage-owned generated tests are hypotheses until their
+    propositions have been checked against the fixed specification.  Keeping
+    them in the ledger is useful evidence, but treating them as binding would
+    let an agent-generated oracle override external acceptance criteria.
+    """
+    return [
+        contract
+        for contract in contracts
+        if contract.kind != "provisional_test_oracle"
+    ]
+
 def semantic_contract_focus_paths(
     contracts: Sequence[SemanticContract],
     existing_paths: Sequence[str],
@@ -601,23 +720,29 @@ def proposition_manifest_from_documents(documents: Sequence[tuple[str, str]]) ->
 def extract_semantic_contracts_from_command_docs(
     command_docs: Sequence[tuple[str, str]],
     project: Path | None = None,
+    generated_test_paths: Sequence[str] = (),
 ) -> list[SemanticContract]:
     combined = "\n".join(document for _name, document in command_docs)
     lowered = combined.lower()
     contracts: list[SemanticContract] = []
     existing_product_paths = project_python_product_paths(project)
+    generated_test_set = set(normalize_project_relative_paths(generated_test_paths))
 
     def add(kind: str, text: str, source: str, focus_files: Sequence[str] = (), evidence: Sequence[str] = ()) -> None:
         normalized = normalize_contract_text(text)
         if any(existing.text == normalized for existing in contracts):
             return
+        normalized_focus = tuple(unique_ordered(focus_files))
+        effective_kind = kind
+        if any(path in generated_test_set for path in normalized_focus):
+            effective_kind = "provisional_test_oracle"
         contracts.append(
             SemanticContract(
                 contract_id=f"C{len(contracts) + 1:02d}",
-                kind=kind,
+                kind=effective_kind,
                 text=normalized,
                 source=source,
-                focus_files=tuple(unique_ordered(focus_files)),
+                focus_files=normalized_focus,
                 evidence=tuple(unique_ordered(evidence)),
             )
         )
@@ -716,7 +841,9 @@ def extract_semantic_contracts_from_command_docs(
             ["negative integer token lost sign"],
         )
 
-    if "AssertionError: 2 != 1" in combined or "AssertionError: 1 != 0" in combined:
+    if (
+        "AssertionError: 2 != 1" in combined or "AssertionError: 1 != 0" in combined
+    ) and ("token" in lowered or "lexer" in lowered):
         add(
             "api_contract",
             "tokenize must not append an extra EOF token when tests expect only source tokens.",
@@ -809,9 +936,14 @@ def extract_semantic_contracts_from_command_docs(
                         [source_line],
                     )
                 else:
+                    contract_text = (
+                        "A stage-generated test asserts a public product-code value; validate its setup, action, and expectation against SPEC.md before choosing the repair owner."
+                        if rel_path in generated_test_set
+                        else "Existing tests assert a public product-code value; preserve the tested behavior by repairing product code first."
+                    )
                     add(
                         "api_contract",
-                        "Existing tests assert a public product-code value; preserve the tested behavior by repairing product code first.",
+                        contract_text,
                         f"{rel_path}:{line_no}",
                         [*product_focus, rel_path],
                         [source_line],

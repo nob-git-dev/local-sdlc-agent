@@ -107,6 +107,56 @@ def command_failure_score(command_docs: Sequence[tuple[str, str]]) -> int | None
         observed = True
     return total if observed else None
 
+
+def executable_command_gate_blockers(
+    command_docs: Sequence[tuple[str, str]],
+) -> list[dict[str, object]]:
+    """Return fail-closed acceptance blockers for failed executable checks.
+
+    Requirement-to-evidence mapping can be incomplete or overly broad. A
+    failed configured command is nevertheless direct executable evidence and
+    must prevent an acceptance gate from reporting ``ok: true``.
+    """
+
+    blockers: list[dict[str, object]] = []
+    for index, (label, document) in enumerate(command_docs, start=1):
+        parsed = parse_command_result_document(document)
+        command = parsed.get("command", "")
+        status = parsed.get("status", "")
+        if command == "acceptance-evidence-gate" or status not in {"FAIL", "BLOCKED"}:
+            continue
+        blockers.append(
+            {
+                "id": f"X{index:02d}",
+                "text": f"Executable check must pass: {command or label}",
+                "status": "fail" if status == "FAIL" else "blocked",
+                "evidence_ids": [],
+                "evidence_scope": "executable_command",
+                "command": command,
+                "label": label,
+            }
+        )
+    return blockers
+
+
+def candidate_behavior_regressed(
+    previous_score: int | None,
+    current_score: int | None,
+    changed_paths: Sequence[str],
+) -> bool:
+    """Return true when an applied candidate increases executable failures.
+
+    Scores are comparable inside one agent run because every round executes the
+    same configured command vector.  A candidate that changed no files cannot
+    be the cause and is therefore excluded from this rollback rule.
+    """
+    return bool(
+        changed_paths
+        and previous_score is not None
+        and current_score is not None
+        and current_score > previous_score
+    )
+
 def normalize_failure_line(line: str) -> str:
     normalized = re.sub(r'File "[^"]+", line \d+', 'File "<path>", line <n>', line.strip())
     normalized = re.sub(r"/tmp/[^/\s]+/project/", "<project>/", normalized)
@@ -193,6 +243,8 @@ def classify_failure(returncode: int | None, stdout: str = "", stderr: str = "",
     text = f"{stdout}\n{stderr}".lower()
     if blocked_reason:
         return "blocked_command"
+    if "unittest command discovered zero tests" in text:
+        return "missing_test_harness"
     if returncode == 0:
         return "passed"
     if "start directory is not importable" in text and "tests" in text:
@@ -338,15 +390,21 @@ def run_checked_command(
                 check=False,
             )
             duration = time.monotonic() - started
+            returncode, stdout, stderr = normalize_test_command_result(
+                command,
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
             return (
                 command_result_document(
                     command,
-                    result.returncode,
-                    result.stdout,
-                    result.stderr,
+                    returncode,
+                    stdout,
+                    stderr,
                     duration,
                 ),
-                result.returncode == 0,
+                returncode == 0,
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - started
@@ -457,9 +515,15 @@ def run_checked_command(
             stderr = stderr_file.read().decode("utf-8", errors="replace")
             duration = time.monotonic() - started
             if not timed_out:
+                returncode, stdout, stderr = normalize_test_command_result(
+                    command,
+                    process.returncode,
+                    stdout,
+                    stderr,
+                )
                 return (
-                    command_result_document(command, process.returncode, stdout, stderr, duration),
-                    process.returncode == 0,
+                    command_result_document(command, returncode, stdout, stderr, duration),
+                    returncode == 0,
                 )
 
             if run_dir is not None:
@@ -496,6 +560,35 @@ def unsupported_shell_command_reason(command: str) -> str:
             "separate --test-command instead"
         )
     return ""
+
+
+def normalize_test_command_result(
+    command: str,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+) -> tuple[int, str, str]:
+    """Reject vacuous test success when a recognized runner executes no tests."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return returncode, stdout, stderr
+    is_unittest = (
+        len(tokens) >= 3
+        and Path(tokens[0]).name.startswith("python")
+        and tokens[1:3] == ["-m", "unittest"]
+    )
+    if not is_unittest:
+        return returncode, stdout, stderr
+    match = re.search(r"(?m)^Ran\s+(\d+)\s+tests?\b", f"{stdout}\n{stderr}")
+    if not match or int(match.group(1)) != 0:
+        return returncode, stdout, stderr
+    detail = (
+        "verification infrastructure: unittest command discovered zero tests; "
+        "successful evidence must execute at least one test"
+    )
+    normalized_stderr = f"{stderr.rstrip()}\n{detail}".lstrip()
+    return returncode or 1, stdout, normalized_stderr
 
 def unittest_discover_pattern(command: str) -> tuple[str, str] | None:
     try:
