@@ -573,6 +573,47 @@ def effective_artifact_format(configured_format: str, modes: set[str]) -> str:
         return "legacy"
     return configured_format
 
+
+def missing_file_recovery_target(
+    missing_required_paths: Sequence[str],
+    writable_paths: Sequence[str],
+    stage_generated_test_paths: Sequence[str],
+    repair_strategy: str,
+    failure_modes: set[str],
+) -> str | None:
+    """Choose one pre-authorized missing path for artifact-format recovery.
+
+    A malformed transport cannot be repaired with search/replace when the
+    intended target does not yet exist. Selection never widens authority: the
+    result must be both required and already writable. A declared missing test
+    is preferred only while the supervisor is explicitly constructing that
+    test harness; otherwise product paths come first.
+    """
+
+    if not failure_modes:
+        return None
+    writable = set(str(path) for path in writable_paths)
+    candidates = [
+        path
+        for path in unique_ordered(str(path) for path in missing_required_paths)
+        if path in writable
+    ]
+    if not candidates:
+        return None
+
+    generated_tests = set(str(path) for path in stage_generated_test_paths)
+    if repair_strategy == "create_test_harness":
+        for path in candidates:
+            if path.startswith("tests/") and path in generated_tests:
+                return path
+    for path in candidates:
+        if not path.startswith("tests/"):
+            return path
+    for path in candidates:
+        if path in generated_tests:
+            return path
+    return candidates[0]
+
 def final_failure_focus_from_command_docs(
     command_docs: Sequence[tuple[str, str]],
     test_commands: Sequence[str],

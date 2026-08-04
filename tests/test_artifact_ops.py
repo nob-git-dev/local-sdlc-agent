@@ -15,6 +15,28 @@ class ArtifactOpsTests(LocalSDLCTestCase):
         self.assertEqual(artifact.mode, "replace")
         self.assertIn("<html>", artifact.content)
 
+    def test_extract_file_artifact_normalizes_missing_header_colon(self):
+        output = "BEGIN_FILE app.py\n```python\nprint('ok')\n```\nEND_FILE"
+
+        artifact = self.local_sdlc.extract_file_artifact(output, ["app.py"])
+
+        self.assertEqual(artifact.path, "app.py")
+        self.assertEqual(artifact.content, "print('ok')")
+
+    def test_missing_header_colon_still_enforces_readonly_stream_policy(self):
+        policy = self.local_sdlc.ArtifactPathPolicy(
+            allowed_paths=("app.py",),
+            readonly_paths=("tests/test_app.py",),
+        )
+
+        result = self.local_sdlc.artifact_stream_guard(
+            "BEGIN_FILE tests/test_app.py\n",
+            artifact_policy=policy,
+        )
+
+        self.assertTrue(result.should_abort)
+        self.assertEqual(result.code, "stream_readonly_artifact_path")
+
     def test_extract_file_artifact_accepts_path_on_next_line(self):
         output = "BEGIN_FILE\nindex.html\n<!doctype html>\n<html></html>\nEND_FILE"
         artifact = self.local_sdlc.extract_file_artifact(output, ["index.html"])

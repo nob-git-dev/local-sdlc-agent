@@ -3791,6 +3791,34 @@ AssertionError: 1 != 3
             "auto",
         )
 
+    def test_missing_file_recovery_target_preserves_authority_and_strategy(self):
+        test_target = self.local_sdlc.missing_file_recovery_target(
+            ["pkg/worker.py", "tests/test_worker.py", "outside.py"],
+            ["pkg/worker.py", "tests/test_worker.py"],
+            ["tests/test_worker.py"],
+            "create_test_harness",
+            {"format_repair_protocol"},
+        )
+        product_target = self.local_sdlc.missing_file_recovery_target(
+            ["pkg/worker.py", "tests/test_worker.py", "outside.py"],
+            ["pkg/worker.py", "tests/test_worker.py"],
+            ["tests/test_worker.py"],
+            "implementation_repair",
+            {"format_repair_protocol"},
+        )
+
+        self.assertEqual(test_target, "tests/test_worker.py")
+        self.assertEqual(product_target, "pkg/worker.py")
+        self.assertIsNone(
+            self.local_sdlc.missing_file_recovery_target(
+                ["outside.py"],
+                ["pkg/worker.py"],
+                [],
+                "implementation_repair",
+                {"format_repair_protocol"},
+            )
+        )
+
     def test_repair_advice_classifies_cross_stage_constructor_shape_mismatch(self):
         doc = """
         ERROR: test_basic_create_table (test_parser.TestParserCreateTable.test_basic_create_table)
@@ -6913,6 +6941,80 @@ Required fixes:
         self.assertIn("VALUE = 'new'", source)
         self.assertEqual(manifest["protocol_rounds_used"], 1)
         self.assertEqual(calls[1], ("coder", "format_repair"))
+
+    def test_agent_recovers_missing_file_with_one_targeted_json_artifact(self):
+        calls = []
+        outputs = [
+            "I did not emit an artifact.",
+            json.dumps(
+                {
+                    "artifacts": [
+                        {
+                            "type": "replace_file",
+                            "path": "app.py",
+                            "content": "VALUE = 'created'\n",
+                        }
+                    ]
+                }
+            ),
+        ]
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, messages, agent_level="default", call_function="default", **_kwargs):
+                calls.append((agent_level, call_function, messages))
+                return outputs[len(calls) - 1]
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root)
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "create app",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--new-file",
+                        "app.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--artifact-format",
+                        "legacy",
+                        "--max-rounds",
+                        "2",
+                        "--protocol-repair-rounds",
+                        "1",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            source = (project / "app.py").read_text(encoding="utf-8")
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        second_prompt = "\n".join(
+            str(message.get("content", "")) for message in calls[1][2]
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(source, "VALUE = 'created'\n")
+        self.assertEqual(manifest["final_verdict"], "approved")
+        self.assertEqual(calls[1][1], "repair_artifact")
+        self.assertIn("MISSING FILE JSON RECOVERY MODE", second_prompt)
+        self.assertIn('"path":"app.py"', second_prompt)
 
     def test_agent_uses_adaptive_round_when_command_failures_shrink(self):
         calls = []

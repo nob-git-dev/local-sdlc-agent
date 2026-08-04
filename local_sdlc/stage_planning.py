@@ -177,6 +177,27 @@ def _is_test_path(path: str) -> bool:
     return candidate.startswith("tests/") or Path(candidate).name.startswith("test_")
 
 
+def _is_integration_boundary_path(path: str) -> bool:
+    """Return whether a path should receive the parent's joint verification.
+
+    Export surfaces and package/document manifests often compile successfully
+    while still being semantically incomplete. Keeping their slice last makes
+    the original stage commands, rather than a vacuous compile check, decide
+    whether the decomposed work integrates.
+    """
+
+    return Path(path).name.lower() in {
+        "__init__.py",
+        "__main__.py",
+        "package.json",
+        "pyproject.toml",
+        "readme.md",
+        "readme.rst",
+        "setup.cfg",
+        "setup.py",
+    }
+
+
 def _path_affinity(left: str, right: str) -> int:
     """Return a lexical ownership score without assuming a package name."""
     left_stem = Path(left).stem.removeprefix("test_").lower()
@@ -217,7 +238,11 @@ def _balanced_group_chunks(groups: Sequence[Sequence[str]], parts: int) -> list[
         target = min(range(chunk_count), key=lambda index: (loads[index], index))
         chunks[target].extend(group)
         loads[target] += len(group)
-    return [chunk for chunk in chunks if chunk]
+    populated = [chunk for chunk in chunks if chunk]
+    return sorted(
+        populated,
+        key=lambda chunk: any(_is_integration_boundary_path(path) for path in chunk),
+    )
 
 
 def split_stage_work_item(stage: StageWorkItem, *, parts: int = 2) -> list[StageWorkItem]:

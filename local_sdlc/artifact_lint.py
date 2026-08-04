@@ -484,6 +484,7 @@ def repeated_text_run_score(text: str) -> tuple[int, str]:
 
 def streamed_artifact_paths(text: str) -> list[str]:
     """Extract target paths from incomplete streamed artifact output."""
+    text = normalize_inline_file_artifact_headers(text)
     paths: list[str] = []
     for match in re.finditer(r"(?m)^BEGIN_(?:APPEND_)?FILE:\s*(?P<path>[^\n]+)\s*$", text):
         paths.append(match.group("path"))
@@ -517,6 +518,8 @@ def salvage_completed_artifact_prefix_before_readonly_path(
     """
     if artifact_policy is None or not artifact_policy.readonly_paths:
         return None
+
+    text = normalize_inline_file_artifact_headers(text)
 
     readonly = set(artifact_policy.readonly_paths)
     readonly_offsets: list[int] = []
@@ -574,6 +577,7 @@ def artifact_stream_guard(
     single_artifact_mode: bool = False,
     artifact_policy: ArtifactPathPolicy | None = None,
 ) -> ArtifactStreamGuardResult:
+    text = normalize_inline_file_artifact_headers(text)
     encoded_len = len(text.encode("utf-8"))
     artifact_offset = first_artifact_marker_offset(text)
     stripped = text.lstrip()

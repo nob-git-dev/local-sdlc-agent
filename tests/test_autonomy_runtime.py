@@ -321,6 +321,35 @@ python3 -m compileall -q package
         for child in children:
             self.assertEqual(set(child.repair_scope_paths), set(stage.writable_paths))
 
+    def test_stage_split_runs_joint_verification_on_integration_boundary_last(self):
+        stage = self.local_sdlc.StageWorkItem(
+            stage_id="S02",
+            title="Executor exports",
+            goal="Implement the executor and public exports.",
+            suggested_paths=(
+                "pkg/__init__.py",
+                "pkg/executor.py",
+                "tests/test_executor.py",
+            ),
+            test_focus=("executor acceptance",),
+            test_commands=("python3 -m unittest tests.test_executor",),
+            writable_paths=(
+                "pkg/__init__.py",
+                "pkg/executor.py",
+                "tests/test_executor.py",
+            ),
+        )
+
+        children = self.local_sdlc.split_stage_work_item(stage, parts=2)
+
+        self.assertEqual(
+            set(children[0].writable_paths),
+            {"pkg/executor.py", "tests/test_executor.py"},
+        )
+        self.assertEqual(children[0].test_commands, ())
+        self.assertEqual(children[-1].writable_paths, ("pkg/__init__.py",))
+        self.assertEqual(children[-1].test_commands, stage.test_commands)
+
     def test_stage_recovery_expands_only_to_evidence_path_inside_parent_scope(self):
         stage = self.local_sdlc.StageWorkItem(
             stage_id="S02.2",

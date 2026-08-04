@@ -2286,6 +2286,19 @@ def command_agent(args: argparse.Namespace) -> int:
             args.artifact_format,
             artifact_failure_modes,
         )
+        missing_recovery_target = (
+            missing_file_recovery_target(
+                missing_required_paths_before_round,
+                allowed_artifact_paths,
+                stage_generated_test_paths,
+                active_repair_strategy,
+                artifact_failure_modes,
+            )
+            if round_index > 1 and not args.no_replace_file
+            else None
+        )
+        if missing_recovery_target:
+            round_artifact_format = "json"
         if round_artifact_format == "legacy":
             artifact_output_instruction = textwrap.dedent(
                 """
@@ -2305,6 +2318,19 @@ def command_agent(args: argparse.Namespace) -> int:
                   git apply is also acceptable.
                 - Do not return JSON artifacts in legacy mode.
                 - Do not include prose, test reports, or self-judgement.
+                """
+            ).strip()
+        elif round_artifact_format == "json":
+            artifact_output_instruction = textwrap.dedent(
+                """
+                Required output:
+                - Return one valid JSON object whose first key is `artifacts`.
+                - Every item must use a supported artifact type and an explicitly
+                  writable project-relative path.
+                - Encode complete file content, line breaks, and quotes as valid
+                  JSON strings.
+                - Do not return marker artifacts, unified diffs, prose, headings,
+                  markdown fences, analysis, alternatives, or a verdict.
                 """
             ).strip()
         else:
@@ -2355,6 +2381,12 @@ def command_agent(args: argparse.Namespace) -> int:
                 "For BEGIN_SEARCH_REPLACE, replacement text must differ from search text. "
                 "No prose. No verdict."
             )
+        elif round_artifact_format == "json":
+            output_contract = (
+                "Return ONLY one valid JSON object with an artifacts array. "
+                "First non-whitespace byte: {. No marker artifacts. No diff. "
+                "No prose. No fences. No verdict."
+            )
         else:
             output_contract = (
                 "Return ONLY JSON artifacts, a unified diff, BEGIN_SEARCH_REPLACE/END_SEARCH_REPLACE, "
@@ -2386,6 +2418,29 @@ def command_agent(args: argparse.Namespace) -> int:
             artifact_output_instruction = strict_instruction
         if strict_contract:
             output_contract = strict_contract
+        if missing_recovery_target:
+            artifact_output_instruction = textwrap.dedent(
+                f"""
+                Required output for this recovery round:
+                - MISSING FILE JSON RECOVERY MODE.
+                - The previous artifact transport failed before this required
+                  writable file was created: {missing_recovery_target}
+                - Return exactly one complete JSON replace_file artifact using
+                  this schema:
+                  {{"artifacts":[{{"type":"replace_file","path":"{missing_recovery_target}","content":"complete file content"}}]}}
+                - The first non-whitespace byte must be `{{`.
+                - `content` must be complete, non-empty, and limited to this
+                  stage's current goal. Encode it as one valid JSON string.
+                - Do not return BEGIN_FILE, BEGIN_SEARCH_REPLACE, a diff, another
+                  path, prose, markdown fences, analysis, or a verdict.
+                """
+            ).strip()
+            output_contract = (
+                f"Return ONLY one JSON replace_file artifact for {missing_recovery_target}. "
+                "First non-whitespace byte: {. One path. Complete non-empty content. "
+                "No markers. No diff. No prose. No fences."
+            )
+            single_artifact_stream_mode = True
 
         test_framework_instruction = ""
         if test_commands:
@@ -2507,14 +2562,21 @@ def command_agent(args: argparse.Namespace) -> int:
                 )
             else:
                 test_edit_rule = "- Do not edit tests unless the repair advice strategy explicitly says the test harness is invalid."
-            focused_artifact_rule = (
-                "- For this strategy, return one BEGIN_FILE/END_FILE full replacement for the named test file. Do not use search_replace."
-                if latest_strategy in {
-                    "create_test_harness",
-                    "rewrite_current_stage_tests_to_scope",
-                }
-                else "- Prefer one BEGIN_SEARCH_REPLACE block or one minimal diff."
-            )
+            if missing_recovery_target:
+                focused_artifact_rule = (
+                    "- Return the one complete JSON replace_file artifact required by "
+                    "MISSING FILE JSON RECOVERY MODE; do not use marker artifacts."
+                )
+            elif latest_strategy in {
+                "create_test_harness",
+                "rewrite_current_stage_tests_to_scope",
+            }:
+                focused_artifact_rule = (
+                    "- For this strategy, return one BEGIN_FILE/END_FILE full replacement "
+                    "for the named test file. Do not use search_replace."
+                )
+            else:
+                focused_artifact_rule = "- Prefer one BEGIN_SEARCH_REPLACE block or one minimal diff."
             focused_repair_instruction = textwrap.dedent(
                 f"""
                 Focused repair advice from executable evidence:

@@ -30,6 +30,14 @@ def first_artifact_marker_offset(text: str) -> int:
         "--- ",
     ]
     offsets = [text.find(marker) for marker in markers if text.find(marker) >= 0]
+    offsets.extend(
+        match.start()
+        for match in re.finditer(
+            r"(?m)^BEGIN_(?:APPEND_)?FILE[ \t]+"
+            r"[A-Za-z0-9_.][A-Za-z0-9_./-]*[ \t]*$",
+            text,
+        )
+    )
     offsets.extend(json_artifact_marker_offsets(text))
     return min(offsets) if offsets else -1
 

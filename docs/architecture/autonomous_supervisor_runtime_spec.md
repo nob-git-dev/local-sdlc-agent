@@ -94,6 +94,9 @@ Instead, it must define how new propositions are admitted.
 | P23 | A planner cannot mint write authority. | A missing path resolves only when it is already present in the runner-authorized writable set; an undeclared path remains unresolved. |
 | P24 | An absent declared generated test is a harness-construction obligation. | Declared stage ownership, path absence, and zero-test discovery route to `create_test_harness` before product-only root-cause planning. |
 | P25 | Unsupported artifact JSON stops at schema identification. | Once the first top-level key is known and is neither `artifacts` nor `type`, streaming aborts with `stream_json_schema_mismatch`. |
+| P26 | Mechanical envelope repair cannot widen write authority. | A missing file-header colon is normalized only for one conservative relative path, after which the ordinary writable/readonly policy still decides admissibility. |
+| P27 | A missing target uses a creation protocol. | After transport failure, one path that is both required and runner-writable is selected for a JSON `replace_file`; search/replace is not requested for a path that does not exist. |
+| P28 | Decomposition preserves a semantic integration gate. | Slices containing export surfaces or manifests are ordered last and inherit the parent stage's joint executable commands instead of compile-only evidence. |
 
 ## Progress Vector
 
@@ -690,12 +693,31 @@ DeclaredHarnessMissing(t) :=
   StageOwnedGeneratedTest(t)
   and not ExistsOnDisk(t)
   and ZeroTestDiscovery(t)
+
+RecoverableFileHeader(h, p) :=
+  ExactReservedHeader(h)
+  and ConservativeRelativePath(p)
+  and MissingToken(h) = Colon
+
+MissingFileRecoveryTarget(p) :=
+  RequiredPath(p)
+  and RunnerAuthorizedWritablePath(p)
+  and not ExistsOnDisk(p)
+  and ArtifactTransportFailed
+
+IntegrationLast(s) :=
+  ContainsIntegrationBoundary(s)
+  implies InheritsParentJointCommands(s)
 ```
 
 `DeclaredHarnessMissing(t)` routes to bounded harness creation. It does not
 authorize edits to an existing generated assertion, and it never includes
 fixed acceptance tests. `PlannerPathAllowed(p)` is checked by the runner; an
 LLM plan is advisory and cannot add a path to the authorized set.
+`RecoverableFileHeader` changes envelope punctuation only; normal path policy
+still rejects read-only or undeclared targets. `MissingFileRecoveryTarget`
+selects exactly one path and uses a file-creation artifact. `IntegrationLast`
+prevents a split export/manifest slice from passing solely because it compiles.
 
 The autonomy benchmark passes only when:
 

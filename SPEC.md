@@ -1464,6 +1464,9 @@ AutonomyPass :=
 - artifact protocol failure の次 action は failure family ごとの bounded format repair とする。marker-based search/replace の malformed / periodic runaway は同じ形式を再試行せず、単一 JSON search_replace envelope へ切り替える。
 - artifact parser は親 run の既定形式ではなく、その round の recovery contract に従う。JSON recovery を要求した round は configured `legacy` でも JSON だけを解析し、non-JSON recovery を要求した round は configured `json` でも marker artifact だけを解析する。
 - artifact stream が JSON object で始まる場合、最初の top-level key は `artifacts` または `type` に限る。`propositions` 等の診断 schema は完了を待たず `stream_json_schema_mismatch` として停止する。
+- `BEGIN_FILE path` のように予約語、単一の安全な相対 path、行境界が一意な場合だけ、欠落した区切りコロンを機械的に補う。補正後も通常の writable/readonly path policy を必ず適用し、path や content の推測は行わない。
+- artifact transport failure 後も required writable path が未作成なら、既存 file 用 search/replace へ送らず、runner が選んだ一つの authorized missing path に限定した JSON `replace_file` recovery を使う。
+- stage split では export surface、package entry point、manifest、README 等の integration boundary を含む slice を最後に並べ、親 stage の joint test command をその slice で実行する。compile-only で integration boundary を完了扱いにしない。
 - candidate regression の rollback は active strategy だけを更新し、既存の mechanical evidence、forbidden hypothesis、owner-file focus を上書き消去してはならない。
 - candidate regression の failure score は初期 precheck と各 repair round で同一の verification vector から算出する。required-path、smoke、configured test command は両方へ含め、他の check から導出される Acceptance Evidence Gate 自体は二重計上しない。
 - 欠落 test harness の生成で raw failure score が増えた候補は、copy-worktree、required path の真の減少、変更済み test path の新規充足がすべて成立する場合だけ暫定保持する。元 project への copy back は全 gate 合格後に限る。
@@ -1497,6 +1500,9 @@ AutonomyPass :=
 - [x] malformed / periodic marker output の次 attempt は単一 JSON search_replace に切り替わる。
 - [x] per-round recovery contract が configured artifact format を安全に上書きし、legacy 親 run でも JSON recovery artifact を解析できる。
 - [x] artifact schema でない top-level JSON は最初の key が判明した時点で早期停止する。
+- [x] コロンだけ欠けた一意な file artifact header は補正できるが、readonly path は補正後も stream 中に拒否される。
+- [x] protocol failure 中の authorized missing file は、一つの path に固定した JSON file artifact で作成される。
+- [x] stage split 後の integration boundary slice は最後に実行され、親 stage の joint command を継承する。
 - [x] candidate regression 後も以前の mechanical API evidence と owner-file focus が manifest に残る。
 - [x] initial precheck と repair round は同じ verification vector で比較され、derived acceptance gate は failure score に二重計上されない。
 - [x] 隔離環境で欠落 test harness を実行可能にした候補は `candidate_provisional_progress` として保持され、全 gate 合格前には copy back されない。
@@ -1520,7 +1526,7 @@ AutonomyPass :=
 - [x] approval-required / safety-blocked / budget-exhausted は actionable blocked data を持つ。
 - [x] `run-stages` の既定 worktree mode は `copy` である。
 - [x] autonomy audit が unauthorized external intervention を区別して数える。
-- [x] unit/integration test 669件が成功する。
+- [x] unit/integration test 674件が成功する。
 
 ### 検証
 
@@ -1529,7 +1535,7 @@ AutonomyPass :=
 - `tests.test_stage_runner`: 自動 root-cause recovery、format repair、goal stall recovery、
   unverified completion rejection、default isolation の結合テスト。
 - `tests.test_local_sdlc.LocalSDLCTest.test_patch_planner_escalation_routes_only_generated_test_to_independent_triage`: 製品修正、zero-effect拒否、root cause、独立triage、生成テスト限定修正、合格までの結合経路が成功。
-- `python3 -m unittest discover -s tests`: `Ran 660 tests ... OK`。
+- `python3 -m unittest discover -s tests`: `Ran 674 tests ... OK`。
 - 次の汎化検証は、harness を commit で固定した後の Mini Git、再固定後の
   held-out DAG job engine の順に行う。
 

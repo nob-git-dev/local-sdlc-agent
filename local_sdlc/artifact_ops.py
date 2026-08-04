@@ -150,10 +150,14 @@ def normalize_terminal_end_search_replace_artifact(text: str) -> str:
     return match.group("body") + "\n>>>>>>> REPLACE\nEND_SEARCH_REPLACE"
 
 def artifact_candidate_texts(text: str) -> list[str]:
-    normalized_search_replace = normalize_file_header_search_replace_artifacts(text)
+    normalized_file_headers = normalize_inline_file_artifact_headers(text)
+    normalized_search_replace = normalize_file_header_search_replace_artifacts(
+        normalized_file_headers
+    )
     normalized_terminal = normalize_terminal_end_search_replace_artifact(normalized_search_replace)
     candidates = [
         text,
+        normalized_file_headers,
         normalized_search_replace,
         normalized_terminal,
         strip_markdown_fence(text),
@@ -194,7 +198,7 @@ def contains_conflict_markers(text: str) -> bool:
 def contains_artifact_markers(text: str) -> bool:
     return bool(
         re.search(
-            r"(?m)^(BEGIN_(?:APPEND_)?FILE(?::|\s*$)|BEGIN_SEARCH_REPLACE:|END_(?:APPEND_)?FILE(?:\s*:\s*[^\n]+)?\s*$|END_SEARCH_REPLACE$)",
+            r"(?m)^(BEGIN_(?:APPEND_)?FILE(?:\s*:|[ \t]+[A-Za-z0-9_.][A-Za-z0-9_./-]*[ \t]*$|\s*$)|BEGIN_SEARCH_REPLACE:|END_(?:APPEND_)?FILE(?:\s*:\s*[^\n]+)?\s*$|END_SEARCH_REPLACE$)",
             text,
         )
     )
@@ -347,6 +351,26 @@ def normalize_legacy_file_artifact_path(raw_path: str) -> str:
         path = path[1:].strip()
     return path
 
+
+_INLINE_FILE_HEADER_WITHOUT_COLON = re.compile(
+    r"(?m)^(?P<header>BEGIN_(?:APPEND_)?FILE)[ \t]+"
+    r"(?P<path>[A-Za-z0-9_.][A-Za-z0-9_./-]*)[ \t]*$"
+)
+
+
+def normalize_inline_file_artifact_headers(text: str) -> str:
+    """Insert a missing colon in an otherwise unambiguous file header.
+
+    Only the reserved marker plus one conservative project-relative path is
+    normalized. Path authorization remains the responsibility of the normal
+    artifact policy, and content is never changed by this repair.
+    """
+
+    return _INLINE_FILE_HEADER_WITHOUT_COLON.sub(
+        lambda match: f"{match.group('header')}: {match.group('path')}",
+        text,
+    )
+
 def normalize_legacy_file_artifact_content(raw_content: str) -> str:
     content = strip_markdown_fence(raw_content)
     lines = content.splitlines()
@@ -359,7 +383,12 @@ def normalize_legacy_file_artifact_content(raw_content: str) -> str:
     return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
 
 def legacy_file_begin_count(text: str) -> int:
-    return len(re.findall(r"(?m)^BEGIN_(?:APPEND_)?FILE(?::|\s*$)", text))
+    return len(
+        re.findall(
+            r"(?m)^BEGIN_(?:APPEND_)?FILE(?:\s*:|[ \t]+[A-Za-z0-9_.][A-Za-z0-9_./-]*[ \t]*$|\s*$)",
+            text,
+        )
+    )
 
 def legacy_file_end_count(text: str) -> int:
     return len(re.findall(r"(?m)^END_(?:APPEND_)?FILE(?:\s*:\s*[^\n]+)?\s*$", text))
