@@ -1524,6 +1524,7 @@ AutonomyPass :=
 - [x] stage-owned generated test の未見 failure signature は初回失敗時に independent project-policy triage へ送る。同一失敗の再現を待たず、test edit は positive contradiction evidence と exact stage-owned path gate の両方がある場合だけ許可する。
 - [x] generated Python test の ownership triage には AST 由来の receiver identity facts を付与する。直接の `Class(...).method()` 呼出し同士を同一 instance と解釈せず、cross-call continuity は仕様またはsetupに明示された永続化だけを根拠にする。
 - [x] distinct fresh receiver 間の状態継続を要求する product-bug 判定には、明示的 shared persistence または cross-instance SPEC witness を必須とする。witness がなければ proposition gate が stage-owned generated test のみを repair owner に再分類する。
+- [x] `artifact_plan_mismatch` は format/protocol 予算ではなく独立した有限のartifact-plan repair予算で扱う。同一planに対する連続2候補が同一義務を満たせない場合、planをinfeasibleとして破棄し、owner pathとwritable scopeを再設計するroot-cause planningへ戻す。各予算の消費量はrun manifestへ記録し、resume時も累積上限を保つ。
 - [x] typed receiver が mechanically absent API を呼び、owner または同一 transaction に定義がない artifact は apply 前に拒否される。
 - [x] periodic multi-line runaway は `stream_artifact_too_large` より先に `stream_repeated_text_runaway` として停止する。
 - [x] product edit不能なgenerated-test oracle conflictは、明示的planner escalation、独立triage、stage-owned path intersectionをすべて通過した場合だけtest repairへ進む。

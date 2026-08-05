@@ -43,7 +43,9 @@ from .policy_triage import (
 )
 from .patch_conformance import (
     failed_patch_conformance_review,
+    patch_plan_signature,
     parse_patch_conformance_review,
+    repeated_patch_conformance_failure,
 )
 from .candidate_history import candidate_hypotheses, replayed_regression_hypotheses
 from .budget import *
@@ -101,6 +103,11 @@ def command_agent(args: argparse.Namespace) -> int:
     adaptive_round_budget = int(getattr(args, "adaptive_rounds", 0) or 0)
     if adaptive_round_budget < 0:
         raise RunnerError("--adaptive-rounds must be zero or greater")
+    artifact_plan_repair_round_budget = int(
+        getattr(args, "artifact_plan_repair_rounds", 2) or 0
+    )
+    if artifact_plan_repair_round_budget < 0:
+        raise RunnerError("--artifact-plan-repair-rounds must be zero or greater")
     if args.document_window < 1:
         raise RunnerError("--document-window must be at least 1")
     explicit_required_paths = normalize_new_files(args.require_path)
@@ -313,6 +320,11 @@ def command_agent(args: argparse.Namespace) -> int:
         raise RunnerError("--root-cause-patch-rounds must be zero or greater")
     root_cause_patch_rounds_used = (
         int(resume_manifest.get("root_cause_patch_rounds_used", 0)) if resume_manifest else 0
+    )
+    artifact_plan_repair_rounds_used = (
+        int(resume_manifest.get("artifact_plan_repair_rounds_used", 0))
+        if resume_manifest
+        else 0
     )
     root_cause_patch_pending = False
     regression_recovery_pending = False
@@ -553,10 +565,12 @@ def command_agent(args: argparse.Namespace) -> int:
             "protocol_repair_round_budget": protocol_repair_rounds,
             "adaptive_round_budget": adaptive_round_budget,
             "root_cause_patch_round_budget": root_cause_patch_round_budget,
+            "artifact_plan_repair_round_budget": artifact_plan_repair_round_budget,
             "functional_rounds_used": functional_rounds_used,
             "protocol_rounds_used": protocol_rounds_used,
             "adaptive_rounds_used": adaptive_rounds_used,
             "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
+            "artifact_plan_repair_rounds_used": artifact_plan_repair_rounds_used,
             "regression_recovery_pending": regression_recovery_pending,
             "candidate_regressions": candidate_regressions,
             "provisional_candidates": provisional_candidates,
@@ -1161,6 +1175,7 @@ def command_agent(args: argparse.Namespace) -> int:
 
         review["round"] = round_index
         review["call_function"] = "patch_conformance"
+        review["patch_plan_signature"] = patch_plan_signature(patch_plan_doc)
         if review_error:
             review["review_error"] = review_error
         review_path = write_run_document(
@@ -1737,10 +1752,12 @@ def command_agent(args: argparse.Namespace) -> int:
             "protocol_repair_round_budget": protocol_repair_rounds,
             "adaptive_round_budget": adaptive_round_budget,
             "root_cause_patch_round_budget": root_cause_patch_round_budget,
+            "artifact_plan_repair_round_budget": artifact_plan_repair_round_budget,
             "functional_rounds_used": functional_rounds_used,
             "protocol_rounds_used": protocol_rounds_used,
             "adaptive_rounds_used": adaptive_rounds_used,
             "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
+            "artifact_plan_repair_rounds_used": artifact_plan_repair_rounds_used,
             "regression_recovery_pending": regression_recovery_pending,
             "candidate_regressions": candidate_regressions,
             "provisional_candidates": provisional_candidates,
@@ -1839,7 +1856,13 @@ def command_agent(args: argparse.Namespace) -> int:
         return 0
 
     start_round = previous_completed_rounds + 1
-    total_round_budget = args.max_rounds + protocol_repair_rounds + adaptive_round_budget + root_cause_patch_round_budget
+    total_round_budget = (
+        args.max_rounds
+        + protocol_repair_rounds
+        + adaptive_round_budget
+        + root_cause_patch_round_budget
+        + artifact_plan_repair_round_budget
+    )
     final_round = previous_completed_rounds + total_round_budget if resume_manifest else total_round_budget
 
     def consume_failure_budget(
@@ -1849,7 +1872,14 @@ def command_agent(args: argparse.Namespace) -> int:
     ) -> bool:
         nonlocal protocol_rounds_used, functional_rounds_used, adaptive_rounds_used
         nonlocal root_cause_patch_rounds_used, root_cause_patch_pending, last_functional_failure_score
+        nonlocal artifact_plan_repair_rounds_used
         nonlocal regression_recovery_pending
+        if failure_type in {"artifact_plan_mismatch", "patch_plan_infeasible"}:
+            artifact_plan_repair_rounds_used += 1
+            return (
+                artifact_plan_repair_rounds_used <= artifact_plan_repair_round_budget
+                and round_index < final_round
+            )
         if is_protocol_failure_type(failure_type):
             failure_key = failure_type or "unknown_protocol_failure"
             is_new_protocol_failure = failure_key not in protocol_failure_types_seen
@@ -2022,7 +2052,7 @@ def command_agent(args: argparse.Namespace) -> int:
             str(path) for path in plan_paths.get("required_paths", []) if str(path)
         )
         pending_patch_plan_doc = patch_plan_doc
-        root_cause_patch_pending = False
+        root_cause_patch_pending = True
         final_verdict = "patch_failed"
         final_failure_type = "artifact_plan_mismatch"
         rejection_doc = textwrap.dedent(
@@ -3693,8 +3723,16 @@ def command_agent(args: argparse.Namespace) -> int:
                 )
                 review_error = str(conformance_review.get("review_error") or "").strip()
                 final_verdict = "patch_failed"
+                repeated_plan_failure = (
+                    not review_error
+                    and repeated_patch_conformance_failure(patch_conformance_reviews)
+                )
                 final_failure_type = (
-                    "artifact_plan_review_invalid" if review_error else "artifact_plan_mismatch"
+                    "artifact_plan_review_invalid"
+                    if review_error
+                    else "patch_plan_infeasible"
+                    if repeated_plan_failure
+                    else "artifact_plan_mismatch"
                 )
                 failure_doc = textwrap.dedent(
                     f"""
@@ -3707,22 +3745,46 @@ def command_agent(args: argparse.Namespace) -> int:
 
                     Runner action:
                     - Reject the candidate before application.
-                    - Keep the binding patch plan unchanged.
-                    - Route only the named missing obligations to a new
-                      artifact-writer API call.
+                    - {"Discard the repeatedly infeasible binding plan and return to root-cause planning." if repeated_plan_failure else "Keep the binding patch plan unchanged."}
+                    - {"The next planner must align every behavioral owner with a writable required path or choose a feasible alternative." if repeated_plan_failure else "Route only the named missing obligations to a new artifact-writer API call."}
                     """
                 ).strip()
+                if repeated_plan_failure:
+                    active_patch_plan_doc = ""
+                    pending_patch_plan_doc = ""
+                    root_cause_patch_pending = True
+                elif not review_error:
+                    # A semantic plan mismatch needs one bounded artifact-plan
+                    # repair round even after ordinary functional rounds are
+                    # exhausted. The retained plan determines the next role;
+                    # repeated identical misses are promoted to replanning.
+                    root_cause_patch_pending = True
                 remember_repair_advice(
                     RepairAdvice(
-                        strategy="patch_plan_conformance",
-                        focus_files=tuple(plan_paths.get("required_paths", [])),
+                        strategy=(
+                            "replan_infeasible_patch_plan"
+                            if repeated_plan_failure
+                            else "patch_plan_conformance"
+                        ),
+                        focus_files=tuple(
+                            unique_ordered(
+                                [
+                                    *plan_paths.get("required_paths", []),
+                                    *plan_paths.get("readonly_paths", []),
+                                ]
+                            )
+                        ),
                         instructions=tuple(
                             unique_ordered(
                                 [
                                     "The previous candidate failed independent patch-plan conformance and was not applied.",
                                     *[f"Missing plan obligation: {item}" for item in missing_obligations],
                                     repair_instruction,
-                                    "Implement every binding obligation, not merely one branch or one persistence call.",
+                                    (
+                                        "Discard the repeated infeasible plan; the next plan must make every operation owner writable or choose a feasible alternative."
+                                        if repeated_plan_failure
+                                        else "Implement every binding obligation, not merely one branch or one persistence call."
+                                    ),
                                 ]
                             )
                         ),
@@ -4641,10 +4703,12 @@ def command_agent(args: argparse.Namespace) -> int:
         "protocol_repair_round_budget": protocol_repair_rounds,
         "adaptive_round_budget": adaptive_round_budget,
         "root_cause_patch_round_budget": root_cause_patch_round_budget,
+        "artifact_plan_repair_round_budget": artifact_plan_repair_round_budget,
         "functional_rounds_used": functional_rounds_used,
         "protocol_rounds_used": protocol_rounds_used,
         "adaptive_rounds_used": adaptive_rounds_used,
         "root_cause_patch_rounds_used": root_cause_patch_rounds_used,
+        "artifact_plan_repair_rounds_used": artifact_plan_repair_rounds_used,
         "regression_recovery_pending": regression_recovery_pending,
         "candidate_regressions": candidate_regressions,
         "provisional_candidates": provisional_candidates,

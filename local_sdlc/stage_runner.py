@@ -64,6 +64,8 @@ def command_run_stages(args: argparse.Namespace) -> int:
         raise RunnerError("--stage-max-rounds must be at least 1")
     if args.protocol_repair_rounds < 0:
         raise RunnerError("--protocol-repair-rounds must be zero or greater")
+    if args.artifact_plan_repair_rounds < 0:
+        raise RunnerError("--artifact-plan-repair-rounds must be zero or greater")
     if args.max_stage_recoveries < 0:
         raise RunnerError("--max-stage-recoveries must be zero or greater")
     if args.max_stalled_recoveries < 0:
@@ -327,6 +329,9 @@ def command_run_stages(args: argparse.Namespace) -> int:
             stage_args.root_cause_patch_rounds = int(
                 source_manifest.get("root_cause_patch_rounds_used", 0) or 0
             ) + int(stage_args.root_cause_patch_rounds)
+            stage_args.artifact_plan_repair_rounds = int(
+                source_manifest.get("artifact_plan_repair_rounds_used", 0) or 0
+            ) + int(stage_args.artifact_plan_repair_rounds)
             stage_args.skip_pm = True
             stage_args.small_patch = bool(stage_args.small_patch or recovery_decision.small_patch)
             if recovery_decision.artifact_format:

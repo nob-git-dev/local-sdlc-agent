@@ -5465,6 +5465,12 @@ FAILED (failures=1)
         transition = self.local_sdlc.transition_for_failure("artifact_invalid")
 
         self.assertEqual(transition.next_role, "format_repair")
+
+    def test_artifact_plan_mismatch_uses_functional_not_protocol_budget(self):
+        self.assertFalse(self.local_sdlc.is_protocol_failure_type("artifact_plan_mismatch"))
+        self.assertTrue(self.local_sdlc.is_protocol_failure_type("artifact_plan_review_invalid"))
+        transition = self.local_sdlc.transition_for_failure("patch_plan_infeasible")
+        self.assertEqual(transition.next_role, "root_cause_repair")
         self.assertEqual(transition.owner, "supervisor")
 
     def test_failure_transition_routes_mixed_artifact_formats_to_format_repair(self):

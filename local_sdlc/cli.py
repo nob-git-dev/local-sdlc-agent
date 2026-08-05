@@ -750,6 +750,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_stages.add_argument("--protocol-repair-rounds", type=int, default=2, help="extra artifact-protocol repair rounds per stage")
     run_stages.add_argument("--adaptive-rounds", type=int, default=2, help="extra functional rounds allowed when executable failure counts shrink")
     run_stages.add_argument("--root-cause-patch-rounds", type=int, default=2, help="extra stage-local root-cause patch rounds after repeated same functional failures")
+    run_stages.add_argument("--artifact-plan-repair-rounds", type=int, default=2, help="extra stage-local rounds for satisfying or replacing a binding patch plan")
     run_stages.add_argument("--final-repair-rounds", type=int, default=2, help="maximum final integration repair rounds after all stages pass but final checks fail")
     run_stages.add_argument(
         "--autonomous-recovery",
@@ -976,6 +977,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--protocol-repair-rounds", type=int, default=1, help="extra artifact-protocol repair rounds that do not consume --max-rounds")
     agent.add_argument("--adaptive-rounds", type=int, default=2, help="extra functional rounds allowed when executable failure counts shrink")
     agent.add_argument("--root-cause-patch-rounds", type=int, default=1, help="extra root-cause patch rounds after repeated same functional failures")
+    agent.add_argument("--artifact-plan-repair-rounds", type=int, default=2, help="extra rounds for satisfying or replacing a binding patch plan")
     agent.add_argument("--run-dir", type=Path, default=None, help="directory for run documents")
     agent.add_argument("--control-dir", action="append", type=Path, default=[], help=argparse.SUPPRESS)
     agent.set_defaults(func=command_agent)

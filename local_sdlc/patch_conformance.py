@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from typing import Any
+from typing import Any, Sequence
 
 from .models import RunnerError
 from .utils import strip_markdown_fence, truncate_text
@@ -12,6 +13,33 @@ from .utils import strip_markdown_fence, truncate_text
 VALID_REVIEW_STATUSES = {"pass", "fail", "insufficient_context"}
 VALID_OBLIGATION_STATUSES = {"satisfied", "not_satisfied", "uncertain"}
 VALID_NEXT_ACTIONS = {"apply", "repair_artifact", "collect_context"}
+
+
+def patch_plan_signature(document: str) -> str:
+    """Return a stable identity for one binding plan."""
+
+    normalized = "\n".join(line.rstrip() for line in document.strip().splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def repeated_patch_conformance_failure(
+    reviews: Sequence[dict[str, object]],
+) -> bool:
+    """Detect two consecutive candidates failing the same plan obligations."""
+
+    if len(reviews) < 2:
+        return False
+    previous, current = reviews[-2:]
+    if str(previous.get("status")) != "fail" or str(current.get("status")) != "fail":
+        return False
+    previous_missing = tuple(_string_list(previous.get("missing_obligations")))
+    current_missing = tuple(_string_list(current.get("missing_obligations")))
+    return bool(
+        previous.get("patch_plan_signature")
+        and previous.get("patch_plan_signature") == current.get("patch_plan_signature")
+        and previous_missing
+        and previous_missing == current_missing
+    )
 
 
 def _string_list(value: Any) -> list[str]:

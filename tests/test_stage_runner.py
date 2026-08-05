@@ -863,6 +863,7 @@ class StageRunnerTests(LocalSDLCTestCase):
                     "protocol_rounds_used": 2,
                     "adaptive_rounds_used": 1,
                     "root_cause_patch_rounds_used": 1,
+                    "artifact_plan_repair_rounds_used": 1,
                 }
                 exit_code = 1
             else:
@@ -929,6 +930,10 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertEqual(calls[1].protocol_repair_rounds, calls[0].protocol_repair_rounds + 2)
         self.assertEqual(calls[1].adaptive_rounds, calls[0].adaptive_rounds + 1)
         self.assertEqual(calls[1].root_cause_patch_rounds, calls[0].root_cause_patch_rounds + 1)
+        self.assertEqual(
+            calls[1].artifact_plan_repair_rounds,
+            calls[0].artifact_plan_repair_rounds + 1,
+        )
         self.assertEqual(manifest["status"], "approved")
         self.assertTrue(manifest["autonomy"]["zero_unauthorized_external_interventions"])
         self.assertIn("root_cause_recovery", actions)

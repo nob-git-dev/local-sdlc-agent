@@ -32,7 +32,11 @@ from local_sdlc.policy_triage import (
     triage_allows_test_harness_edit,
     validate_project_policy_triage_proposition,
 )
-from local_sdlc.patch_conformance import parse_patch_conformance_review
+from local_sdlc.patch_conformance import (
+    patch_plan_signature,
+    parse_patch_conformance_review,
+    repeated_patch_conformance_failure,
+)
 from local_sdlc import repair_advice as repair_advice_facade
 from local_sdlc.repair_rules import domain as domain_repair_rules
 from local_sdlc.repair_rules import generic as generic_repair_rules
@@ -140,6 +144,32 @@ class AgentComponentTests(unittest.TestCase):
         self.assertEqual(review["status"], "fail")
         self.assertEqual(review["safe_next_action"], "repair_artifact")
         self.assertIn("index exactly matches target tree", review["missing_obligations"])
+
+    def test_repeated_patch_conformance_failure_requires_same_plan_and_obligations(self):
+        signature = patch_plan_signature("PATCH_PLAN\n- required_path: app.py")
+        reviews = [
+            {
+                "status": "fail",
+                "patch_plan_signature": signature,
+                "missing_obligations": ["move validation to its owner"],
+            },
+            {
+                "status": "fail",
+                "patch_plan_signature": signature,
+                "missing_obligations": ["move validation to its owner"],
+            },
+        ]
+
+        self.assertTrue(repeated_patch_conformance_failure(reviews))
+        reviews[-1]["patch_plan_signature"] = patch_plan_signature("another plan")
+        self.assertFalse(repeated_patch_conformance_failure(reviews))
+        reviews[-1] = {
+            **reviews[0],
+            "status": "pass",
+            "missing_obligations": [],
+        }
+        reviews.append(dict(reviews[0]))
+        self.assertFalse(repeated_patch_conformance_failure(reviews))
 
     def test_patch_conformance_review_accepts_evidenced_complete_candidate(self):
         review = parse_patch_conformance_review(

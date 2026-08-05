@@ -259,6 +259,16 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
             "Keep the binding patch plan unchanged and return one replacement artifact.",
         ),
     ),
+    "patch_plan_infeasible": FailureTransition(
+        "patch_plan_infeasible",
+        "root_cause_repair",
+        "discard_infeasible_plan_and_replan_writable_scope",
+        "supervisor",
+        (
+            "Two candidates failed the same obligations under the same binding plan.",
+            "Discard that plan and align every behavioral owner with a writable required path.",
+        ),
+    ),
     "candidate_no_effect": FailureTransition(
         "candidate_no_effect",
         "root_cause_repair",
@@ -638,6 +648,8 @@ def transition_for_failure(failure_type: str | None) -> FailureTransition:
 
 def is_protocol_failure_type(failure_type: str | None) -> bool:
     if not failure_type:
+        return False
+    if failure_type == "artifact_plan_mismatch":
         return False
     if failure_type.startswith(("format_repair_", "semantic_repair_", "artifact_plan_", "stream_")):
         return True
