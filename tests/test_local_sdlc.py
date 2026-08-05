@@ -4791,6 +4791,8 @@ FAILED (failures=1)
         self.assertIn("Mandatory generated-test counterexample procedure", instruction)
         self.assertIn("distinct fresh constructor expressions", instruction)
         self.assertIn("never describe those calls as operating on the same instance", instruction)
+        self.assertIn('"receiver_scope_analysis"', instruction)
+        self.assertIn("cross-instance persistence", instruction)
         self.assertIn("Derive the state selected by the action target", instruction)
         self.assertIn("prior repair advice saying tests are readonly is not evidence", instruction)
 

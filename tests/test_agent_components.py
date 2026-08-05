@@ -28,6 +28,7 @@ from local_sdlc.policy_triage import (
     judge_ownership_classification,
     patch_plan_requests_generated_test_oracle_triage,
     project_policy_triage_enabled,
+    receiver_identity_facts_from_evidence,
     triage_allows_test_harness_edit,
     validate_project_policy_triage_proposition,
 )
@@ -255,6 +256,60 @@ def test_resume():
 
         self.assertIn("Mechanical Receiver Identity Facts", evidence)
         self.assertIn("these receivers are not the same instance", evidence)
+        self.assertEqual(len(receiver_identity_facts_from_evidence(evidence)), 1)
+
+    def test_generated_oracle_gate_corrects_unsupported_cross_instance_continuity(self):
+        fact = (
+            "tests/test_engine.py:test_resume calls Engine(...).run(...) on 2 distinct "
+            "fresh constructor expressions at lines 4, 5; these receivers are not the same instance."
+        )
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "product_bug",
+                "selected_hypothesis": "H_product",
+                "product_violation_evidence": ["a fresh engine should resume the prior run"],
+                "test_contradiction_evidence": [],
+                "receiver_scope_analysis": {
+                    "mechanical_identity": "distinct_fresh",
+                    "requires_cross_instance_continuity": True,
+                    "continuity_witness": "none",
+                    "witness_evidence": [],
+                },
+                "safe_next_action": "root_cause_analysis",
+                "editable_paths": ["engine.py"],
+            },
+            receiver_identity_facts=[fact],
+            generated_test_paths=["tests/test_engine.py"],
+        )
+
+        self.assertEqual(gated["case_type"], "test_harness")
+        self.assertEqual(gated["selected_hypothesis"], "H_test")
+        self.assertEqual(gated["safe_next_action"], "edit_test_harness")
+        self.assertEqual(gated["editable_paths"], ["tests/test_engine.py"])
+        self.assertEqual(gated["proposition_gate"]["status"], "corrected")
+
+    def test_generated_oracle_gate_accepts_explicit_cross_instance_persistence(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "product_bug",
+                "selected_hypothesis": "H_product",
+                "product_violation_evidence": ["SPEC requires both instances to load state.db"],
+                "test_contradiction_evidence": [],
+                "receiver_scope_analysis": {
+                    "mechanical_identity": "distinct_fresh",
+                    "requires_cross_instance_continuity": True,
+                    "continuity_witness": "spec_cross_instance_contract",
+                    "witness_evidence": ["SPEC: new instances load the supplied state path"],
+                },
+            },
+            receiver_identity_facts=["distinct fresh constructor expressions; receivers are not the same instance"],
+            generated_test_paths=["tests/test_engine.py"],
+        )
+
+        self.assertEqual(gated["case_type"], "product_bug")
+        self.assertEqual(gated["proposition_gate"]["status"], "pass")
 
     def test_generated_oracle_proposition_gate_rejects_unsupported_product_vote(self):
         gated = validate_project_policy_triage_proposition(

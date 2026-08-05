@@ -163,8 +163,23 @@ def generated_test_oracle_evidence_document(
     return "\n".join(sections)
 
 
+def receiver_identity_facts_from_evidence(evidence_doc: str) -> list[str]:
+    """Recover only the machine-authored receiver facts from an evidence document."""
+
+    return [
+        line[2:].strip()
+        for line in evidence_doc.splitlines()
+        if line.startswith("- ")
+        and "distinct fresh constructor expressions" in line
+        and "receivers are not the same instance" in line
+    ]
+
+
 def validate_project_policy_triage_proposition(
     record: dict[str, object],
+    *,
+    receiver_identity_facts: Sequence[str] = (),
+    generated_test_paths: Sequence[str] = (),
 ) -> dict[str, object]:
     """Fail closed when a generated-oracle verdict lacks positive evidence."""
     normalized = dict(record)
@@ -178,12 +193,57 @@ def validate_project_policy_triage_proposition(
     test_items = [item for item in test_evidence if isinstance(item, str) and item.strip()] if isinstance(test_evidence, list) else []
     valid = True
     reason = ""
+    distinct_fresh_receivers = bool(receiver_identity_facts)
+    receiver_scope = normalized.get("receiver_scope_analysis", {})
+    receiver_scope = receiver_scope if isinstance(receiver_scope, dict) else {}
+    mechanical_identity = str(receiver_scope.get("mechanical_identity", ""))
+    requires_cross_instance = receiver_scope.get("requires_cross_instance_continuity")
+    continuity_witness = str(receiver_scope.get("continuity_witness", ""))
+    witness_evidence = receiver_scope.get("witness_evidence", [])
+    witness_items = [
+        item for item in witness_evidence if isinstance(item, str) and item.strip()
+    ] if isinstance(witness_evidence, list) else []
     if case_type == "product_bug" and (selected != "H_product" or not product_items):
         valid = False
         reason = "product_bug requires selected_hypothesis=H_product and positive product_violation_evidence"
     elif case_type == "test_harness" and (selected != "H_test" or not test_items):
         valid = False
         reason = "test_harness requires selected_hypothesis=H_test and positive test_contradiction_evidence"
+    elif distinct_fresh_receivers and mechanical_identity != "distinct_fresh":
+        valid = False
+        reason = "receiver_scope_analysis must acknowledge mechanically distinct fresh receivers"
+    elif (
+        case_type == "product_bug"
+        and distinct_fresh_receivers
+        and requires_cross_instance is True
+        and (
+            continuity_witness not in {"explicit_shared_persistence", "spec_cross_instance_contract"}
+            or not witness_items
+        )
+    ):
+        test_paths = unique_ordered(
+            path for path in generated_test_paths if path.startswith("tests/")
+        )
+        contradiction = (
+            "The generated test requires state continuity across mechanically distinct fresh "
+            "receivers without an explicit shared-persistence or cross-instance SPEC witness."
+        )
+        normalized.update(
+            {
+                "case_type": "test_harness",
+                "confidence": "high",
+                "selected_hypothesis": "H_test",
+                "test_contradiction_evidence": [contradiction, *receiver_identity_facts],
+                "safe_next_action": "edit_test_harness",
+                "editable_paths": test_paths,
+                "proposition_gate": {
+                    "status": "corrected",
+                    "reason": "unsupported_cross_instance_continuity",
+                },
+                "rationale": contradiction,
+            }
+        )
+        return normalized
     if valid:
         normalized["proposition_gate"] = {"status": "pass"}
         return normalized

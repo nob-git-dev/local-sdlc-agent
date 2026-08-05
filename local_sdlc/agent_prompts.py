@@ -29,6 +29,7 @@ PATCH_CONFORMANCE_OUTPUT_CONTRACT = (
 
 PROJECT_POLICY_TRIAGE_OUTPUT_CONTRACT = (
     "Return ONLY one JSON object matching the project-policy triage schema. "
+    "receiver_scope_analysis is mandatory and must agree with Mechanical Receiver Identity Facts. "
     "No markdown fences. No prose. No code artifacts."
 )
 
@@ -322,6 +323,10 @@ def project_policy_triage_instruction(
                never describe those calls as operating on the same instance.
                Continuity across those calls requires persistence explicitly
                supplied by SPEC.md or the test setup; do not invent it.
+               The default scope of "call this method again" is another call
+               on the same receiver. It does not impose continuity on a newly
+               constructed receiver unless SPEC.md explicitly defines
+               cross-instance persistence.
             3. Derive the relevant state immediately before the action under test.
             4. Derive the state selected by the action target, revision, key, or input.
             5. Compare the assertion with that derived state and with SPEC.md.
@@ -399,6 +404,12 @@ def project_policy_triage_instruction(
           "selected_hypothesis": "H_product|H_test|H_spec_conflict|undetermined",
           "product_violation_evidence": ["observed product behavior that contradicts one cited SPEC proposition"],
           "test_contradiction_evidence": ["generated setup/action/assertion fact that contradicts SPEC or its own target state"],
+          "receiver_scope_analysis": {{
+            "mechanical_identity": "same_receiver|distinct_fresh|not_applicable",
+            "requires_cross_instance_continuity": true,
+            "continuity_witness": "explicit_shared_persistence|spec_cross_instance_contract|same_receiver|none",
+            "witness_evidence": ["exact SPEC or test-setup fact; empty when continuity_witness is none"]
+          }},
           "project_policy_basis": ["SPEC.md or document evidence line"],
           "safe_next_action": "format_repair|root_cause_analysis|repair_artifact|edit_test_harness|reject|ask_user",
           "editable_paths": ["project-relative paths that may be writable"],
@@ -434,6 +445,10 @@ def project_policy_arbitration_instruction(
         a cited SPEC proposition. Select test_harness only when a machine-owned
         generated test's setup/action/assertion contradicts SPEC.md or its own
         selected target state. Otherwise select insufficient_context and reject.
+        A repeated method-call contract is receiver-local by default. Distinct
+        fresh receivers do not share prior instance state unless the evidence
+        identifies an explicit shared-persistence channel or SPEC.md states a
+        cross-instance contract.
 
         Primary evidence:
         {evidence_doc}
@@ -446,6 +461,12 @@ def project_policy_arbitration_instruction(
           "selected_hypothesis": "H_product|H_test|H_spec_conflict|undetermined",
           "product_violation_evidence": ["positive product counterexample, or empty"],
           "test_contradiction_evidence": ["positive generated-test counterexample, or empty"],
+          "receiver_scope_analysis": {{
+            "mechanical_identity": "same_receiver|distinct_fresh|not_applicable",
+            "requires_cross_instance_continuity": true,
+            "continuity_witness": "explicit_shared_persistence|spec_cross_instance_contract|same_receiver|none",
+            "witness_evidence": ["exact SPEC or test-setup fact; empty when continuity_witness is none"]
+          }},
           "project_policy_basis": ["specific SPEC/setup/action/assertion fact"],
           "safe_next_action": "root_cause_analysis|edit_test_harness|reject|ask_user",
           "editable_paths": ["project-relative paths"],

@@ -102,6 +102,7 @@ Instead, it must define how new propositions are admitted.
 | P31 | A no-effect candidate does not by itself falsify its binding plan. | The candidate is rejected before apply, the plan remains binding, and the next role regenerates only the artifact; when obligations span multiple source locations it is told to use one unified diff rather than repeat an identical search/replace. |
 | P32 | A new failure in a stage-owned generated test is ownership-ambiguous on first observation. | Each unseen concrete failure signature is sent immediately to independent project-policy triage; test edits remain impossible unless the verdict identifies positive test-contradiction evidence and the mechanical path gate confirms an exact stage-owned test path. |
 | P33 | An LLM ownership verdict may not invent object identity across test actions. | Python test AST facts identify repeated direct constructor-method calls as distinct fresh receivers; triage must treat those facts as authoritative and may infer cross-call continuity only from explicit specification or setup persistence. |
+| P34 | Cross-instance state continuity is not an implicit method contract. | When machine evidence shows distinct fresh receivers, a product-bug verdict that requires continuity must cite an explicit shared-persistence or cross-instance specification witness. Without that witness, the proposition gate reclassifies only the stage-owned generated test as the repair owner. |
 
 ## Progress Vector
 

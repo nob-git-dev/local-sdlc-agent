@@ -39,6 +39,7 @@ from .policy_triage import (
     triage_allows_test_harness_edit,
     triage_string_list,
     validate_project_policy_triage_proposition,
+    receiver_identity_facts_from_evidence,
 )
 from .patch_conformance import (
     failed_patch_conformance_review,
@@ -1188,6 +1189,7 @@ def command_agent(args: argparse.Namespace) -> int:
         round_index: int,
         trigger: str,
         triage_path: Path,
+        evidence_doc: str = "",
     ) -> dict[str, object]:
         raw = strip_markdown_fence(triage_doc.strip())
         try:
@@ -1199,7 +1201,17 @@ def command_agent(args: argparse.Namespace) -> int:
         parsed.setdefault("trigger", trigger)
         parsed["document"] = display_path(triage_path, original_project)
         parsed["call_function"] = "project_policy_triage"
-        parsed = validate_project_policy_triage_proposition(parsed)
+        identity_facts = receiver_identity_facts_from_evidence(evidence_doc)
+        identity_fact_paths = unique_ordered(
+            fact.split(":", 1)[0]
+            for fact in identity_facts
+            if ":" in fact and fact.split(":", 1)[0].startswith("tests/")
+        )
+        parsed = validate_project_policy_triage_proposition(
+            parsed,
+            receiver_identity_facts=identity_facts,
+            generated_test_paths=identity_fact_paths,
+        )
         return enforce_test_harness_triage_gate(
             parsed,
             unique_ordered([*stage_generated_test_paths, *stage_scope_test_paths]),
@@ -1243,7 +1255,13 @@ def command_agent(args: argparse.Namespace) -> int:
             triage_path = write_run_document(run_dir, f"05-r{round_index:02d}-project-policy-triage.json", triage_doc)
             written.append(triage_path)
             documents.append((f"Project policy triage round {round_index}", triage_doc))
-            record = project_policy_triage_record(triage_doc, round_index, trigger, triage_path)
+            record = project_policy_triage_record(
+                triage_doc,
+                round_index,
+                trigger,
+                triage_path,
+                evidence_doc,
+            )
             record["call_function"] = "project_policy_triage.deterministic"
             project_policy_triages.append(record)
             write_partial_manifest("project_policy_triage_written", {"current_round": round_index})
@@ -1272,7 +1290,13 @@ def command_agent(args: argparse.Namespace) -> int:
         triage_path = write_run_document(run_dir, f"05-r{round_index:02d}-project-policy-triage.json", triage_doc)
         written.append(triage_path)
         documents.append((f"Project policy triage round {round_index}", triage_doc))
-        record = project_policy_triage_record(triage_doc, round_index, trigger, triage_path)
+        record = project_policy_triage_record(
+            triage_doc,
+            round_index,
+            trigger,
+            triage_path,
+            evidence_doc,
+        )
         prior_judge_vote = judge_ownership_classification(latest_judge_review_document())
         primary_vote = str(record.get("case_type", "insufficient_context"))
         if (
@@ -1313,6 +1337,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     round_index,
                     trigger,
                     arbitration_path,
+                    evidence_doc,
                 )
                 arbitrated["call_function"] = "policy_arbitration"
                 arbitrated["vote_conflict"] = {
