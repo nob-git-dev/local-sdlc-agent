@@ -24,6 +24,7 @@ from local_sdlc.models import RepairAdvice, SearchReplaceArtifact
 from local_sdlc.policy_triage import (
     apply_project_policy_triage_to_advice,
     generated_test_oracle_evidence_document,
+    generated_test_receiver_identity_facts,
     judge_ownership_classification,
     patch_plan_requests_generated_test_oracle_triage,
     project_policy_triage_enabled,
@@ -220,6 +221,40 @@ class AgentComponentTests(unittest.TestCase):
         self.assertIn("AssertionError: actual != expected", evidence)
         self.assertIn("OWNERSHIP: test_harness", evidence)
         self.assertIn("Repair advice and prior failure-analysis conclusions are intentionally excluded", evidence)
+
+    def test_generated_test_receiver_identity_facts_distinguish_fresh_instances(self):
+        source = """
+def test_resume():
+    first = Engine(tasks, handlers).run(max_tasks=1)
+    second = Engine(tasks, handlers).run(max_tasks=1)
+    assert second.completed
+"""
+
+        facts = generated_test_receiver_identity_facts(source, "tests/test_engine.py")
+
+        self.assertEqual(len(facts), 1)
+        self.assertIn("2 distinct fresh constructor expressions", facts[0])
+        self.assertIn("these receivers are not the same instance", facts[0])
+
+    def test_generated_test_oracle_evidence_includes_receiver_identity_facts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "tests").mkdir()
+            (project / "tests" / "test_engine.py").write_text(
+                "def test_resume():\n"
+                "    first = Engine(tasks, handlers).run(max_tasks=1)\n"
+                "    second = Engine(tasks, handlers).run(max_tasks=1)\n",
+                encoding="utf-8",
+            )
+            evidence = generated_test_oracle_evidence_document(
+                project,
+                "# SPEC\nNo implicit persistence.\n",
+                ["tests/test_engine.py"],
+                [("Command", "AssertionError")],
+            )
+
+        self.assertIn("Mechanical Receiver Identity Facts", evidence)
+        self.assertIn("these receivers are not the same instance", evidence)
 
     def test_generated_oracle_proposition_gate_rejects_unsupported_product_vote(self):
         gated = validate_project_policy_triage_proposition(

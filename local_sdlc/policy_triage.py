@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 from typing import Sequence
@@ -53,6 +54,48 @@ def judge_ownership_classification(document: str) -> str:
     return value if value in JUDGE_OWNERSHIP_VALUES else "not_applicable"
 
 
+def generated_test_receiver_identity_facts(source: str, path: str) -> list[str]:
+    """Extract only mechanically certain fresh-receiver facts from Python tests."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    facts: list[str] = []
+    for function in (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test")
+    ):
+        fresh_calls: dict[tuple[str, str], list[int]] = {}
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            receiver = node.func.value
+            if not isinstance(receiver, ast.Call):
+                continue
+            constructor = receiver.func
+            if isinstance(constructor, ast.Name):
+                constructor_name = constructor.id
+            elif isinstance(constructor, ast.Attribute):
+                constructor_name = constructor.attr
+            else:
+                continue
+            if not constructor_name[:1].isupper():
+                continue
+            fresh_calls.setdefault((constructor_name, node.func.attr), []).append(node.lineno)
+        for (constructor_name, method_name), lines in sorted(fresh_calls.items()):
+            if len(lines) < 2:
+                continue
+            facts.append(
+                f"{path}:{function.name} calls {constructor_name}(...).{method_name}(...) "
+                f"on {len(lines)} distinct fresh constructor expressions at lines "
+                f"{', '.join(str(line) for line in lines)}; these receivers are not the same instance."
+            )
+    return facts
+
+
 def generated_test_oracle_evidence_document(
     project: Path,
     spec: str,
@@ -92,8 +135,14 @@ def generated_test_oracle_evidence_document(
             source = source_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             source = "(unavailable)"
+        identity_facts = generated_test_receiver_identity_facts(source, path)
         sections.extend(
             [
+                "",
+                f"## Mechanical Receiver Identity Facts: {path}",
+                "",
+                *(f"- {fact}" for fact in identity_facts),
+                *(["- (none)"] if not identity_facts else []),
                 "",
                 f"## Generated Test Source: {path}",
                 "",

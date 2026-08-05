@@ -317,14 +317,19 @@ def project_policy_triage_instruction(
             """
             Mandatory generated-test counterexample procedure:
             1. Read the complete failing test setup and action sequence from the supplied file context.
-            2. Derive the relevant state immediately before the action under test.
-            3. Derive the state selected by the action target, revision, key, or input.
-            4. Compare the assertion with that derived state and with SPEC.md.
-            5. Try to falsify both hypotheses independently:
+            2. Treat Mechanical Receiver Identity Facts as authoritative. If
+               they say two calls use distinct fresh constructor expressions,
+               never describe those calls as operating on the same instance.
+               Continuity across those calls requires persistence explicitly
+               supplied by SPEC.md or the test setup; do not invent it.
+            3. Derive the relevant state immediately before the action under test.
+            4. Derive the state selected by the action target, revision, key, or input.
+            5. Compare the assertion with that derived state and with SPEC.md.
+            6. Try to falsify both hypotheses independently:
                H_product = product behavior violates a valid test proposition.
                H_test = generated test setup or assertion contradicts its own name, target state, SPEC.md, or an approved API.
-            6. Cite the concrete setup/action/assertion facts in project_policy_basis. A prior repair advice saying tests are readonly is not evidence for H_product; ownership is the question being reviewed.
-            7. Fill product_violation_evidence and test_contradiction_evidence
+            7. Cite the concrete setup/action/assertion facts in project_policy_basis. A prior repair advice saying tests are readonly is not evidence for H_product; ownership is the question being reviewed.
+            8. Fill product_violation_evidence and test_contradiction_evidence
                independently before selecting either hypothesis. An exception
                location proves where execution stopped, not which proposition
                is correct.

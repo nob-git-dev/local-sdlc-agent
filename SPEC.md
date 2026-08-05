@@ -1522,6 +1522,7 @@ AutonomyPass :=
 - [x] binding plan 配下の identical search/replace は候補だけを拒否し、plan を保持した `artifact_plan_repair` へ進む。`no_effect(candidate)` だけから `non_actionable(plan)` を推論しない。
 - [x] planner は独立した不具合を一つの `and` 計画へ束ねず、一つの不変条件に複数の source span が必要な場合は `unified_diff` を選ぶ。
 - [x] stage-owned generated test の未見 failure signature は初回失敗時に independent project-policy triage へ送る。同一失敗の再現を待たず、test edit は positive contradiction evidence と exact stage-owned path gate の両方がある場合だけ許可する。
+- [x] generated Python test の ownership triage には AST 由来の receiver identity facts を付与する。直接の `Class(...).method()` 呼出し同士を同一 instance と解釈せず、cross-call continuity は仕様またはsetupに明示された永続化だけを根拠にする。
 - [x] typed receiver が mechanically absent API を呼び、owner または同一 transaction に定義がない artifact は apply 前に拒否される。
 - [x] periodic multi-line runaway は `stream_artifact_too_large` より先に `stream_repeated_text_runaway` として停止する。
 - [x] product edit不能なgenerated-test oracle conflictは、明示的planner escalation、独立triage、stage-owned path intersectionをすべて通過した場合だけtest repairへ進む。
