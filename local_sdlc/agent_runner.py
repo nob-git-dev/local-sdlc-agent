@@ -1978,13 +1978,13 @@ def command_agent(args: argparse.Namespace) -> int:
         write_partial_manifest("replayed_regressing_candidate", {"current_round": round_index})
         return True
 
-    def reject_non_actionable_patch_plan(
+    def reject_no_effect_candidate_keep_patch_plan(
         round_index: int,
         patch_plan_doc: str,
         evidence_type: str,
         evidence: str,
     ) -> None:
-        """Discard a binding plan after deterministic evidence proves it cannot change source."""
+        """Reject a no-effect candidate while retaining its still-actionable plan."""
 
         nonlocal final_verdict, final_failure_type, pending_patch_plan_doc
         nonlocal root_cause_patch_pending
@@ -1996,73 +1996,70 @@ def command_agent(args: argparse.Namespace) -> int:
         required_paths = unique_ordered(
             str(path) for path in plan_paths.get("required_paths", []) if str(path)
         )
-        rejection_record: dict[str, object] = {
-            "round": round_index,
-            "failure_type": "root_cause_plan_non_actionable",
-            "evidence_type": evidence_type,
-            "candidate_applied": False,
-            "required_paths": required_paths,
-            "patch_plan": patch_plan_doc,
-        }
-        rejected_patch_plans.append(rejection_record)
-        pending_patch_plan_doc = ""
-        root_cause_patch_pending = True
+        pending_patch_plan_doc = patch_plan_doc
+        root_cause_patch_pending = False
         final_verdict = "patch_failed"
-        final_failure_type = "root_cause_plan_non_actionable"
+        final_failure_type = "artifact_plan_mismatch"
         rejection_doc = textwrap.dedent(
             f"""
-            ## Root Cause Plan Rejection
+            ## No-Effect Candidate Rejection
 
             - status: FAIL
-            - failure_type: root_cause_plan_non_actionable
+            - failure_type: artifact_plan_mismatch
             - evidence_type: {evidence_type}
             - candidate_applied: false
+            - binding_plan_retained: true
             - required_paths: {", ".join(required_paths) or "(none)"}
 
-            Rejected binding plan:
+            Retained binding plan:
             {patch_plan_doc}
 
-            Deterministic rejection evidence:
+            Deterministic candidate rejection evidence:
             {evidence}
 
             Proposition:
-            - Let P be the binding plan and A its generated candidate. If A is
-              mechanically a no-op against the visible source, P has supplied
-              no executable action for the current state.
+            - Let P be the binding plan and A its generated candidate.
+              no_effect(A) does not imply non_actionable(P). Reject A without
+              discarding P unless independent evidence contradicts P itself.
 
             Runner action:
-            - Discard P rather than treating A as a formatting problem.
+            - Reject A before application and executable tests.
+            - Keep P as the binding proposition for the next artifact writer.
             - Preserve the current product baseline and failing command evidence.
-            - Require a fresh root-cause analysis that explains every current
-              failing observation before creating a replacement plan.
+            - Do not repeat the identical SEARCH/REPLACE block.
+            - If one contiguous SEARCH/REPLACE cannot implement every binding
+              obligation, return one minimal unified diff for the same product
+              file instead of restarting root-cause analysis.
             """
         ).strip()
         path = write_run_document(
             run_dir,
-            f"03-r{round_index:02d}-root-cause-plan-rejected.md",
+            f"03-r{round_index:02d}-no-effect-candidate-rejected.md",
             rejection_doc,
         )
         written.append(path)
-        documents.append((f"Root cause plan rejection round {round_index}", rejection_doc))
+        documents.append((f"No-effect candidate rejection round {round_index}", rejection_doc))
         remember_repair_advice(
             RepairAdvice(
-                strategy="root_cause_after_non_actionable_plan",
+                strategy="patch_plan_conformance",
                 focus_files=tuple(required_paths),
                 instructions=(
-                    "The previous binding plan was discarded because its generated candidate was mechanically a no-op.",
-                    "Do not restate the rejected plan or its causal claim without new contradictory executable evidence.",
-                    "Choose one different invariant that explains every current failing observation.",
+                    "The previous candidate was mechanically a no-op and was not applied.",
+                    "Keep the binding patch plan and generate a replacement artifact.",
+                    "Do not repeat the identical SEARCH/REPLACE block.",
+                    "Use one minimal unified diff when the binding obligations require coordinated edits in multiple source spans.",
                 ),
                 evidence=(
-                    f"rejected_plan_round={round_index}",
+                    f"rejected_candidate_round={round_index}",
                     f"evidence_type={evidence_type}",
                     "candidate_applied=false",
+                    "binding_plan_retained=true",
                 ),
             ),
             preserve_previous=True,
         )
         record_transition(final_failure_type, round_index, rejection_doc)
-        write_partial_manifest("root_cause_plan_rejected", {"current_round": round_index})
+        write_partial_manifest("artifact_plan_candidate_rejected", {"current_round": round_index})
 
     for round_index in range(start_round, final_round + 1):
         guard_action(
@@ -3344,7 +3341,7 @@ def command_agent(args: argparse.Namespace) -> int:
                         latest_stream_status["status"] = "aborted"
                         latest_stream_status["abort_reason"] = exc.reason
                         latest_stream_status["abort_code"] = exc.code
-                    reject_non_actionable_patch_plan(
+                    reject_no_effect_candidate_keep_patch_plan(
                         round_index,
                         active_patch_plan_doc,
                         exc.code,
@@ -3556,7 +3553,7 @@ def command_agent(args: argparse.Namespace) -> int:
             if active_patch_plan_doc and any(
                 finding.code == "identical_search_replace" for finding in blocking_lint
             ):
-                reject_non_actionable_patch_plan(
+                reject_no_effect_candidate_keep_patch_plan(
                     round_index,
                     active_patch_plan_doc,
                     "identical_search_replace",

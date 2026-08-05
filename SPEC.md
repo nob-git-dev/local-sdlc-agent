@@ -1519,6 +1519,8 @@ AutonomyPass :=
 - [x] root-cause analysis は document window 外の最新 executable failure evidence を保持する。
 - [x] 既に宣言済みだが切り捨てられた context path は先頭へ再配置され、coder ではなく root-cause analysis が再実行される。
 - [x] identical search/replace は併存する lint finding より zero-effect 分類を優先する。
+- [x] binding plan 配下の identical search/replace は候補だけを拒否し、plan を保持した `artifact_plan_repair` へ進む。`no_effect(candidate)` だけから `non_actionable(plan)` を推論しない。
+- [x] planner は独立した不具合を一つの `and` 計画へ束ねず、一つの不変条件に複数の source span が必要な場合は `unified_diff` を選ぶ。
 - [x] typed receiver が mechanically absent API を呼び、owner または同一 transaction に定義がない artifact は apply 前に拒否される。
 - [x] periodic multi-line runaway は `stream_artifact_too_large` より先に `stream_repeated_text_runaway` として停止する。
 - [x] product edit不能なgenerated-test oracle conflictは、明示的planner escalation、独立triage、stage-owned path intersectionをすべて通過した場合だけtest repairへ進む。
@@ -1590,6 +1592,10 @@ Complete :=
   とする。
 - conformance failure の候補は apply 前に破棄し、binding plan を変えずに
   `artifact_plan_repair` へ遷移する。LLM reviewer 自身には適用権限を与えない。
+- binding plan 配下で候補が機械的 no-op になった場合も、no-op は候補の証拠であって
+  plan 偽証ではない。候補だけを破棄し、plan 自体への独立した反証がない限り保持する。
+  一つの search/replace で全義務を満たせない場合、同一 product file の最小 unified diff
+  として再生成する。
 - `--resume-worktree-path` は manifest がなくても、宣言済み writable path のうち本体と
   byte差分があるものだけを baseline changed paths として継承する。最終 gate 合格前には
   copy back しない。

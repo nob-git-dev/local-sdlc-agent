@@ -7850,7 +7850,7 @@ Required fixes:
         self.assertEqual(artifact_writer_calls, 2)
         self.assertEqual(calls.count(("judge", "patch_conformance")), 2)
 
-    def test_agent_discards_non_actionable_plan_and_runs_fresh_root_cause(self):
+    def test_agent_retains_actionable_plan_after_no_effect_stream_candidate(self):
         calls = []
         root_cause_calls = 0
         patch_plan_calls = 0
@@ -7893,33 +7893,30 @@ Required fixes:
                     )
                 if call_function == "root_cause_analysis":
                     root_cause_calls += 1
-                    cause = "VALUE already has the required value" if root_cause_calls == 1 else "VALUE must be new"
-                    rule = "leave VALUE as mid" if root_cause_calls == 1 else "replace VALUE mid with VALUE new"
                     return textwrap.dedent(
-                        f"""
+                        """
                         ROOT_CAUSE_REPORT
                         - repeated_failure_signature: value not new
                         - failing_observation: command requires VALUE new
                         - rejected_hypotheses:
                           - old value is sufficient
-                        - chosen_root_cause: {cause}
+                        - chosen_root_cause: VALUE must be new
                         - patch_target: app.py VALUE assignment
-                        - patch_rule: {rule}
+                        - patch_rule: replace VALUE mid with VALUE new
                         - stop_rule: stop if app.py is unavailable
                         """
                     ).strip()
                 if call_function == "patch_planner":
                     patch_plan_calls += 1
-                    goal = "leave VALUE as mid" if patch_plan_calls == 1 else "replace VALUE mid with VALUE new"
                     return textwrap.dedent(
-                        f"""
+                        """
                         PATCH_PLAN
-                        - proposition: If VALUE controls the check, {goal}
+                        - proposition: If VALUE controls the check, replace VALUE mid with VALUE new
                         - required_path: app.py
                         - readonly_paths: (none)
                         - forbidden_paths: tests/test_app.py
                         - patch_type: search_replace
-                        - minimal_patch_goal: {goal}
+                        - minimal_patch_goal: replace VALUE mid with VALUE new
                         - stop_rule: stop if the assignment is unavailable
                         """
                     ).strip()
@@ -8047,13 +8044,12 @@ Required fixes:
 
         self.assertEqual(result, 0)
         self.assertEqual(source, 'VALUE = "new"\n')
-        self.assertEqual(root_cause_calls, 2)
-        self.assertEqual(patch_plan_calls, 2)
+        self.assertEqual(root_cause_calls, 1)
+        self.assertEqual(patch_plan_calls, 1)
         self.assertEqual(artifact_writer_calls, 2)
-        self.assertEqual(len(manifest["rejected_patch_plans"]), 1)
-        self.assertFalse(manifest["rejected_patch_plans"][0]["candidate_applied"])
+        self.assertEqual(manifest["rejected_patch_plans"], [])
         self.assertIn(
-            "root_cause_plan_non_actionable",
+            "artifact_plan_mismatch",
             {item["failure_type"] for item in manifest["state_transitions"]},
         )
         self.assertEqual(calls.count(("judge", "patch_conformance")), 1)

@@ -210,6 +210,16 @@ def patch_planner_instruction(brief: str, role_label: str, analysis_doc: str) ->
         Validity rule:
         The plan is valid only if required_path is not under tests/ and the
         minimal_patch_goal can be implemented as one atomic product-code edit.
+        Select one independent defect or behavioral invariant per plan. When
+        the analysis names multiple independent defects, do not join them with
+        "and"; choose the one whose repair should produce the next observable
+        improvement and leave the others for later evidence-driven rounds.
+        Use patch_type=search_replace only when the complete obligation fits in
+        one contiguous source span, including any required import. Use
+        patch_type=unified_diff when one invariant requires coordinated edits
+        in multiple spans of the same product file. A no-op candidate is an
+        artifact failure and does not by itself prove that an otherwise
+        actionable binding plan is false.
         If that is impossible, use patch_type=missing_context. Use
         escalation=generated_test_oracle_triage only when the executable
         evidence identifies a machine-owned generated test that may contradict
