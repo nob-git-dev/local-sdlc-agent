@@ -127,6 +127,66 @@ class LocalSDLCTest(LocalSDLCTestCase):
         self.assertFalse(self.local_sdlc.candidate_behavior_regressed(3, 5, []))
         self.assertFalse(self.local_sdlc.candidate_behavior_regressed(None, 5, ["app.py"]))
 
+    def test_candidate_regression_allows_collection_blocker_to_expand_into_real_tests(self):
+        import_error = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests",
+            1,
+            "",
+            "ERROR: test_worker (unittest.loader._FailedTest.test_worker)\n"
+            "ImportError: Failed to import test module: test_worker\n"
+            "Ran 1 test\nFAILED (errors=1)\n",
+            0.01,
+        )
+        executed = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests",
+            1,
+            "",
+            "Ran 12 tests\nFAILED (failures=3)\n",
+            0.01,
+        )
+        previous_docs = [("before", import_error)]
+        current_docs = [("after", executed)]
+
+        self.assertFalse(
+            self.local_sdlc.candidate_behavior_regressed(
+                self.local_sdlc.command_failure_score(previous_docs),
+                self.local_sdlc.command_failure_score(current_docs),
+                ["pkg/__init__.py"],
+                previous_profile=self.local_sdlc.command_failure_profile(previous_docs),
+                current_profile=self.local_sdlc.command_failure_profile(current_docs),
+            )
+        )
+
+    def test_candidate_regression_detects_collection_blocker_and_coverage_collapse(self):
+        executed = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests",
+            1,
+            "",
+            "Ran 12 tests\nFAILED (failures=3)\n",
+            0.01,
+        )
+        import_error = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests",
+            1,
+            "",
+            "ERROR: test_worker (unittest.loader._FailedTest.test_worker)\n"
+            "ImportError: Failed to import test module: test_worker\n"
+            "Ran 1 test\nFAILED (errors=1)\n",
+            0.01,
+        )
+        previous_docs = [("before", executed)]
+        current_docs = [("after", import_error)]
+
+        self.assertTrue(
+            self.local_sdlc.candidate_behavior_regressed(
+                self.local_sdlc.command_failure_score(previous_docs),
+                self.local_sdlc.command_failure_score(current_docs),
+                ["pkg/__init__.py"],
+                previous_profile=self.local_sdlc.command_failure_profile(previous_docs),
+                current_profile=self.local_sdlc.command_failure_profile(current_docs),
+            )
+        )
+
     def test_candidate_test_harness_bootstrap_progress_requires_isolated_missing_test(self):
         self.assertTrue(
             self.local_sdlc.candidate_test_harness_bootstrap_progress(
@@ -7217,6 +7277,89 @@ Required fixes:
                 ("coder", "repair_artifact"),
             ],
         )
+
+    def test_agent_retains_candidate_that_replaces_import_blocker_with_executed_failures(self):
+        outputs = [
+            "BEGIN_FILE: pkg/__init__.py\nVALUE = 0\nEND_FILE",
+            (
+                "BEGIN_SEARCH_REPLACE: pkg/__init__.py\n"
+                + "<" * 7
+                + " SEARCH\nVALUE = 0\n"
+                + "=" * 7
+                + "\nVALUE = 1\n"
+                + ">" * 7
+                + " REPLACE\nEND_SEARCH_REPLACE"
+            ),
+        ]
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
+                return outputs.pop(0)
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "pkg").mkdir()
+            (project / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+            (project / "tests").mkdir()
+            (project / "tests" / "test_pkg.py").write_text(
+                textwrap.dedent(
+                    """
+                    import unittest
+                    from pkg import VALUE
+
+                    class PackageTests(unittest.TestCase):
+                        def test_one(self): self.assertEqual(VALUE, 1)
+                        def test_two(self): self.assertEqual(VALUE, 1)
+                        def test_three(self): self.assertEqual(VALUE, 1)
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "expose and repair package value",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--include",
+                        "pkg/__init__.py",
+                        "--apply",
+                        "--skip-pm",
+                        "--judge-mode",
+                        "command-only",
+                        "--precheck",
+                        "--max-rounds",
+                        "2",
+                        "--adaptive-rounds",
+                        "0",
+                        "--test-command",
+                        f"{sys.executable} -B -m unittest discover -s tests",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            source = (project / "pkg" / "__init__.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0)
+        self.assertEqual(source, "VALUE = 1")
+        self.assertEqual(manifest["candidate_regressions"], [])
+        self.assertEqual(manifest["last_functional_failure_profile"]["executed_tests"], 3)
+        self.assertEqual(manifest["last_functional_failure_profile"]["blocked_commands"], 0)
 
     def test_agent_retains_isolated_test_harness_bootstrap_until_product_passes(self):
         calls = []

@@ -116,6 +116,74 @@ def command_failure_score(command_docs: Sequence[tuple[str, str]]) -> int | None
     return total if observed else None
 
 
+COLLECTION_BLOCKER_PATTERNS = (
+    re.compile(r"Failed to import test module", re.IGNORECASE),
+    re.compile(r"unittest\.loader\._FailedTest"),
+    re.compile(r"ERROR collecting", re.IGNORECASE),
+    re.compile(r"errors? during collection", re.IGNORECASE),
+    re.compile(r"test suite failed to run", re.IGNORECASE),
+)
+
+
+def command_failure_profile(
+    command_docs: Sequence[tuple[str, str]],
+) -> dict[str, int]:
+    """Describe failure severity without conflating coverage with failures.
+
+    A collection/import blocker may report only one error because the test
+    body never ran. Once that blocker is fixed, many real failures can become
+    visible. Raw failure counts alone would incorrectly rank that expansion as
+    a regression, so the profile also records blocked commands and executed
+    test count.
+    """
+
+    failure_score = command_failure_score(command_docs)
+    blocked_commands = 0
+    executed_tests = 0
+    failed_commands = 0
+    for _name, document in command_docs:
+        parsed = parse_command_result_document(document)
+        if parsed.get("command") == "acceptance-evidence-gate":
+            continue
+        text = f"{parsed.get('stdout', '')}\n{parsed.get('stderr', '')}"
+        if parsed.get("status") == "FAIL":
+            failed_commands += 1
+            if any(pattern.search(text) for pattern in COLLECTION_BLOCKER_PATTERNS):
+                blocked_commands += 1
+        count_matches = re.findall(
+            r"(?im)(?:\bRan\s+(\d+)\s+tests?\b|\bcollected\s+(\d+)\s+items?\b)",
+            text,
+        )
+        counts = [int(count) for match in count_matches for count in match if count]
+        if counts:
+            executed_tests += max(counts)
+    return {
+        "failure_score": failure_score if failure_score is not None else 0,
+        "blocked_commands": blocked_commands,
+        "executed_tests": executed_tests,
+        "failed_commands": failed_commands,
+    }
+
+
+def command_failure_profile_progressed(
+    previous_profile: Mapping[str, int] | None,
+    current_profile: Mapping[str, int] | None,
+) -> bool:
+    """Return true when executable evidence expands without a new blocker."""
+
+    if previous_profile is None or current_profile is None:
+        return False
+    previous_blocked = int(previous_profile.get("blocked_commands", 0))
+    current_blocked = int(current_profile.get("blocked_commands", 0))
+    previous_tests = int(previous_profile.get("executed_tests", 0))
+    current_tests = int(current_profile.get("executed_tests", 0))
+    return bool(
+        current_blocked <= previous_blocked
+        and current_tests >= previous_tests
+        and (current_blocked < previous_blocked or current_tests > previous_tests)
+    )
+
+
 def executable_command_gate_blockers(
     command_docs: Sequence[tuple[str, str]],
 ) -> list[dict[str, object]]:
@@ -151,6 +219,9 @@ def candidate_behavior_regressed(
     previous_score: int | None,
     current_score: int | None,
     changed_paths: Sequence[str],
+    *,
+    previous_profile: Mapping[str, int] | None = None,
+    current_profile: Mapping[str, int] | None = None,
 ) -> bool:
     """Return true when an applied candidate increases executable failures.
 
@@ -158,12 +229,24 @@ def candidate_behavior_regressed(
     same configured command vector.  A candidate that changed no files cannot
     be the cause and is therefore excluded from this rollback rule.
     """
-    return bool(
-        changed_paths
-        and previous_score is not None
-        and current_score is not None
-        and current_score > previous_score
-    )
+    if not changed_paths or previous_score is None or current_score is None:
+        return False
+    if previous_profile is not None and current_profile is not None:
+        previous_blocked = int(previous_profile.get("blocked_commands", 0))
+        current_blocked = int(current_profile.get("blocked_commands", 0))
+        previous_tests = int(previous_profile.get("executed_tests", 0))
+        current_tests = int(current_profile.get("executed_tests", 0))
+        if current_blocked > previous_blocked:
+            return True
+        if current_blocked < previous_blocked:
+            return False
+        if command_failure_profile_progressed(previous_profile, current_profile):
+            return False
+        if current_tests < previous_tests and current_blocked >= previous_blocked:
+            return True
+        if current_tests > previous_tests:
+            return False
+    return current_score > previous_score
 
 
 def candidate_test_harness_bootstrap_progress(

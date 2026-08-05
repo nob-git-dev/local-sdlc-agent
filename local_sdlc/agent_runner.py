@@ -331,6 +331,12 @@ def command_agent(args: argparse.Namespace) -> int:
     last_functional_failure_score = resume_manifest.get("last_functional_failure_score") if resume_manifest else None
     if not isinstance(last_functional_failure_score, int):
         last_functional_failure_score = None
+    raw_failure_profile = resume_manifest.get("last_functional_failure_profile") if resume_manifest else None
+    last_functional_failure_profile = (
+        {str(key): int(value) for key, value in raw_failure_profile.items() if isinstance(value, int)}
+        if isinstance(raw_failure_profile, dict)
+        else None
+    )
     last_functional_failure_signature = (
         resume_manifest.get("last_functional_failure_signature") if resume_manifest else None
     )
@@ -576,6 +582,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "provisional_candidates": provisional_candidates,
             "candidate_replays": candidate_replays,
             "last_functional_failure_score": last_functional_failure_score,
+            "last_functional_failure_profile": last_functional_failure_profile,
             "last_functional_failure_signature": last_functional_failure_signature,
             "last_functional_failure_family_signature": last_functional_failure_family_signature,
             "repeated_same_failure_count": repeated_same_failure_count,
@@ -1698,6 +1705,7 @@ def command_agent(args: argparse.Namespace) -> int:
             last_functional_failure_signature = command_failure_signature(initial_command_docs)
             last_functional_failure_family_signature = command_failure_family_signature(initial_command_docs)
             last_functional_failure_score = command_failure_score(initial_command_docs)
+            last_functional_failure_profile = command_failure_profile(initial_command_docs)
 
     initial_acceptance_ok = True
     if initial_checks:
@@ -1763,6 +1771,7 @@ def command_agent(args: argparse.Namespace) -> int:
             "provisional_candidates": provisional_candidates,
             "candidate_replays": candidate_replays,
             "last_functional_failure_score": last_functional_failure_score,
+            "last_functional_failure_profile": last_functional_failure_profile,
             "last_functional_failure_signature": last_functional_failure_signature,
             "last_functional_failure_family_signature": last_functional_failure_family_signature,
             "repeated_same_failure_count": repeated_same_failure_count,
@@ -1869,9 +1878,11 @@ def command_agent(args: argparse.Namespace) -> int:
         failure_type: str | None,
         round_index: int,
         failure_score: int | None = None,
+        failure_profile: Mapping[str, int] | None = None,
     ) -> bool:
         nonlocal protocol_rounds_used, functional_rounds_used, adaptive_rounds_used
         nonlocal root_cause_patch_rounds_used, root_cause_patch_pending, last_functional_failure_score
+        nonlocal last_functional_failure_profile
         nonlocal artifact_plan_repair_rounds_used
         nonlocal regression_recovery_pending
         if failure_type in {"artifact_plan_mismatch", "patch_plan_infeasible"}:
@@ -1902,6 +1913,7 @@ def command_agent(args: argparse.Namespace) -> int:
             regression_recovery_pending = False
             if failure_score is not None and failure_type != "candidate_regression":
                 last_functional_failure_score = failure_score
+                last_functional_failure_profile = dict(failure_profile) if failure_profile else None
             return True
         if (
             failure_type == "candidate_regression"
@@ -1917,11 +1929,15 @@ def command_agent(args: argparse.Namespace) -> int:
             failure_score is not None
             and last_functional_failure_score is not None
             and failure_score < last_functional_failure_score
+        ) or command_failure_profile_progressed(
+            last_functional_failure_profile,
+            failure_profile,
         )
         if improved and adaptive_rounds_used < adaptive_round_budget and round_index < final_round:
             adaptive_rounds_used += 1
             root_cause_patch_pending = False
             last_functional_failure_score = failure_score
+            last_functional_failure_profile = dict(failure_profile) if failure_profile else None
             return True
         if (
             root_cause_patch_pending
@@ -1932,9 +1948,11 @@ def command_agent(args: argparse.Namespace) -> int:
             root_cause_patch_pending = False
             if failure_score is not None:
                 last_functional_failure_score = failure_score
+                last_functional_failure_profile = dict(failure_profile) if failure_profile else None
             return True
         if failure_score is not None:
             last_functional_failure_score = failure_score
+            last_functional_failure_profile = dict(failure_profile) if failure_profile else None
         return False
 
     def current_context_paths() -> list[str]:
@@ -4224,6 +4242,7 @@ def command_agent(args: argparse.Namespace) -> int:
         documents.extend(command_docs)
         latest_command_docs = list(command_docs)
         current_failure_score = command_failure_score(command_docs)
+        current_failure_profile = command_failure_profile(command_docs)
         current_failure_signature = command_failure_signature(command_docs)
         current_failure_family_signature = command_failure_family_signature(command_docs)
         same_functional_failure = bool(
@@ -4243,6 +4262,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 "current_round": round_index,
                 "command_ok": command_ok,
                 "current_failure_score": current_failure_score,
+                "current_failure_profile": current_failure_profile,
                 "current_failure_signature": current_failure_signature,
                 "current_failure_family_signature": current_failure_family_signature,
                 "same_functional_failure": same_functional_failure,
@@ -4257,6 +4277,8 @@ def command_agent(args: argparse.Namespace) -> int:
                 last_functional_failure_score,
                 current_failure_score,
                 round_changed_paths,
+                previous_profile=last_functional_failure_profile,
+                current_profile=current_failure_profile,
             )
         )
         missing_required_paths_after_round = [
@@ -4278,6 +4300,8 @@ def command_agent(args: argparse.Namespace) -> int:
                 "round": round_index,
                 "previous_failure_score": last_functional_failure_score,
                 "candidate_failure_score": current_failure_score,
+                "previous_failure_profile": last_functional_failure_profile,
+                "candidate_failure_profile": current_failure_profile,
                 "changed_paths": list(round_changed_paths),
                 "newly_satisfied_required_paths": newly_satisfied_paths,
                 "remaining_missing_required_paths": list(missing_required_paths_after_round),
@@ -4352,6 +4376,8 @@ def command_agent(args: argparse.Namespace) -> int:
                 "round": round_index,
                 "previous_failure_score": previous_score,
                 "candidate_failure_score": current_failure_score,
+                "previous_failure_profile": last_functional_failure_profile,
+                "candidate_failure_profile": current_failure_profile,
                 "changed_paths": list(round_changed_paths),
                 "restored_paths": restored_paths,
                 "rollback_verified": rollback_ok,
@@ -4369,13 +4395,17 @@ def command_agent(args: argparse.Namespace) -> int:
                 - failure_type: {"candidate_regression" if rollback_ok else "rollback_verification_failed"}
                 - previous_failure_score: {previous_score}
                 - candidate_failure_score: {current_failure_score}
+                - previous_failure_profile: {json.dumps(last_functional_failure_profile, sort_keys=True)}
+                - candidate_failure_profile: {json.dumps(current_failure_profile, sort_keys=True)}
                 - changed_paths: {", ".join(round_changed_paths) or "(none)"}
                 - restored_paths: {", ".join(restored_paths) or "(none)"}
                 - rollback_mismatches: {", ".join(rollback_mismatches) or "(none)"}
 
                 Proposition:
-                - Same command vector and candidate_failure_score > previous_failure_score
-                  implies that this candidate is behaviorally worse.
+                - The same command vector was compared as collection blockers,
+                  executed tests, and failures. The candidate either introduced
+                  a blocker, reduced executable coverage, or increased failures
+                  at equal blocker/coverage state.
 
                 Runner action:
                 - Reject this candidate without copying it back.
@@ -4610,7 +4640,12 @@ def command_agent(args: argparse.Namespace) -> int:
             last_functional_failure_signature = current_failure_signature
             last_functional_failure_family_signature = current_failure_family_signature
             write_partial_manifest("test_failed", {"current_round": round_index})
-            if not consume_failure_budget(transition_failure_type, round_index, current_failure_score):
+            if not consume_failure_budget(
+                transition_failure_type,
+                round_index,
+                current_failure_score,
+                current_failure_profile,
+            ):
                 break
             continue
 
@@ -4680,7 +4715,12 @@ def command_agent(args: argparse.Namespace) -> int:
             last_functional_failure_signature = current_failure_signature
             last_functional_failure_family_signature = current_failure_family_signature
         write_partial_manifest(final_verdict, {"current_round": round_index})
-        if not consume_failure_budget(transition_failure_type, round_index, current_failure_score):
+        if not consume_failure_budget(
+            transition_failure_type,
+            round_index,
+            current_failure_score,
+            current_failure_profile,
+        ):
             break
 
     if final_verdict == "approved" and args.apply and args.worktree_mode == "copy":
@@ -4714,6 +4754,7 @@ def command_agent(args: argparse.Namespace) -> int:
         "provisional_candidates": provisional_candidates,
         "candidate_replays": candidate_replays,
         "last_functional_failure_score": last_functional_failure_score,
+        "last_functional_failure_profile": last_functional_failure_profile,
         "last_functional_failure_signature": last_functional_failure_signature,
         "last_functional_failure_family_signature": last_functional_failure_family_signature,
         "repeated_same_failure_count": repeated_same_failure_count,
