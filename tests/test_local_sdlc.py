@@ -9760,7 +9760,7 @@ END_SEARCH_REPLACE"""
         self.assertEqual(triage["call_function"], "project_policy_triage")
         self.assertEqual(triage["case_type"], "test_harness")
         self.assertEqual(triage["safe_next_action"], "edit_test_harness")
-        self.assertEqual(manifest["repair_advice"]["strategy"], "test_harness_api_mismatch")
+        self.assertEqual(manifest["repair_advice"]["strategy"], "replace_test_harness")
         self.assertIn("tests/test_btree.py", manifest["repair_advice"]["focus_files"])
 
     def test_patch_planner_escalation_routes_only_generated_test_to_independent_triage(self):
@@ -9804,6 +9804,25 @@ END_SEARCH_REPLACE"""
                         """
                     ).strip()
                 if call_function == "project_policy_triage":
+                    if "planner's no-product-patch result" not in joined:
+                        return json.dumps(
+                            {
+                                "trigger": "generated_test_oracle_conflict",
+                                "case_type": "product_bug",
+                                "confidence": "medium",
+                                "selected_hypothesis": "H_product",
+                                "product_violation_evidence": [
+                                    "PRIMARY still violates the fixed specification"
+                                ],
+                                "test_contradiction_evidence": [],
+                                "project_policy_basis": ["SPEC.md: PRIMARY must be fixed"],
+                                "safe_next_action": "root_cause_analysis",
+                                "editable_paths": ["app.py"],
+                                "readonly_paths": ["tests/test_app.py", "SPEC.md"],
+                                "forbidden_actions": ["do not edit tests before product repair"],
+                                "rationale": "A product violation remains in the first failure state.",
+                            }
+                        )
                     return json.dumps(
                         {
                             "trigger": "generated_test_oracle_conflict",
@@ -9960,6 +9979,154 @@ END_SEARCH_REPLACE"""
         )
         self.assertIn("tests/test_app.py", authorized_writer)
         self.assertIn("app.py", manifest["project_policy_triages"][-1]["readonly_paths"])
+
+    def test_agent_triages_new_generated_test_failure_before_it_repeats(self):
+        calls = []
+        artifact_calls = 0
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, messages, agent_level="default", call_function="default", **_kwargs):
+                nonlocal artifact_calls
+                joined = "\n".join(str(message.get("content", "")) for message in messages)
+                calls.append((agent_level, call_function, joined))
+                if call_function == "project_policy_triage":
+                    return json.dumps(
+                        {
+                            "trigger": "generated_test_oracle_conflict",
+                            "case_type": "test_harness",
+                            "confidence": "high",
+                            "selected_hypothesis": "H_test",
+                            "product_violation_evidence": [],
+                            "test_contradiction_evidence": [
+                                "tests/test_app.py expects RESULT=wrong although SPEC.md fixes RESULT=actual"
+                            ],
+                            "project_policy_basis": ["SPEC.md: RESULT must remain actual"],
+                            "safe_next_action": "edit_test_harness",
+                            "editable_paths": ["tests/test_app.py"],
+                            "readonly_paths": ["app.py", "SPEC.md"],
+                            "forbidden_actions": ["do not change RESULT to wrong"],
+                            "rationale": "The generated assertion contradicts fixed external policy.",
+                        }
+                    )
+                if call_function in {
+                    "generate_artifact",
+                    "repair_artifact",
+                    "semantic_repair",
+                    "artifact_writer",
+                }:
+                    artifact_calls += 1
+                    if "strategy: replace_test_harness" in joined:
+                        return textwrap.dedent(
+                            """
+                            BEGIN_SEARCH_REPLACE: tests/test_app.py
+                            <<<<<<< SEARCH
+                                    self.assertEqual(RESULT, "wrong")
+                            =======
+                                    self.assertEqual(RESULT, "actual")
+                            >>>>>>> REPLACE
+                            END_SEARCH_REPLACE
+                            """
+                        ).strip()
+                    return textwrap.dedent(
+                        """
+                        BEGIN_SEARCH_REPLACE: app.py
+                        <<<<<<< SEARCH
+                        PRIMARY = "old"
+                        =======
+                        PRIMARY = "fixed"
+                        >>>>>>> REPLACE
+                        END_SEARCH_REPLACE
+                        """
+                    ).strip()
+                raise AssertionError(f"unexpected LLM call: {call_function}")
+
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp))
+            (project / "SPEC.md").write_text(
+                "# SPEC\n\nPRIMARY must be fixed. RESULT must remain actual.\n",
+                encoding="utf-8",
+            )
+            (project / "app.py").write_text(
+                'PRIMARY = "old"\nRESULT = "actual"\n',
+                encoding="utf-8",
+            )
+            tests_dir = project / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "test_app.py").write_text(
+                textwrap.dedent(
+                    """
+                    import unittest
+                    from app import PRIMARY, RESULT
+
+                    class AppTests(unittest.TestCase):
+                        def test_primary(self):
+                            self.assertEqual(PRIMARY, "fixed")
+
+                        def test_generated_oracle(self):
+                            self.assertEqual(RESULT, "wrong")
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent",
+                        "implement the fixed app contract and generated tests",
+                        "--project",
+                        str(project),
+                        "--skills-dir",
+                        str(skills_dir),
+                        "--skip-pm",
+                        "--domain-modeling",
+                        "never",
+                        "--judge-mode",
+                        "command-only",
+                        "--include",
+                        "app.py",
+                        "--include",
+                        "tests/test_app.py",
+                        "--require-path",
+                        "tests/test_app.py",
+                        "--apply",
+                        "--max-rounds",
+                        "2",
+                        "--protocol-repair-rounds",
+                        "0",
+                        "--adaptive-rounds",
+                        "0",
+                        "--root-cause-patch-rounds",
+                        "0",
+                        "--test-command",
+                        f"{sys.executable} -m unittest discover -s tests -v",
+                        "--run-dir",
+                        str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            test_source = (tests_dir / "test_app.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0)
+        self.assertEqual(artifact_calls, 2)
+        self.assertEqual(manifest["final_verdict"], "approved")
+        self.assertIn('self.assertEqual(RESULT, "actual")', test_source)
+        triage_calls = [call for call in calls if call[1] == "project_policy_triage"]
+        self.assertGreaterEqual(len(triage_calls), 1)
+        self.assertNotIn(
+            "repeated_same_failure",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
 
     def test_agent_routes_malformed_semantic_repair_to_format_repair(self):
         calls = []

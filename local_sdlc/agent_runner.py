@@ -4422,7 +4422,7 @@ def command_agent(args: argparse.Namespace) -> int:
                     pending_deterministic_repair = failure_analyses[-1]
 
         stage_owned_test_paths = unique_ordered([*stage_generated_test_paths, *stage_scope_test_paths])
-        repeated_stage_test_failures = stage_test_paths_in_command_docs(command_docs, stage_owned_test_paths)
+        failing_stage_owned_tests = stage_test_paths_in_command_docs(command_docs, stage_owned_test_paths)
         oracle_triage_needed = generated_test_oracle_triage_needed(
             project_policy_triages,
             current_failure_signature,
@@ -4430,14 +4430,13 @@ def command_agent(args: argparse.Namespace) -> int:
         if (
             command_docs
             and not command_ok
-            and same_functional_failure
-            and repeated_stage_test_failures
+            and failing_stage_owned_tests
             and oracle_triage_needed
         ):
             triage_evidence = generated_test_oracle_evidence_document(
                 project,
                 spec,
-                repeated_stage_test_failures,
+                failing_stage_owned_tests,
                 command_docs,
                 latest_judge_review_document(),
             )
@@ -4445,7 +4444,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 round_index,
                 "generated_test_oracle_conflict",
                 triage_evidence,
-                "decide whether repeated stage-owned test failure is a product bug or a generated test-oracle contradiction",
+                "decide whether this new stage-owned test failure is a product bug or a generated test-oracle contradiction",
             )
             if triage_record is not None:
                 triage_record["failure_signature"] = current_failure_signature or ""
@@ -4454,7 +4453,7 @@ def command_agent(args: argparse.Namespace) -> int:
             triage_editable = [
                 path
                 for path in triage_string_list(triage_record, "editable_paths")
-                if path in repeated_stage_test_failures
+                if path in failing_stage_owned_tests
             ] if triage_allows_test_harness_edit(triage_record) else []
             if triage_editable:
                 triage_readonly = [
@@ -4480,13 +4479,13 @@ def command_agent(args: argparse.Namespace) -> int:
                         strategy="replace_test_harness",
                         focus_files=tuple(unique_ordered([*triage_editable, *triage_readonly])),
                         instructions=(
-                            "Project-policy triage authorized generated test-oracle repair after repeated identical failure.",
+                            "Project-policy triage authorized generated test-oracle repair for this concrete failure.",
                             "Edit only the authorized stage-owned test harness paths.",
                             "Align the test proposition with SPEC.md and the current product API; do not weaken external acceptance requirements.",
                         ),
                         evidence=(
                             f"project_policy_triage={triage_record.get('case_type')}:{triage_record.get('safe_next_action')}",
-                            "repeated stage-owned test failure referenced: " + ", ".join(repeated_stage_test_failures),
+                            "failing stage-owned test referenced: " + ", ".join(failing_stage_owned_tests),
                         ),
                     ),
                     command_docs,
