@@ -33,6 +33,7 @@ from local_sdlc.policy_triage import (
     validate_project_policy_triage_proposition,
 )
 from local_sdlc.patch_conformance import (
+    patch_plan_policy_contradictions,
     patch_plan_signature,
     parse_patch_conformance_review,
     repeated_patch_conformance_failure,
@@ -43,6 +44,65 @@ from local_sdlc.repair_rules import generic as generic_repair_rules
 
 
 class AgentComponentTests(unittest.TestCase):
+    def test_patch_plan_rejects_mutation_of_its_forbidden_generated_test(self):
+        plan = """
+PATCH_PLAN
+- proposition: If ownership moves, change app/model.py and update tests/test_model.py.
+- required_paths: app/model.py, app/validator.py
+- readonly_paths: SPEC.md
+- forbidden_paths: tests/, acceptance_tests/
+- patch_type: unified_diff
+- escalation: none
+- minimal_patch_goal: Move validation from the model to the validator.
+"""
+
+        conflicts = patch_plan_policy_contradictions(plan)
+
+        self.assertEqual(len(conflicts), 1)
+        self.assertIn("tests/test_model.py", conflicts[0])
+
+    def test_patch_plan_allows_protected_test_as_non_mutated_evidence(self):
+        plan = """
+PATCH_PLAN
+- proposition: If ownership moves, change app/model.py so fixed acceptance passes.
+- required_paths: app/model.py, app/validator.py
+- readonly_paths: tests/test_model.py
+- forbidden_paths: acceptance_tests/
+- patch_type: unified_diff
+- escalation: none
+- minimal_patch_goal: Preserve tests/test_model.py as post-apply evidence.
+"""
+
+        self.assertEqual(patch_plan_policy_contradictions(plan), [])
+
+    def test_patch_plan_allows_explicit_non_mutation_of_protected_test(self):
+        plan = """
+PATCH_PLAN
+- proposition: Change app/model.py without editing tests/test_model.py.
+- required_path: app/model.py
+- readonly_paths: tests/test_model.py
+- forbidden_paths: tests/
+- patch_type: search_replace
+- escalation: none
+- minimal_patch_goal: Change only product validation ownership.
+"""
+
+        self.assertEqual(patch_plan_policy_contradictions(plan), [])
+
+    def test_patch_plan_allows_oracle_escalation_to_name_generated_test(self):
+        plan = """
+PATCH_PLAN
+- proposition: If tests/test_model.py contradicts SPEC.md, update the generated oracle.
+- required_paths: (none)
+- readonly_paths: SPEC.md
+- forbidden_paths: tests/
+- patch_type: missing_context
+- escalation: generated_test_oracle_triage
+- minimal_patch_goal: Route ownership without applying an edit.
+"""
+
+        self.assertEqual(patch_plan_policy_contradictions(plan), [])
+
     def test_root_cause_context_pins_executable_evidence_outside_recent_window(self):
         documents = [
             ("Initial command 1", "command one failed"),

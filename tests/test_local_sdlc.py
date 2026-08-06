@@ -7670,6 +7670,7 @@ Required fixes:
 
     def test_agent_rejects_regression_replay_before_apply_and_routes_root_cause(self):
         calls = []
+        conformance_messages = []
 
         class FakeClient:
             def __init__(self, _config):
@@ -7677,6 +7678,8 @@ Required fixes:
 
             def complete(self, _messages, agent_level="default", call_function="default", **_kwargs):
                 calls.append((agent_level, call_function))
+                if call_function == "patch_conformance":
+                    conformance_messages.extend(_messages)
                 if call_function == "generate_artifact":
                     search = "FLAG = 0\n\ndef value():"
                     replace = "FLAG = -1\n\ndef value():"
@@ -7822,6 +7825,9 @@ Required fixes:
         self.assertIn(("judge", "root_cause_analysis"), calls)
         self.assertIn(("judge", "patch_planner"), calls)
         self.assertIn(("judge", "patch_conformance"), calls)
+        conformance_text = json.dumps(conformance_messages, ensure_ascii=False)
+        self.assertIn("Binding patch plan", conformance_text)
+        self.assertNotIn("Candidate regression rollback round 1", conformance_text)
 
     def test_agent_reserves_root_cause_patch_round_after_failure_analysis(self):
         calls = []

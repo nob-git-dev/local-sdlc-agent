@@ -289,6 +289,12 @@ def patch_conformance_instruction(
         7. Never require executable proof that tests pass at this pre-apply
            step. The runner applies an approved candidate in an isolated
            worktree and owns executable verification and rollback.
+        8. The binding plan is the only source of candidate obligations.
+           Prior reviews, repair advice, generated tests, and earlier plans
+           are not binding here. Do not preserve an old-owner behavior when
+           the binding proposition explicitly relocates that responsibility.
+           A readonly or forbidden test is post-apply evidence, never a
+           candidate artifact obligation.
 
         Formal rule:
         Let O be the set of explicit behavioral obligations in the plan and A

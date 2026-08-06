@@ -43,6 +43,7 @@ from .policy_triage import (
 )
 from .patch_conformance import (
     failed_patch_conformance_review,
+    patch_plan_policy_contradictions,
     patch_plan_signature,
     parse_patch_conformance_review,
     repeated_patch_conformance_failure,
@@ -1157,7 +1158,7 @@ def command_agent(args: argparse.Namespace) -> int:
                 agent_level="judge",
                 project_manifest_text=manifest_text,
                 file_context=file_context,
-                documents=documents[-args.document_window :],
+                documents=(),
                 output_contract=PATCH_CONFORMANCE_OUTPUT_CONTRACT,
                 stream_output_path=review_partial_path if args.stream else None,
                 stream_callback=update_review_stream_status if args.stream else None,
@@ -3040,6 +3041,49 @@ def command_agent(args: argparse.Namespace) -> int:
             ]
             plan_readonly_paths = patch_plan_paths.get("readonly_paths", [])
             plan_forbidden_paths = patch_plan_paths.get("forbidden_paths", [])
+            plan_policy_conflicts = patch_plan_policy_contradictions(patch_plan_doc)
+            if plan_policy_conflicts:
+                conflict_items = "\n".join(
+                    f"  - {item}" for item in plan_policy_conflicts
+                )
+                conflict_doc = textwrap.dedent(
+                    f"""
+                    ## Patch Plan Policy Contradiction
+
+                    - failure_type: patch_plan_policy_contradiction
+                    - conflicts:
+                    {conflict_items}
+
+                    Runner action:
+                    - Reject the self-contradictory plan before artifact generation.
+                    - Discard its obligations; they do not bind the next plan generation.
+                    - Re-run root-cause planning and use generated-test oracle triage when
+                      a machine-owned test must change.
+                    """
+                ).strip()
+                path = write_run_document(
+                    run_dir,
+                    f"03-r{round_index:02d}-patch-plan-policy-contradiction.md",
+                    conflict_doc,
+                )
+                written.append(path)
+                documents.append(
+                    (f"Patch plan policy contradiction round {round_index}", conflict_doc)
+                )
+                active_patch_plan_doc = ""
+                pending_patch_plan_doc = ""
+                pending_deterministic_repair = None
+                root_cause_patch_pending = True
+                final_verdict = "patch_failed"
+                final_failure_type = "patch_plan_policy_contradiction"
+                record_transition(final_failure_type, round_index, conflict_doc)
+                write_partial_manifest(
+                    "patch_plan_policy_contradiction",
+                    {"current_round": round_index},
+                )
+                if not consume_failure_budget(final_failure_type, round_index):
+                    break
+                continue
             patch_plan_missing_context = bool(
                 re.search(r"(?im)^\s*-\s*patch_type\s*:\s*missing_context\s*$", patch_plan_doc)
             )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Sequence
 
 from .models import RunnerError
@@ -13,6 +14,57 @@ from .utils import strip_markdown_fence, truncate_text
 VALID_REVIEW_STATUSES = {"pass", "fail", "insufficient_context"}
 VALID_OBLIGATION_STATUSES = {"satisfied", "not_satisfied", "uncertain"}
 VALID_NEXT_ACTIONS = {"apply", "repair_artifact", "collect_context"}
+
+
+def patch_plan_policy_contradictions(document: str) -> list[str]:
+    """Find plans that prescribe mutation of their own evidence-only paths."""
+
+    def field(name: str) -> str:
+        match = re.search(rf"(?im)^\s*-\s*{name}\s*:\s*(.*?)\s*$", document)
+        return match.group(1).strip() if match else ""
+
+    if field("escalation").lower() not in {"", "none"}:
+        return []
+    required_field = field("required_paths") or field("required_path")
+    required = [item.strip().rstrip("/") for item in required_field.split(",")]
+    protected = [
+        item.strip().rstrip("/")
+        for name in ("readonly_paths", "forbidden_paths")
+        for item in field(name).split(",")
+        if item.strip() and item.strip().lower() != "(none)"
+    ]
+    required = [item for item in required if item and item.lower() != "(none)"]
+
+    def protected_by(path: str) -> str | None:
+        return next(
+            (owner for owner in protected if path == owner or path.startswith(owner + "/")),
+            None,
+        )
+
+    conflicts = [
+        f"required path `{path}` is protected by `{owner}`"
+        for path in required
+        if (owner := protected_by(path)) is not None
+    ]
+    mutation_verbs = re.compile(
+        r"(?i)\b(?:add|adapt|change|convert|edit|modify|move|relocate|remove|replace|rewrite|update)\b"
+    )
+    path_pattern = re.compile(r"(?<![\w.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+")
+    for name in ("proposition", "minimal_patch_goal"):
+        value = field(name)
+        if not value or not mutation_verbs.search(value):
+            continue
+        for match in path_pattern.finditer(value):
+            path = match.group(0)
+            prefix = value[max(0, match.start() - 48) : match.start()].lower()
+            if re.search(r"(?:do not|never|without)\s+(?:\w+\s+){0,2}$", prefix):
+                continue
+            owner = protected_by(path)
+            if owner is not None:
+                conflicts.append(
+                    f"{name} prescribes mutation of `{path}`, protected by `{owner}`"
+                )
+    return list(dict.fromkeys(conflicts))
 
 
 def _is_post_apply_verification_requirement(text: str) -> bool:
