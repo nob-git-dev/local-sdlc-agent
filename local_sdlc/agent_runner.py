@@ -1705,7 +1705,13 @@ def command_agent(args: argparse.Namespace) -> int:
             last_functional_failure_signature = command_failure_signature(initial_command_docs)
             last_functional_failure_family_signature = command_failure_family_signature(initial_command_docs)
             last_functional_failure_score = command_failure_score(initial_command_docs)
-            last_functional_failure_profile = command_failure_profile(initial_command_docs)
+            last_functional_failure_profile = command_failure_profile(
+                initial_command_docs,
+                generated_test_paths=unique_ordered(
+                    [*stage_generated_test_paths, *stage_scope_test_paths]
+                ),
+                existing_paths=existing_project_paths,
+            )
 
     initial_acceptance_ok = True
     if initial_checks:
@@ -4242,7 +4248,13 @@ def command_agent(args: argparse.Namespace) -> int:
         documents.extend(command_docs)
         latest_command_docs = list(command_docs)
         current_failure_score = command_failure_score(command_docs)
-        current_failure_profile = command_failure_profile(command_docs)
+        current_failure_profile = command_failure_profile(
+            command_docs,
+            generated_test_paths=unique_ordered(
+                [*stage_generated_test_paths, *stage_scope_test_paths]
+            ),
+            existing_paths=existing_project_paths,
+        )
         current_failure_signature = command_failure_signature(command_docs)
         current_failure_family_signature = command_failure_family_signature(command_docs)
         same_functional_failure = bool(

@@ -127,6 +127,9 @@ COLLECTION_BLOCKER_PATTERNS = (
 
 def command_failure_profile(
     command_docs: Sequence[tuple[str, str]],
+    *,
+    generated_test_paths: Sequence[str] = (),
+    existing_paths: Sequence[str] = (),
 ) -> dict[str, int]:
     """Describe failure severity without conflating coverage with failures.
 
@@ -157,12 +160,66 @@ def command_failure_profile(
         counts = [int(count) for match in count_matches for count in match if count]
         if counts:
             executed_tests += max(counts)
-    return {
+    profile = {
         "failure_score": failure_score if failure_score is not None else 0,
         "blocked_commands": blocked_commands,
         "executed_tests": executed_tests,
         "failed_commands": failed_commands,
     }
+    generated_docs, authoritative_docs = partition_command_docs_by_test_ownership(
+        command_docs,
+        generated_test_paths,
+        existing_paths,
+    )
+    if generated_test_paths and existing_paths:
+        for prefix, documents in (
+            ("generated", generated_docs),
+            ("authoritative", authoritative_docs),
+        ):
+            subset = command_failure_profile(documents)
+            profile.update({f"{prefix}_{key}": value for key, value in subset.items()})
+    return profile
+
+
+def partition_command_docs_by_test_ownership(
+    command_docs: Sequence[tuple[str, str]],
+    generated_test_paths: Sequence[str],
+    existing_paths: Sequence[str],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Separate commands that exclusively execute runner-owned generated tests.
+
+    Ownership is granted only for unittest discovery roots whose existing Python
+    test files are all named in ``generated_test_paths``. Unknown, mixed, and
+    non-discovery commands remain authoritative so uncertainty cannot weaken a
+    fixed acceptance gate.
+    """
+    generated = {str(Path(path)) for path in generated_test_paths}
+    existing = {str(Path(path)) for path in existing_paths}
+    generated_docs: list[tuple[str, str]] = []
+    authoritative_docs: list[tuple[str, str]] = []
+    for item in command_docs:
+        parsed = parse_command_result_document(item[1])
+        command = parsed.get("command", "")
+        try:
+            tokens = shlex.split(command)
+            start_index = tokens.index("-s")
+            root = str(Path(tokens[start_index + 1]))
+        except (ValueError, IndexError):
+            authoritative_docs.append(item)
+            continue
+        prefix = root.rstrip("/") + "/"
+        scoped_tests = {
+            path
+            for path in existing
+            if path.startswith(prefix)
+            and path.endswith(".py")
+            and Path(path).name != "__init__.py"
+        }
+        if scoped_tests and scoped_tests <= generated:
+            generated_docs.append(item)
+        else:
+            authoritative_docs.append(item)
+    return generated_docs, authoritative_docs
 
 
 def command_failure_profile_progressed(
@@ -232,6 +289,29 @@ def candidate_behavior_regressed(
     if not changed_paths or previous_score is None or current_score is None:
         return False
     if previous_profile is not None and current_profile is not None:
+        authoritative_keys = {
+            "failure_score",
+            "blocked_commands",
+            "executed_tests",
+            "failed_commands",
+        }
+        if all(
+            f"authoritative_{key}" in previous_profile
+            and f"authoritative_{key}" in current_profile
+            for key in authoritative_keys
+        ):
+            previous_authoritative = {
+                key: int(previous_profile[f"authoritative_{key}"])
+                for key in authoritative_keys
+            }
+            current_authoritative = {
+                key: int(current_profile[f"authoritative_{key}"])
+                for key in authoritative_keys
+            }
+            if _failure_profile_regressed(previous_authoritative, current_authoritative):
+                return True
+            if _failure_profile_improved(previous_authoritative, current_authoritative):
+                return False
         previous_blocked = int(previous_profile.get("blocked_commands", 0))
         current_blocked = int(current_profile.get("blocked_commands", 0))
         previous_tests = int(previous_profile.get("executed_tests", 0))
@@ -247,6 +327,45 @@ def candidate_behavior_regressed(
         if current_tests > previous_tests:
             return False
     return current_score > previous_score
+
+
+def _failure_profile_regressed(
+    previous_profile: Mapping[str, int],
+    current_profile: Mapping[str, int],
+) -> bool:
+    previous_blocked = int(previous_profile.get("blocked_commands", 0))
+    current_blocked = int(current_profile.get("blocked_commands", 0))
+    previous_tests = int(previous_profile.get("executed_tests", 0))
+    current_tests = int(current_profile.get("executed_tests", 0))
+    if current_blocked > previous_blocked:
+        return True
+    if current_blocked < previous_blocked:
+        return False
+    if current_tests < previous_tests:
+        return True
+    if current_tests > previous_tests:
+        return False
+    return int(current_profile.get("failure_score", 0)) > int(
+        previous_profile.get("failure_score", 0)
+    )
+
+
+def _failure_profile_improved(
+    previous_profile: Mapping[str, int],
+    current_profile: Mapping[str, int],
+) -> bool:
+    previous_blocked = int(previous_profile.get("blocked_commands", 0))
+    current_blocked = int(current_profile.get("blocked_commands", 0))
+    previous_tests = int(previous_profile.get("executed_tests", 0))
+    current_tests = int(current_profile.get("executed_tests", 0))
+    if current_blocked < previous_blocked and current_tests >= previous_tests:
+        return True
+    return bool(
+        current_blocked == previous_blocked
+        and current_tests >= previous_tests
+        and int(current_profile.get("failure_score", 0))
+        < int(previous_profile.get("failure_score", 0))
+    )
 
 
 def candidate_test_harness_bootstrap_progress(

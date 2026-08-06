@@ -303,6 +303,56 @@ END_SEARCH_REPLACE"""
         self.assertEqual(artifact.search, 'VALUE = "old"')
         self.assertEqual(artifact.replace, 'VALUE = "new"')
 
+    def test_extract_search_replace_normalizes_unambiguous_short_search_markers(self):
+        short_search = "<" * 5 + " SEARCH"
+        separator = "=" * 7
+        replace_end = ">" * 7 + " REPLACE"
+        output = (
+            "BEGIN_SEARCH_REPLACE: pkg/model.py\n"
+            f"{short_search}\nvalidate_here()\n{separator}\nvalidate_later()\n"
+            f"{replace_end}\nEND_SEARCH_REPLACE\n\n"
+            "BEGIN_SEARCH_REPLACE: pkg/graph.py\n"
+            f"{short_search}\nbuild_graph()\n{separator}\n"
+            f"validate_later()\nbuild_graph()\n{replace_end}\nEND_SEARCH_REPLACE"
+        )
+
+        artifacts = self.local_sdlc.extract_search_replace_artifacts(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(
+                allowed_paths=("pkg/model.py", "pkg/graph.py"),
+                existing_paths=("pkg/model.py", "pkg/graph.py"),
+            ),
+        )
+
+        self.assertEqual([artifact.path for artifact in artifacts], ["pkg/model.py", "pkg/graph.py"])
+        self.assertEqual(artifacts[0].search, "validate_here()")
+        self.assertEqual(artifacts[1].replace, "validate_later()\nbuild_graph()")
+
+    def test_short_search_marker_normalization_rejects_ambiguous_envelopes(self):
+        short_search = "<" * 5 + " SEARCH"
+        separator = "=" * 7
+        replace_end = ">" * 7 + " REPLACE"
+        for marker_body in (
+            "<" * 4 + f" SEARCH\nold\n{separator}\nnew\n{replace_end}",
+            f"{short_search}\nold\n{short_search}\nother\n{separator}\nnew\n{replace_end}",
+        ):
+            with self.subTest(marker_body=marker_body):
+                output = (
+                    "BEGIN_SEARCH_REPLACE: pkg/model.py\n"
+                    + marker_body
+                    + "\nEND_SEARCH_REPLACE"
+                )
+                normalized = self.local_sdlc.normalize_short_search_replace_start_markers(output)
+                self.assertEqual(normalized, output)
+                with self.assertRaises(self.local_sdlc.RunnerError):
+                    self.local_sdlc.extract_search_replace_artifacts(
+                        output,
+                        self.local_sdlc.ArtifactPathPolicy(
+                            allowed_paths=("pkg/model.py",),
+                            existing_paths=("pkg/model.py",),
+                        ),
+                    )
+
     def test_next_line_search_replace_still_enforces_readonly_stream_policy(self):
         policy = self.local_sdlc.ArtifactPathPolicy(
             allowed_paths=("pkg/worker.py",),

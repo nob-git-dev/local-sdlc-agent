@@ -182,19 +182,64 @@ def normalize_terminal_end_search_replace_artifact(text: str) -> str:
         return text
     return match.group("body") + "\n>>>>>>> REPLACE\nEND_SEARCH_REPLACE"
 
+
+def normalize_short_search_replace_start_markers(text: str) -> str:
+    """Normalize a five-chevron SEARCH marker in an otherwise exact envelope.
+
+    This changes syntax only. Each path-qualified block must contain exactly one
+    short SEARCH marker, one separator, one canonical REPLACE marker, and no
+    competing conflict-marker line. Ambiguous or incomplete blocks are left for
+    the normal artifact rejection path.
+    """
+    block_pattern = re.compile(
+        r"(?ms)^(?P<header>\s*BEGIN_SEARCH_REPLACE:\s*[^\n]+\n)"
+        r"(?P<body>.*?)"
+        r"(?P<footer>^\s*END_SEARCH_REPLACE\s*$)"
+    )
+
+    def replace_block(match: re.Match[str]) -> str:
+        body = match.group("body")
+        short_markers = list(re.finditer(r"(?m)^(?P<indent>[ \t]*)<<<<< SEARCH[ \t]*$", body))
+        conflict_lines = re.findall(
+            r"(?m)^[ \t]*(?:<{4,}[ \t]+SEARCH|={4,}|>{4,}[ \t]+REPLACE)[ \t]*$",
+            body,
+        )
+        if (
+            len(short_markers) != 1
+            or len(re.findall(r"(?m)^[ \t]*=======[ \t]*$", body)) != 1
+            or len(re.findall(r"(?m)^[ \t]*>>>>>>> REPLACE[ \t]*$", body)) != 1
+            or len(conflict_lines) != 3
+        ):
+            return match.group(0)
+        marker = short_markers[0]
+        normalized_body = (
+            body[: marker.start()]
+            + marker.group("indent")
+            + "<<<<<<< SEARCH"
+            + body[marker.end() :]
+        )
+        return match.group("header") + normalized_body + match.group("footer")
+
+    return block_pattern.sub(replace_block, text)
+
+
 def artifact_candidate_texts(text: str) -> list[str]:
     normalized_file_headers = normalize_inline_file_artifact_headers(text)
     normalized_next_line_headers = normalize_next_line_search_replace_headers(
         normalized_file_headers
     )
-    normalized_search_replace = normalize_file_header_search_replace_artifacts(
+    normalized_short_search_markers = normalize_short_search_replace_start_markers(
         normalized_next_line_headers
+    )
+    normalized_search_replace = normalize_file_header_search_replace_artifacts(
+        normalized_short_search_markers
     )
     normalized_terminal = normalize_terminal_end_search_replace_artifact(normalized_search_replace)
     candidates = [
         text,
         normalized_file_headers,
         normalized_next_line_headers,
+        normalized_short_search_markers,
         normalized_search_replace,
         normalized_terminal,
         strip_markdown_fence(text),

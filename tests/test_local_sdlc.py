@@ -187,6 +187,84 @@ class LocalSDLCTest(LocalSDLCTestCase):
             )
         )
 
+    def test_candidate_regression_prioritizes_fixed_acceptance_over_generated_oracle(self):
+        generated_pass = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests -v", 0, "", "Ran 32 tests\nOK\n", 0.01
+        )
+        generated_fail = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s tests -v",
+            1,
+            "",
+            "Ran 32 tests\nFAILED (failures=4)\n",
+            0.01,
+        )
+        acceptance_fail = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s acceptance_tests -v",
+            1,
+            "",
+            "Ran 7 tests\nFAILED (errors=1)\n",
+            0.01,
+        )
+        acceptance_pass = self.local_sdlc.command_result_document(
+            "python3 -m unittest discover -s acceptance_tests -v", 0, "", "Ran 7 tests\nOK\n", 0.01
+        )
+        generated_paths = ("tests/test_graph.py", "tests/test_executor.py")
+        existing_paths = (*generated_paths, "acceptance_tests/test_acceptance.py")
+        previous_docs = [("generated", generated_pass), ("fixed", acceptance_fail)]
+        current_docs = [("generated", generated_fail), ("fixed", acceptance_pass)]
+        previous_profile = self.local_sdlc.command_failure_profile(
+            previous_docs,
+            generated_test_paths=generated_paths,
+            existing_paths=existing_paths,
+        )
+        current_profile = self.local_sdlc.command_failure_profile(
+            current_docs,
+            generated_test_paths=generated_paths,
+            existing_paths=existing_paths,
+        )
+
+        self.assertFalse(
+            self.local_sdlc.candidate_behavior_regressed(
+                self.local_sdlc.command_failure_score(previous_docs),
+                self.local_sdlc.command_failure_score(current_docs),
+                ["pkg/model.py"],
+                previous_profile=previous_profile,
+                current_profile=current_profile,
+            )
+        )
+        self.assertTrue(
+            self.local_sdlc.candidate_behavior_regressed(
+                self.local_sdlc.command_failure_score(current_docs),
+                self.local_sdlc.command_failure_score(previous_docs),
+                ["pkg/model.py"],
+                previous_profile=current_profile,
+                current_profile=previous_profile,
+            )
+        )
+
+    def test_mixed_test_discovery_remains_authoritative(self):
+        docs = [
+            (
+                "mixed",
+                self.local_sdlc.command_result_document(
+                    "python3 -m unittest discover -s tests -v",
+                    1,
+                    "",
+                    "Ran 2 tests\nFAILED (failures=1)\n",
+                    0.01,
+                ),
+            )
+        ]
+
+        profile = self.local_sdlc.command_failure_profile(
+            docs,
+            generated_test_paths=("tests/test_generated.py",),
+            existing_paths=("tests/test_generated.py", "tests/test_fixed.py"),
+        )
+
+        self.assertEqual(profile["generated_executed_tests"], 0)
+        self.assertEqual(profile["authoritative_failure_score"], 1)
+
     def test_candidate_test_harness_bootstrap_progress_requires_isolated_missing_test(self):
         self.assertTrue(
             self.local_sdlc.candidate_test_harness_bootstrap_progress(
