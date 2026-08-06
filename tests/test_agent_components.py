@@ -109,10 +109,13 @@ class AgentComponentTests(unittest.TestCase):
         self.assertIn("Select one independent defect", planner)
         self.assertIn("one contiguous source span", planner)
         self.assertIn("coordinated edits", planner)
+        self.assertIn("required_paths", planner)
+        self.assertIn("responsibility move", planner)
         self.assertIn("does not by itself prove", planner)
         self.assertIn("escalation: none|generated_test_oracle_triage|collect_context", planner)
         self.assertIn("planner cannot authorize or apply a test edit", planner)
         self.assertIn("Merely touching required_path", conformance)
+        self.assertIn("post-apply test success", conformance)
         self.assertIn('"missing_obligations"', conformance)
         self.assertIn("T cannot directly apply an edit", triage)
         self.assertIn('start with "判定: 承認"', judge)
@@ -195,6 +198,42 @@ class AgentComponentTests(unittest.TestCase):
 
         self.assertEqual(review["status"], "pass")
         self.assertEqual(review["safe_next_action"], "apply")
+
+    def test_patch_conformance_defers_post_apply_test_evidence_to_runner(self):
+        review = parse_patch_conformance_review(
+            """
+            {
+              "status": "fail",
+              "obligations": [
+                {
+                  "id": "O1",
+                  "requirement": "move validation from the value object to the aggregate",
+                  "status": "satisfied",
+                  "candidate_evidence": "removes the old check and adds the aggregate check",
+                  "counterexample": "(none)"
+                },
+                {
+                  "id": "O2",
+                  "requirement": "Stop when the unit test suite exits 0",
+                  "status": "not_satisfied",
+                  "candidate_evidence": "(none)",
+                  "counterexample": "tests have not run yet"
+                }
+              ],
+              "missing_obligations": ["Executable evidence that the test suite exits 0"],
+              "missing_context_paths": [],
+              "safe_next_action": "repair_artifact",
+              "repair_instruction": "run tests first"
+            }
+            """
+        )
+
+        self.assertEqual(review["status"], "pass")
+        self.assertEqual(review["safe_next_action"], "apply")
+        self.assertEqual(
+            review["deferred_verification_obligations"],
+            ["Stop when the unit test suite exits 0"],
+        )
 
     def test_candidate_hypothesis_ignores_unchanged_search_context(self):
         wide = SearchReplaceArtifact(

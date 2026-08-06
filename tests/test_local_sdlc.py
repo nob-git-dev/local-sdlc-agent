@@ -3943,6 +3943,25 @@ AssertionError: 1 != 3
         self.assertEqual(paths["readonly_paths"], ["tests/test_parser.py", "minisqlite/sql/parser.py"])
         self.assertEqual(paths["forbidden_paths"], ["tests/test_lexer.py"])
 
+    def test_patch_plan_paths_resolves_atomic_required_path_set(self):
+        plan = textwrap.dedent(
+            """
+            PATCH_PLAN
+            - required_paths: pkg/model.py, pkg/graph.py
+            - readonly_paths: SPEC.md
+            - forbidden_paths: tests/test_graph.py
+            """
+        )
+
+        paths = self.local_sdlc.patch_plan_paths_from_text(
+            plan,
+            ["pkg/model.py", "pkg/graph.py", "SPEC.md", "tests/test_graph.py"],
+        )
+
+        self.assertEqual(paths["required_paths"], ["pkg/model.py", "pkg/graph.py"])
+        self.assertEqual(paths["readonly_paths"], ["SPEC.md"])
+        self.assertEqual(paths["forbidden_paths"], ["tests/test_graph.py"])
+
     def test_patch_plan_paths_ignores_ambiguous_basename(self):
         plan = textwrap.dedent(
             """

@@ -3275,6 +3275,23 @@ def command_agent(args: argparse.Namespace) -> int:
                 policy_path = write_run_document(run_dir, f"03-r{round_index:02d}-patch-plan-policy.md", policy_doc)
                 written.append(policy_path)
                 documents.append((f"Patch plan policy round {round_index}", policy_doc))
+            if len(plan_required_paths) > 1:
+                round_artifact_format = "legacy"
+                single_artifact_stream_mode = False
+                atomic_targets = ", ".join(plan_required_paths)
+                artifact_output_instruction = textwrap.dedent(
+                    f"""
+                    Required output for this atomic multi-file proposition:
+                    - Return exactly one minimal unified diff covering only: {atomic_targets}
+                    - Every changed file must implement part of the same binding proposition.
+                    - Include removal or adaptation at the old owner and addition at the new owner when responsibility moves.
+                    - Do not return JSON artifacts, BEGIN markers, prose, fences, tests, or unrelated cleanup.
+                    """
+                ).strip()
+                output_contract = (
+                    f"Return ONLY one minimal unified diff covering the atomic product targets: {atomic_targets}. "
+                    "No JSON. No BEGIN markers. No prose. No fences. No tests."
+                )
             missing_plan_required_paths = [
                 path
                 for path in plan_required_paths

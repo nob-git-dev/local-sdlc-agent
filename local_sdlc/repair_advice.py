@@ -527,21 +527,26 @@ def patch_plan_paths_from_text(
         "readonly_paths": [],
         "forbidden_paths": [],
     }
-    line_values: dict[str, str] = {}
-    for match in re.finditer(r"(?im)^\s*-\s*(required_path|readonly_paths|forbidden_paths)\s*:\s*(.*?)\s*$", plan_doc):
-        line_values[match.group(1).lower()] = match.group(2).strip()
+    line_values: dict[str, list[str]] = {
+        "required_paths": [],
+        "readonly_paths": [],
+        "forbidden_paths": [],
+    }
+    for match in re.finditer(
+        r"(?im)^\s*-\s*(required_path|required_paths|readonly_paths|forbidden_paths)\s*:\s*(.*?)\s*$",
+        plan_doc,
+    ):
+        field_name = match.group(1).lower()
+        if field_name == "required_path":
+            field_name = "required_paths"
+        line_values[field_name].append(match.group(2).strip())
 
-    required = line_values.get("required_path", "")
-    resolved_required = resolve_path(required)
-    if resolved_required:
-        fields["required_paths"].append(resolved_required)
-
-    for field_name in ("readonly_paths", "forbidden_paths"):
-        raw_value = line_values.get(field_name, "")
-        for item in re.split(r"[,;\n]", raw_value):
-            resolved = resolve_path(item)
-            if resolved:
-                fields[field_name].append(resolved)
+    for field_name in ("required_paths", "readonly_paths", "forbidden_paths"):
+        for raw_value in line_values[field_name]:
+            for item in re.split(r"[,;\n]", raw_value):
+                resolved = resolve_path(item)
+                if resolved:
+                    fields[field_name].append(resolved)
 
     return {key: unique_ordered(value) for key, value in fields.items()}
 

@@ -200,7 +200,7 @@ def patch_planner_instruction(brief: str, role_label: str, analysis_doc: str) ->
         Return exactly this schema:
         PATCH_PLAN
         - proposition: one sentence of the form "If P, change A so C"
-        - required_path: one project-relative writable product file
+        - required_paths: comma-separated project-relative writable product files
         - readonly_paths: comma-separated evidence paths or "(none)"
         - forbidden_paths: comma-separated paths that must not be edited
         - patch_type: search_replace|unified_diff|missing_context
@@ -209,8 +209,13 @@ def patch_planner_instruction(brief: str, role_label: str, analysis_doc: str) ->
         - stop_rule: when the artifact writer must stop instead of guessing
 
         Validity rule:
-        The plan is valid only if required_path is not under tests/ and the
-        minimal_patch_goal can be implemented as one atomic product-code edit.
+        The plan is valid only if required_paths contains the smallest
+        non-empty set of product files needed for one atomic behavioral
+        transaction and no path is under tests/. A single-file plan should
+        name one path. A responsibility move, API relocation, or invariant
+        transfer may name multiple product files only when adding the new
+        owner without removing or adapting the old owner cannot satisfy the
+        same proposition.
         Select one independent defect or behavioral invariant per plan. When
         the analysis names multiple independent defects, do not join them with
         "and"; choose the one whose repair should produce the next observable
@@ -218,7 +223,7 @@ def patch_planner_instruction(brief: str, role_label: str, analysis_doc: str) ->
         Use patch_type=search_replace only when the complete obligation fits in
         one contiguous source span, including any required import. Use
         patch_type=unified_diff when one invariant requires coordinated edits
-        in multiple spans of the same product file. A no-op candidate is an
+        in multiple spans or multiple product files. A no-op candidate is an
         artifact failure and does not by itself prove that an otherwise
         actionable binding plan is false.
         Fixed external and read-only acceptance tests are authoritative
@@ -265,9 +270,10 @@ def patch_conformance_instruction(
         not run yet.
 
         Counterexample procedure:
-        1. Extract each behavior required by proposition, minimal_patch_goal,
-           and stop_rule. Path selection and syntactic validity alone are not
-           behavioral obligations.
+        1. Extract each behavior required by proposition and
+           minimal_patch_goal. Path selection, syntactic validity, stop_rule,
+           and post-apply test success are not candidate behavioral
+           obligations.
         2. Derive the candidate's post-edit behavior from its SEARCH and
            REPLACE text, diff, or file content plus the supplied file context.
         3. For each obligation, try to name one input/state transition for
@@ -280,6 +286,9 @@ def patch_conformance_instruction(
         6. If context is genuinely insufficient, return
            status=insufficient_context and exact missing_context_paths. Do not
            guess either pass or fail.
+        7. Never require executable proof that tests pass at this pre-apply
+           step. The runner applies an approved candidate in an isolated
+           worktree and owns executable verification and rollback.
 
         Formal rule:
         Let O be the set of explicit behavioral obligations in the plan and A

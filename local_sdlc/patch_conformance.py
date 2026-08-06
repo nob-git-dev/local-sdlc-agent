@@ -15,6 +15,23 @@ VALID_OBLIGATION_STATUSES = {"satisfied", "not_satisfied", "uncertain"}
 VALID_NEXT_ACTIONS = {"apply", "repair_artifact", "collect_context"}
 
 
+def _is_post_apply_verification_requirement(text: str) -> bool:
+    """Return whether an item belongs to the runner's post-apply command gate."""
+
+    normalized = " ".join(text.lower().split())
+    verification_terms = (
+        "test",
+        "suite",
+        "command",
+        "exit",
+        "pass",
+        "executable evidence",
+    )
+    if not any(term in normalized for term in verification_terms):
+        return False
+    return normalized.startswith("stop when") or "executable evidence" in normalized
+
+
 def patch_plan_signature(document: str) -> str:
     """Return a stable identity for one binding plan."""
 
@@ -74,6 +91,7 @@ def parse_patch_conformance_review(document: str) -> dict[str, object]:
 
     obligations: list[dict[str, str]] = []
     unresolved: list[str] = []
+    deferred_verification: list[str] = []
     for index, raw_item in enumerate(raw_obligations, start=1):
         if not isinstance(raw_item, dict):
             raise RunnerError("patch conformance obligation must be an object")
@@ -95,13 +113,22 @@ def parse_patch_conformance_review(document: str) -> dict[str, object]:
             "candidate_evidence": candidate_evidence or "(none)",
             "counterexample": counterexample or "(none)",
         }
+        if _is_post_apply_verification_requirement(requirement):
+            item["status"] = "satisfied"
+            item["candidate_evidence"] = "deferred to the runner post-apply command gate"
+            item["counterexample"] = "(none)"
+            deferred_verification.append(requirement)
         obligations.append(item)
-        if obligation_status != "satisfied":
+        if item["status"] != "satisfied":
             unresolved.append(requirement)
-        elif not candidate_evidence or candidate_evidence == "(none)":
+        elif item["candidate_evidence"] == "(none)":
             unresolved.append(requirement)
 
-    missing_obligations = _string_list(payload.get("missing_obligations"))
+    missing_obligations = [
+        item
+        for item in _string_list(payload.get("missing_obligations"))
+        if not _is_post_apply_verification_requirement(item)
+    ]
     missing_context_paths = _string_list(payload.get("missing_context_paths"))
     next_action = str(payload.get("safe_next_action") or "").strip().lower()
     if next_action not in VALID_NEXT_ACTIONS:
@@ -119,6 +146,11 @@ def parse_patch_conformance_review(document: str) -> dict[str, object]:
         status = "fail"
         missing_obligations = ["review summary did not authorize apply"]
         next_action = "repair_artifact"
+    elif status == "fail" and deferred_verification and not (
+        unresolved or missing_obligations or missing_context_paths
+    ):
+        status = "pass"
+        next_action = "apply"
     elif status == "fail":
         missing_obligations = list(dict.fromkeys([*missing_obligations, *unresolved]))
         if not missing_obligations:
@@ -141,6 +173,7 @@ def parse_patch_conformance_review(document: str) -> dict[str, object]:
             str(payload.get("repair_instruction") or "").strip(),
             1200,
         ),
+        "deferred_verification_obligations": deferred_verification,
     }
 
 
