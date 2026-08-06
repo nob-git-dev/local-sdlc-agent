@@ -343,6 +343,15 @@ def project_policy_triage_instruction(
                on the same receiver. It does not impose continuity on a newly
                constructed receiver unless SPEC.md explicitly defines
                cross-instance persistence.
+               A conditional contract such as "a new instance with the same
+               checkpoint/session/store" applies only when that carrier is
+               actually supplied to every fresh constructor. Shared ordinary
+               inputs, configuration, graph objects, or handlers are not a
+               persistence channel unless SPEC.md explicitly defines them as one.
+               Copy the exact shared constructor expression into
+               continuity_witness_expression. Use none_required only when
+               SPEC.md unconditionally requires fresh instances to share state
+               without any persistence carrier.
             3. Derive the relevant state immediately before the action under test.
             4. Derive the state selected by the action target, revision, key, or input.
             5. Compare the assertion with that derived state and with SPEC.md.
@@ -423,7 +432,8 @@ def project_policy_triage_instruction(
           "receiver_scope_analysis": {{
             "mechanical_identity": "same_receiver|distinct_fresh|not_applicable",
             "requires_cross_instance_continuity": true,
-            "continuity_witness": "explicit_shared_persistence|spec_cross_instance_contract|same_receiver|none",
+            "continuity_witness": "explicit_shared_persistence|unconditional_spec_contract|same_receiver|none",
+            "continuity_witness_expression": "exact shared constructor expression|none_required|empty string",
             "witness_evidence": ["exact SPEC or test-setup fact; empty when continuity_witness is none"]
           }},
           "project_policy_basis": ["SPEC.md or document evidence line"],
@@ -480,7 +490,8 @@ def project_policy_arbitration_instruction(
           "receiver_scope_analysis": {{
             "mechanical_identity": "same_receiver|distinct_fresh|not_applicable",
             "requires_cross_instance_continuity": true,
-            "continuity_witness": "explicit_shared_persistence|spec_cross_instance_contract|same_receiver|none",
+            "continuity_witness": "explicit_shared_persistence|unconditional_spec_contract|same_receiver|none",
+            "continuity_witness_expression": "exact shared constructor expression|none_required|empty string",
             "witness_evidence": ["exact SPEC or test-setup fact; empty when continuity_witness is none"]
           }},
           "project_policy_basis": ["specific SPEC/setup/action/assertion fact"],

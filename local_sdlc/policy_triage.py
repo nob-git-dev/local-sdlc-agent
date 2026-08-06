@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 from typing import Sequence
@@ -68,7 +69,7 @@ def generated_test_receiver_identity_facts(source: str, path: str) -> list[str]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name.startswith("test")
     ):
-        fresh_calls: dict[tuple[str, str], list[int]] = {}
+        fresh_calls: dict[tuple[str, str], list[ast.Call]] = {}
         for node in ast.walk(function):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
@@ -84,14 +85,27 @@ def generated_test_receiver_identity_facts(source: str, path: str) -> list[str]:
                 continue
             if not constructor_name[:1].isupper():
                 continue
-            fresh_calls.setdefault((constructor_name, node.func.attr), []).append(node.lineno)
-        for (constructor_name, method_name), lines in sorted(fresh_calls.items()):
-            if len(lines) < 2:
+            fresh_calls.setdefault((constructor_name, node.func.attr), []).append(receiver)
+        for (constructor_name, method_name), calls in sorted(fresh_calls.items()):
+            if len(calls) < 2:
                 continue
+            lines = [call.lineno for call in calls]
+            argument_sets = []
+            for call in calls:
+                expressions = {ast.unparse(argument) for argument in call.args}
+                expressions.update(
+                    ast.unparse(keyword.value)
+                    for keyword in call.keywords
+                    if keyword.arg is not None
+                )
+                argument_sets.append(expressions)
+            shared_arguments = sorted(set.intersection(*argument_sets))
             facts.append(
                 f"{path}:{function.name} calls {constructor_name}(...).{method_name}(...) "
                 f"on {len(lines)} distinct fresh constructor expressions at lines "
-                f"{', '.join(str(line) for line in lines)}; these receivers are not the same instance."
+                f"{', '.join(str(line) for line in lines)}; these receivers are not the same instance; "
+                "shared constructor arguments JSON: "
+                f"{json.dumps(shared_arguments, ensure_ascii=True)}."
             )
     return facts
 
@@ -175,6 +189,28 @@ def receiver_identity_facts_from_evidence(evidence_doc: str) -> list[str]:
     ]
 
 
+def shared_constructor_arguments_from_facts(facts: Sequence[str]) -> list[set[str]]:
+    """Recover machine-authored shared constructor expressions from identity facts."""
+
+    recovered: list[set[str]] = []
+    for fact in facts:
+        match = re.search(r"shared constructor arguments JSON:\s*(\[[^\n]*\])\.", fact)
+        if not match:
+            recovered.append(set())
+            continue
+        try:
+            values = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            recovered.append(set())
+            continue
+        recovered.append(
+            {value for value in values if isinstance(value, str) and value.strip()}
+            if isinstance(values, list)
+            else set()
+        )
+    return recovered
+
+
 def validate_project_policy_triage_proposition(
     record: dict[str, object],
     *,
@@ -199,10 +235,12 @@ def validate_project_policy_triage_proposition(
     mechanical_identity = str(receiver_scope.get("mechanical_identity", ""))
     requires_cross_instance = receiver_scope.get("requires_cross_instance_continuity")
     continuity_witness = str(receiver_scope.get("continuity_witness", ""))
+    witness_expression = str(receiver_scope.get("continuity_witness_expression", "")).strip()
     witness_evidence = receiver_scope.get("witness_evidence", [])
     witness_items = [
         item for item in witness_evidence if isinstance(item, str) and item.strip()
     ] if isinstance(witness_evidence, list) else []
+    shared_argument_sets = shared_constructor_arguments_from_facts(receiver_identity_facts)
     if case_type == "product_bug" and (selected != "H_product" or not product_items):
         valid = False
         reason = "product_bug requires selected_hypothesis=H_product and positive product_violation_evidence"
@@ -217,8 +255,21 @@ def validate_project_policy_triage_proposition(
         and distinct_fresh_receivers
         and requires_cross_instance is True
         and (
-            continuity_witness not in {"explicit_shared_persistence", "spec_cross_instance_contract"}
+            continuity_witness
+            not in {"explicit_shared_persistence", "unconditional_spec_contract"}
             or not witness_items
+            or (
+                continuity_witness == "explicit_shared_persistence"
+                and (
+                    not witness_expression
+                    or not shared_argument_sets
+                    or not all(witness_expression in values for values in shared_argument_sets)
+                )
+            )
+            or (
+                continuity_witness == "unconditional_spec_contract"
+                and witness_expression != "none_required"
+            )
         )
     ):
         test_paths = unique_ordered(
@@ -226,7 +277,8 @@ def validate_project_policy_triage_proposition(
         )
         contradiction = (
             "The generated test requires state continuity across mechanically distinct fresh "
-            "receivers without an explicit shared-persistence or cross-instance SPEC witness."
+            "receivers without a mechanically present shared-persistence expression or an "
+            "explicitly unconditional cross-instance SPEC contract."
         )
         normalized.update(
             {

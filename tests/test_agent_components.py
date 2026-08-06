@@ -305,6 +305,7 @@ def test_resume():
         self.assertEqual(len(facts), 1)
         self.assertIn("2 distinct fresh constructor expressions", facts[0])
         self.assertIn("these receivers are not the same instance", facts[0])
+        self.assertIn('shared constructor arguments JSON: ["handlers", "tasks"]', facts[0])
 
     def test_generated_test_oracle_evidence_includes_receiver_identity_facts(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -369,16 +370,48 @@ def test_resume():
                 "receiver_scope_analysis": {
                     "mechanical_identity": "distinct_fresh",
                     "requires_cross_instance_continuity": True,
-                    "continuity_witness": "spec_cross_instance_contract",
+                    "continuity_witness": "explicit_shared_persistence",
+                    "continuity_witness_expression": "state_path",
                     "witness_evidence": ["SPEC: new instances load the supplied state path"],
                 },
             },
-            receiver_identity_facts=["distinct fresh constructor expressions; receivers are not the same instance"],
+            receiver_identity_facts=[
+                "distinct fresh constructor expressions; receivers are not the same instance; "
+                'shared constructor arguments JSON: ["state_path", "tasks"].'
+            ],
             generated_test_paths=["tests/test_engine.py"],
         )
 
         self.assertEqual(gated["case_type"], "product_bug")
         self.assertEqual(gated["proposition_gate"]["status"], "pass")
+
+    def test_generated_oracle_gate_rejects_conditional_persistence_missing_from_calls(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "product_bug",
+                "selected_hypothesis": "H_product",
+                "product_violation_evidence": ["SPEC resumes a new instance with a checkpoint"],
+                "test_contradiction_evidence": [],
+                "receiver_scope_analysis": {
+                    "mechanical_identity": "distinct_fresh",
+                    "requires_cross_instance_continuity": True,
+                    "continuity_witness": "explicit_shared_persistence",
+                    "continuity_witness_expression": "checkpoint_path",
+                    "witness_evidence": ["SPEC: a new instance with the same checkpoint resumes"],
+                },
+            },
+            receiver_identity_facts=[
+                "tests/test_engine.py:test_resume calls Engine(...).run(...) on 2 distinct "
+                "fresh constructor expressions at lines 4, 5; these receivers are not the "
+                'same instance; shared constructor arguments JSON: ["handlers", "tasks"].'
+            ],
+            generated_test_paths=["tests/test_engine.py"],
+        )
+
+        self.assertEqual(gated["case_type"], "test_harness")
+        self.assertEqual(gated["safe_next_action"], "edit_test_harness")
+        self.assertEqual(gated["proposition_gate"]["status"], "corrected")
 
     def test_generated_oracle_proposition_gate_rejects_unsupported_product_vote(self):
         gated = validate_project_policy_triage_proposition(
