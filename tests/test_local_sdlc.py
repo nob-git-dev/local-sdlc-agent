@@ -3080,6 +3080,80 @@ AssertionError: 1 != 3
 
         self.assertEqual(symbols, ["_write_header"])
 
+    def test_forbidden_edit_targets_keep_paths_out_of_symbol_guard(self):
+        advice = [
+            "Patch pkg/executor.py, but do not edit tests/ or pkg/checkpoint.py.",
+        ]
+
+        symbols = self.local_sdlc.forbidden_edit_symbols_from_texts(advice)
+        paths = self.local_sdlc.forbidden_edit_paths_from_texts(advice)
+
+        self.assertEqual(symbols, [])
+        self.assertEqual(paths, ["tests/", "pkg/checkpoint.py"])
+
+    def test_artifact_lint_allows_references_to_forbidden_path_from_allowed_target(self):
+        output = json.dumps(
+            {
+                "artifacts": [
+                    {
+                        "type": "search_replace",
+                        "path": "pkg/executor.py",
+                        "search": "from pkg.graph import Graph",
+                        "replace": (
+                            "from pkg.checkpoint import load_checkpoint\n"
+                            "from pkg.graph import Graph"
+                        ),
+                    }
+                ]
+            }
+        )
+
+        findings = self.local_sdlc.lint_artifact_output(
+            output,
+            [],
+            [],
+            forbidden_actions=["do not edit tests/ or pkg/checkpoint.py"],
+        )
+
+        self.assertNotIn(
+            "forbidden_repair_target_edit",
+            {finding.code for finding in findings},
+        )
+
+    def test_artifact_lint_blocks_exact_forbidden_path_and_directory(self):
+        output = json.dumps(
+            {
+                "artifacts": [
+                    {
+                        "type": "search_replace",
+                        "path": "pkg/checkpoint.py",
+                        "search": "VALUE = 1",
+                        "replace": "VALUE = 2",
+                    },
+                    {
+                        "type": "search_replace",
+                        "path": "tests/test_checkpoint.py",
+                        "search": "VALUE = 1",
+                        "replace": "VALUE = 2",
+                    },
+                ]
+            }
+        )
+
+        findings = self.local_sdlc.lint_artifact_output(
+            output,
+            [],
+            [],
+            forbidden_actions=["do not edit tests/ or pkg/checkpoint.py"],
+        )
+        blocked_paths = {
+            finding.path
+            for finding in findings
+            if finding.code == "forbidden_repair_target_edit"
+        }
+
+        self.assertEqual(blocked_paths, {"pkg/checkpoint.py", "tests/test_checkpoint.py"})
+
     def test_artifact_lint_blocks_unknown_self_attribute_reference(self):
         output = json.dumps(
             {

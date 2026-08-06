@@ -1750,6 +1750,29 @@ def lint_artifact_output(
                 )
 
     absent_api_contracts = absent_api_contracts_from_texts(forbidden_actions)
+    forbidden_edit_paths = forbidden_edit_paths_from_texts(forbidden_actions)
+    if forbidden_edit_paths and edited_blocks:
+        for path, _block in edited_blocks:
+            normalized_path = normalize_legacy_file_artifact_path(path or "")
+            for forbidden_path in forbidden_edit_paths:
+                normalized_forbidden = forbidden_path.rstrip("/")
+                target_is_forbidden = normalized_path == normalized_forbidden
+                if forbidden_path.endswith("/"):
+                    target_is_forbidden = target_is_forbidden or normalized_path.startswith(
+                        normalized_forbidden + "/"
+                    )
+                if target_is_forbidden:
+                    findings.append(
+                        ArtifactLintFinding(
+                            severity="error",
+                            code="forbidden_repair_target_edit",
+                            message=(
+                                f"artifact targets `{normalized_path}`, but current supervisor repair "
+                                f"advice marks `{forbidden_path}` as read-only for this failure family"
+                            ),
+                            path=normalized_path,
+                        )
+                    )
     forbidden_edit_symbols = forbidden_edit_symbols_from_texts(forbidden_actions)
     if forbidden_edit_symbols and edited_blocks:
         for path, block in edited_blocks:

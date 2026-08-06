@@ -415,11 +415,36 @@ def forbidden_edit_symbols_from_texts(texts: Sequence[str]) -> list[str]:
             targets,
             maxsplit=1,
         )[0]
+        # A forbidden path constrains the artifact target, not every identifier
+        # appearing inside a valid edit.  Remove path-shaped targets before
+        # extracting symbols so ``pkg/checkpoint.py`` does not accidentally
+        # forbid imports containing ``pkg`` or ``checkpoint``.
+        targets = re.sub(
+            r"`?(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]*`?",
+            " ",
+            targets,
+        )
         for token in re.findall(r"`?([A-Za-z_][A-Za-z0-9_]*)`?", targets):
             if token.lower() in stopwords:
                 continue
             symbols.append(token)
     return unique_ordered(symbols)
+
+
+def forbidden_edit_paths_from_texts(texts: Sequence[str]) -> list[str]:
+    """Extract project-relative file or directory targets from ``do not edit`` advice."""
+    paths: list[str] = []
+    combined = "\n".join(text for text in texts if text)
+    for match in re.finditer(r"(?i)\bdo not edit\s+(?P<targets>[^\n.]+(?:\.[A-Za-z0-9_-]+)?)", combined):
+        targets = match.group("targets")
+        for raw_path in re.findall(
+            r"`?((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]*)`?",
+            targets,
+        ):
+            normalized = normalize_legacy_file_artifact_path(raw_path)
+            if normalized and normalized not in {".", ".."} and not normalized.startswith("../"):
+                paths.append(normalized)
+    return unique_ordered(paths)
 
 def normalize_legacy_file_artifact_path(raw_path: str) -> str:
     path = raw_path.strip()
