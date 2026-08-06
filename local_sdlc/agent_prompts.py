@@ -221,6 +221,13 @@ def patch_planner_instruction(brief: str, role_label: str, analysis_doc: str) ->
         in multiple spans of the same product file. A no-op candidate is an
         artifact failure and does not by itself prove that an otherwise
         actionable binding plan is false.
+        Fixed external and read-only acceptance tests are authoritative
+        evidence, never generated-test oracle candidates. Preserve the
+        receiver, call site, and lifecycle boundary asserted by that evidence.
+        If a value is rejected before the operation whose fixed acceptance
+        assertion expects the rejection, treat that as a product ownership or
+        lifecycle mismatch unless SPEC.md explicitly assigns validation to the
+        earlier operation.
         If that is impossible, use patch_type=missing_context. Use
         escalation=generated_test_oracle_triage only when the executable
         evidence identifies a machine-owned generated test that may contradict

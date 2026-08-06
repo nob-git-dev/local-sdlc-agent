@@ -2816,6 +2816,18 @@ def command_agent(args: argparse.Namespace) -> int:
                 - Command results and acceptance-gate results supplied to this
                   role are authoritative even when later diagnostic documents
                   exist.
+                - Fixed external and read-only acceptance tests are binding
+                  evidence, never candidates for test-harness repair.
+                - Preserve the receiver, call site, and lifecycle boundary
+                  asserted by fixed acceptance. If construction rejects a
+                  value before a later operation that fixed acceptance expects
+                  to reject it, investigate product validation ownership rather
+                  than declaring the acceptance test incorrect, unless SPEC.md
+                  explicitly assigns validation to construction.
+                - Map behavioral ownership from the specification's subject
+                  and operation. A requirement that names an aggregate or
+                  service validation belongs to that operation unless the
+                  specification explicitly delegates it to an input value.
                 - Focused context paths are ordered before the general context
                   set. If a requested path is present there, inspect the visible
                   content before claiming it is absent.
@@ -3039,6 +3051,45 @@ def command_agent(args: argparse.Namespace) -> int:
                     latest_command_docs,
                     stage_owned_test_paths,
                 )
+                if not failing_generated_tests:
+                    mismatch_doc = textwrap.dedent(
+                        """
+                        ## Patch Plan Evidence Owner Mismatch
+
+                        - failure_type: patch_plan_evidence_owner_mismatch
+                        - requested_escalation: generated_test_oracle_triage
+                        - failing_generated_tests: (none)
+                        - authoritative_rule: fixed external and read-only acceptance evidence is immutable
+
+                        Runner action:
+                        - Reject and discard the misowned patch plan before artifact generation.
+                        - Do not invoke generated-test triage without an executable failure in a stage-owned generated test.
+                        - Re-run root-cause analysis with the fixed acceptance receiver, call site, and lifecycle boundary preserved.
+                        """
+                    ).strip()
+                    path = write_run_document(
+                        run_dir,
+                        f"03-r{round_index:02d}-patch-plan-evidence-owner-mismatch.md",
+                        mismatch_doc,
+                    )
+                    written.append(path)
+                    documents.append(
+                        (f"Patch plan evidence owner mismatch round {round_index}", mismatch_doc)
+                    )
+                    active_patch_plan_doc = ""
+                    pending_patch_plan_doc = ""
+                    pending_deterministic_repair = None
+                    root_cause_patch_pending = True
+                    final_verdict = "patch_failed"
+                    final_failure_type = "patch_plan_evidence_owner_mismatch"
+                    record_transition(final_failure_type, round_index, mismatch_doc)
+                    write_partial_manifest(
+                        "patch_plan_evidence_owner_mismatch",
+                        {"current_round": round_index},
+                    )
+                    if not consume_failure_budget(final_failure_type, round_index):
+                        break
+                    continue
                 triage_record = None
                 if failing_generated_tests:
                     triage_evidence = generated_test_oracle_evidence_document(

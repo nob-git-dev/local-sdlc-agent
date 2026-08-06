@@ -269,6 +269,17 @@ FAILURE_TRANSITIONS: dict[str, FailureTransition] = {
             "Discard that plan and align every behavioral owner with a writable required path.",
         ),
     ),
+    "patch_plan_evidence_owner_mismatch": FailureTransition(
+        "patch_plan_evidence_owner_mismatch",
+        "root_cause_repair",
+        "discard_misowned_plan_and_preserve_fixed_acceptance",
+        "runner",
+        (
+            "Generated-test triage requires executable failure evidence from a stage-owned generated test.",
+            "Fixed external and read-only acceptance evidence is immutable and cannot be reclassified as a generated-test oracle.",
+            "Preserve the asserted receiver, call site, and lifecycle boundary while choosing a product-code root cause.",
+        ),
+    ),
     "candidate_no_effect": FailureTransition(
         "candidate_no_effect",
         "root_cause_repair",

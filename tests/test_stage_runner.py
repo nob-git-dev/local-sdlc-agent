@@ -939,6 +939,87 @@ class StageRunnerTests(LocalSDLCTestCase):
         self.assertIn("root_cause_recovery", actions)
         self.assertIn("complete", actions)
 
+    def test_run_stages_recovers_failed_final_integration_without_external_intervention(self):
+        calls = []
+
+        def fake_command_agent(stage_args):
+            calls.append(stage_args)
+            stage_args.run_dir.mkdir(parents=True, exist_ok=True)
+            if "s99-final-integration-repair" not in stage_args.run_dir.name:
+                payload = {"api_calls": 1, "final_verdict": "approved"}
+                exit_code = 0
+            elif "recovery" not in stage_args.run_dir.name:
+                payload = {
+                    "api_calls": 2,
+                    "final_verdict": "patch_failed",
+                    "failure_summary": {"failure_type": "patch_plan_infeasible"},
+                    "functional_rounds_used": 2,
+                    "protocol_rounds_used": 1,
+                    "adaptive_rounds_used": 1,
+                    "root_cause_patch_rounds_used": 1,
+                    "artifact_plan_repair_rounds_used": 2,
+                }
+                exit_code = 1
+            else:
+                (project / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+                payload = {"api_calls": 3, "final_verdict": "approved"}
+                exit_code = 0
+            (stage_args.run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+            return exit_code
+
+        spec = """
+# Generic Project
+## Implementation Stages
+```json
+{"stage_plan_schema": 1, "stages": [{"stage_id": "S01", "title": "Core", "goal": "Implement core.", "writable_paths": ["app.py"], "readonly_evidence_paths": ["acceptance_tests/test_app.py"], "test_commands": [], "required_observables": []}]}
+```
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, skills_dir = self.make_agent_project(root, spec)
+            (project / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+            acceptance = project / "acceptance_tests"
+            acceptance.mkdir()
+            (acceptance / "test_app.py").write_text(
+                "import unittest\nfrom pathlib import Path\n"
+                "class Acceptance(unittest.TestCase):\n"
+                "    def test_value(self): self.assertIn('VALUE = 1', Path('app.py').read_text())\n",
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+            args = self.local_sdlc.build_parser().parse_args(
+                [
+                    "run-stages", "build generic project", "--project", str(project),
+                    "--skills-dir", str(skills_dir), "--from-stage", "S01", "--to-stage", "S01",
+                    "--apply", "--test-command", f"{sys.executable} -m unittest discover -s acceptance_tests",
+                    "--run-dir", str(run_dir),
+                ]
+            )
+            original_cli = self.local_sdlc.command_agent
+            original = self.local_sdlc._stage_runner.command_agent
+            self.local_sdlc.command_agent = fake_command_agent
+            self.local_sdlc._stage_runner.command_agent = fake_command_agent
+            try:
+                result = self.local_sdlc.command_run_stages(args)
+            finally:
+                self.local_sdlc.command_agent = original_cli
+                self.local_sdlc._stage_runner.command_agent = original
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            actions = [item["action"] for item in self.local_sdlc.read_autonomy_decisions(run_dir)]
+            final_source = (project / "app.py").read_text(encoding="utf-8")
+            final_command_doc = (run_dir / "99-post-repair-command-01.md").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0, (manifest, final_source, final_command_doc))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[2].resume, calls[1].run_dir)
+        self.assertTrue(calls[2].skip_pm)
+        self.assertTrue(calls[2].small_patch)
+        self.assertEqual(calls[2].max_rounds, calls[1].max_rounds + 2)
+        self.assertEqual(len(manifest["integration_repair_attempts"]), 2)
+        self.assertEqual(manifest["status"], "approved")
+        self.assertIn("root_cause_recovery", actions)
+        self.assertTrue(manifest["autonomy"]["zero_unauthorized_external_interventions"])
+
     def test_cli_parent_runtime_restarts_a_persistently_stalled_goal(self):
         calls = []
 

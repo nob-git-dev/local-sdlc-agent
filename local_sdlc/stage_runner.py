@@ -231,6 +231,59 @@ def command_run_stages(args: argparse.Namespace) -> int:
             read_stall_state(child_run_dir),
         )
 
+    def configure_recovery_args(
+        child_args: argparse.Namespace,
+        source_run_dir: Path,
+        decision: StageRecoveryDecision,
+    ) -> None:
+        child_args.resume = source_run_dir
+        source_manifest_path = source_run_dir / "run.json"
+        if not source_manifest_path.exists():
+            source_manifest_path = source_run_dir / "run.partial.json"
+        source_manifest: dict[str, object] = {}
+        if source_manifest_path.exists():
+            try:
+                parsed_source = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+                if isinstance(parsed_source, dict):
+                    source_manifest = parsed_source
+            except json.JSONDecodeError:
+                source_manifest = {}
+        source_worktree = str(source_manifest.get("worktree_path") or "")
+        child_args.resume_worktree = bool(
+            args.worktree_mode == "copy"
+            and decision.resume_failed_worktree
+            and source_worktree
+            and Path(source_worktree).is_dir()
+        )
+        # Resumed child counters are cumulative, so add the fresh bounded
+        # allowance to what the failed attempt already consumed.
+        child_args.max_rounds = int(source_manifest.get("functional_rounds_used", 0) or 0) + int(
+            child_args.max_rounds
+        )
+        child_args.protocol_repair_rounds = int(
+            source_manifest.get("protocol_rounds_used", 0) or 0
+        ) + int(child_args.protocol_repair_rounds)
+        child_args.adaptive_rounds = int(
+            source_manifest.get("adaptive_rounds_used", 0) or 0
+        ) + int(child_args.adaptive_rounds)
+        child_args.root_cause_patch_rounds = int(
+            source_manifest.get("root_cause_patch_rounds_used", 0) or 0
+        ) + int(child_args.root_cause_patch_rounds)
+        child_args.artifact_plan_repair_rounds = int(
+            source_manifest.get("artifact_plan_repair_rounds_used", 0) or 0
+        ) + int(child_args.artifact_plan_repair_rounds)
+        child_args.skip_pm = True
+        child_args.small_patch = bool(child_args.small_patch or decision.small_patch)
+        if decision.artifact_format:
+            child_args.artifact_format = decision.artifact_format
+        child_args.brief += (
+            "\n\n## Supervisor Recovery Contract\n"
+            f"- action: {decision.action}\n"
+            f"- reason: {decision.rationale}\n"
+            "- ordinary unchanged retry is forbidden\n"
+            "- use the resumed executable evidence and produce one smaller falsifiable change"
+        )
+
     queue_doc = stage_queue_document(stages)
     path = write_run_document(run_dir, "00-stage-queue.md", queue_doc)
     written.append(path)
@@ -294,55 +347,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         stage_args = build_stage_agent_args(args, stage, stage_dir, completed, prior_changed_paths)
         stage_args.control_dir = [run_dir]
         if resume_stage_dir is not None and recovery_decision is not None:
-            stage_args.resume = resume_stage_dir
-            source_manifest_path = resume_stage_dir / "run.json"
-            if not source_manifest_path.exists():
-                source_manifest_path = resume_stage_dir / "run.partial.json"
-            source_manifest: dict[str, object] = {}
-            if source_manifest_path.exists():
-                try:
-                    parsed_source = json.loads(source_manifest_path.read_text(encoding="utf-8"))
-                    if isinstance(parsed_source, dict):
-                        source_manifest = parsed_source
-                except json.JSONDecodeError:
-                    source_manifest = {}
-            source_worktree = str(source_manifest.get("worktree_path") or "")
-            stage_args.resume_worktree = bool(
-                args.worktree_mode == "copy"
-                and source_worktree
-                and Path(source_worktree).is_dir()
-            )
-            # A Supervisor recovery is a new, independently bounded attempt.
-            # The child manifest stores cumulative counters, so each configured
-            # ceiling must be raised by the already-consumed amount. Otherwise
-            # a resumed child receives a fresh outer recovery authorization but
-            # has no inner repair budget with which to act on it.
-            stage_args.max_rounds = int(source_manifest.get("functional_rounds_used", 0) or 0) + int(
-                stage_args.max_rounds
-            )
-            stage_args.protocol_repair_rounds = int(
-                source_manifest.get("protocol_rounds_used", 0) or 0
-            ) + int(stage_args.protocol_repair_rounds)
-            stage_args.adaptive_rounds = int(
-                source_manifest.get("adaptive_rounds_used", 0) or 0
-            ) + int(stage_args.adaptive_rounds)
-            stage_args.root_cause_patch_rounds = int(
-                source_manifest.get("root_cause_patch_rounds_used", 0) or 0
-            ) + int(stage_args.root_cause_patch_rounds)
-            stage_args.artifact_plan_repair_rounds = int(
-                source_manifest.get("artifact_plan_repair_rounds_used", 0) or 0
-            ) + int(stage_args.artifact_plan_repair_rounds)
-            stage_args.skip_pm = True
-            stage_args.small_patch = bool(stage_args.small_patch or recovery_decision.small_patch)
-            if recovery_decision.artifact_format:
-                stage_args.artifact_format = recovery_decision.artifact_format
-            stage_args.brief += (
-                "\n\n## Supervisor Recovery Contract\n"
-                f"- action: {recovery_decision.action}\n"
-                f"- reason: {recovery_decision.rationale}\n"
-                "- ordinary unchanged retry is forbidden\n"
-                "- use the resumed executable evidence and produce one smaller falsifiable change"
-            )
+            configure_recovery_args(stage_args, resume_stage_dir, recovery_decision)
         print(f"stage: {stage.stage_id} {stage.title} (attempt {attempt_number})")
         exit_code, stage_pending, stage_blocked, stage_budget_stop, stage_stall = run_child_agent(stage_args, stage_dir)
         summary = read_stage_agent_manifest(stage, stage_dir, exit_code, project)
@@ -551,6 +556,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         )
 
     integration_repair: StageRunSummary | None = None
+    integration_repair_attempts: list[StageRunSummary] = []
     if final_status == "final_check_failed" and args.apply and args.final_repair_rounds > 0:
         try:
             begin_action(
@@ -564,51 +570,96 @@ def command_run_stages(args: argparse.Namespace) -> int:
         except ProgressStalled:
             final_status = "stalled"
         if final_status not in {"budget_exhausted", "stalled"}:
+            repair_args = build_integration_repair_args(args, stages, completed, run_dir)
+            repair_paths = tuple(unique_ordered(repair_args.include or repair_args.new_file))
             repair_stage = StageWorkItem(
                 stage_id="S99",
                 title="Final integration repair",
                 goal="Repair the smallest root cause behind the final acceptance failure.",
-                suggested_paths=tuple(all_stage_required_paths(stages)),
+                suggested_paths=repair_paths,
                 test_focus=tuple(args.test_command or ["final acceptance command"]),
+                writable_paths=repair_paths,
+                repair_scope_paths=repair_paths,
             )
-            print("stage: S99 Final integration repair")
-            repair_args = build_integration_repair_args(args, stages, completed, run_dir)
-            inherit_learning_binding(run_dir, repair_args.run_dir)
-            repair_args.control_dir = [run_dir]
-            exit_code, repair_pending, repair_blocked, repair_budget_stop, repair_stall = run_child_agent(
-                repair_args,
-                repair_args.run_dir,
-            )
-            integration_repair = read_stage_agent_manifest(repair_stage, repair_args.run_dir, exit_code, project)
-            if repair_stall:
-                child_stalls.append(
-                    {**repair_stall, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": "S99"}
+            repair_recovery_count = 0
+            repair_recovery_actions: list[str] = []
+            repair_attempt = 1
+            while True:
+                inherit_learning_binding(run_dir, repair_args.run_dir)
+                repair_args.control_dir = [run_dir]
+                print(f"stage: S99 Final integration repair (attempt {repair_attempt})")
+                exit_code, repair_pending, repair_blocked, repair_budget_stop, repair_stall = run_child_agent(
+                    repair_args,
+                    repair_args.run_dir,
                 )
-                final_status = "stalled"
-            elif repair_budget_stop:
-                child_budget_stops.append(
-                    {**repair_budget_stop, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": "S99"}
+                integration_repair = read_stage_agent_manifest(
+                    repair_stage, repair_args.run_dir, exit_code, project
                 )
-                final_status = "budget_exhausted"
-            elif repair_blocked:
-                child_blocked_safety_decisions.extend(
-                    {**item, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": repair_stage.stage_id}
-                    for item in repair_blocked
+                integration_repair_attempts.append(integration_repair)
+                if repair_stall:
+                    child_stalls.append(
+                        {**repair_stall, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": "S99"}
+                    )
+                    final_status = "stalled"
+                    break
+                if repair_budget_stop:
+                    child_budget_stops.append(
+                        {**repair_budget_stop, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": "S99"}
+                    )
+                    final_status = "budget_exhausted"
+                    break
+                if repair_blocked:
+                    child_blocked_safety_decisions.extend(
+                        {**item, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": repair_stage.stage_id}
+                        for item in repair_blocked
+                    )
+                    final_status = "safety_blocked"
+                    break
+                if repair_pending:
+                    child_pending_safety_decisions.extend(
+                        {**item, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": repair_stage.stage_id}
+                        for item in repair_pending
+                    )
+                    final_status = "approval_required"
+                    break
+                if exit_code == 0:
+                    final_status = "approved"
+                    run_final_acceptance_checks(
+                        cycle=2,
+                        filename_prefix="99-post-repair",
+                        action_prefix="post_repair",
+                    )
+                    break
+                final_status = "final_check_failed"
+                if not args.autonomous_recovery:
+                    break
+                decision = decide_final_integration_recovery(
+                    integration_repair,
+                    recovery_count=repair_recovery_count,
+                    max_recoveries=args.max_stage_recoveries,
+                    previous_actions=tuple(repair_recovery_actions),
                 )
-                final_status = "safety_blocked"
-            elif repair_pending:
-                child_pending_safety_decisions.extend(
-                    {**item, "run_dir": str(repair_args.run_dir.resolve()), "stage_id": repair_stage.stage_id}
-                    for item in repair_pending
+                record_autonomy_decision(
+                    run_dir,
+                    scope="stage:S99",
+                    action=decision.action,
+                    reason_code=decision.reason_code,
+                    rationale=decision.rationale,
+                    evidence_paths=(
+                        display_path(repair_args.run_dir / "run.json", project),
+                        display_path(repair_args.run_dir / "run.partial.json", project),
+                    ),
+                    metadata=stage_recovery_decision_manifest(decision),
                 )
-                final_status = "approval_required"
-            elif exit_code == 0:
-                final_status = "approved"
-                run_final_acceptance_checks(
-                    cycle=2,
-                    filename_prefix="99-post-repair",
-                    action_prefix="post_repair",
-                )
+                if decision.action == "fail_closed":
+                    break
+                repair_recovery_count += 1
+                repair_recovery_actions.append(decision.action)
+                source_repair_dir = repair_args.run_dir
+                repair_attempt += 1
+                repair_args = build_integration_repair_args(args, stages, completed, run_dir)
+                repair_args.run_dir = run_dir / f"s99-final-integration-repair-recovery-{repair_attempt - 1:02d}"
+                configure_recovery_args(repair_args, source_repair_dir, decision)
 
     final_acceptance_criteria = parse_acceptance_criteria(spec)
     latest_check_cycle = max(
@@ -757,7 +808,19 @@ def command_run_stages(args: argparse.Namespace) -> int:
             "required_paths": list(integration_repair.required_paths),
             "failure_summary": integration_repair.failure_summary,
         }
-        manifest["api_calls"] = int(manifest.get("api_calls", 0)) + integration_repair.api_calls
+        manifest["integration_repair_attempts"] = [
+            {
+                "run_dir": item.run_dir,
+                "exit_code": item.exit_code,
+                "api_calls": item.api_calls,
+                "final_verdict": item.final_verdict,
+                "failure_summary": item.failure_summary,
+            }
+            for item in integration_repair_attempts
+        ]
+        manifest["api_calls"] = int(manifest.get("api_calls", 0)) + sum(
+            item.api_calls for item in integration_repair_attempts
+        )
     new_regression_memories = regression_memories_from_manifest(manifest)
     if new_regression_memories:
         memory_path = write_run_document(

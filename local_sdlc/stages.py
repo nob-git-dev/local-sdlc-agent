@@ -595,6 +595,7 @@ def build_integration_repair_args(
         protocol_repair_rounds=args.protocol_repair_rounds,
         adaptive_rounds=args.adaptive_rounds,
         root_cause_patch_rounds=args.root_cause_patch_rounds,
+        artifact_plan_repair_rounds=args.artifact_plan_repair_rounds,
         max_goal_actions=getattr(args, "max_goal_actions", DEFAULT_MAX_GOAL_ACTIONS),
         max_stage_actions=getattr(args, "max_stage_actions", DEFAULT_MAX_STAGE_ACTIONS),
         max_recovery_actions=getattr(args, "max_recovery_actions", DEFAULT_MAX_RECOVERY_ACTIONS),

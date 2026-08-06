@@ -394,5 +394,59 @@ def decide_stage_recovery(
     )
 
 
+def decide_final_integration_recovery(
+    summary: StageRunSummary,
+    *,
+    recovery_count: int,
+    max_recoveries: int,
+    previous_actions: Sequence[str] = (),
+) -> StageRecoveryDecision:
+    """Choose a bounded S99 recovery without splitting integration ownership."""
+    if recovery_count >= max_recoveries:
+        return StageRecoveryDecision(
+            action="fail_closed",
+            reason_code="autonomous_recovery_exhausted",
+            rationale="The bounded final-integration recovery budget is exhausted.",
+        )
+
+    failure_type = str((summary.failure_summary or {}).get("failure_type") or "unknown")
+    prior = set(previous_actions)
+    if failure_type == "runner_configuration_error":
+        return StageRecoveryDecision(
+            action="fail_closed",
+            reason_code="runner_configuration_error",
+            rationale="Product repair cannot correct a rejected runner configuration.",
+            metadata={"failure_type": failure_type},
+        )
+    if is_protocol_failure_type(failure_type) and "format_repair" not in prior:
+        return StageRecoveryDecision(
+            action="format_repair",
+            reason_code="artifact_format_repair",
+            rationale="Resume final integration with prior evidence and a restricted artifact format.",
+            resume_failed_worktree=True,
+            artifact_format="legacy",
+            small_patch=True,
+            metadata={"failure_type": failure_type},
+        )
+    if "root_cause_recovery" in prior:
+        return StageRecoveryDecision(
+            action="fail_closed",
+            reason_code="no_novel_recovery",
+            rationale="Final integration already attempted root-cause recovery without new evidence.",
+            metadata={"failure_type": failure_type},
+        )
+    return StageRecoveryDecision(
+        action="root_cause_recovery",
+        reason_code="final_integration_failure_analysis",
+        rationale=(
+            "Resume the failed final-integration worktree and use its executable evidence "
+            "for one independently bounded root-cause attempt."
+        ),
+        resume_failed_worktree=True,
+        small_patch=True,
+        metadata={"failure_type": failure_type},
+    )
+
+
 def stage_recovery_decision_manifest(decision: StageRecoveryDecision) -> dict[str, object]:
     return asdict(decision)

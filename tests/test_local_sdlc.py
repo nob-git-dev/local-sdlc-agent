@@ -10211,6 +10211,168 @@ END_SEARCH_REPLACE"""
         self.assertIn("tests/test_app.py", authorized_writer)
         self.assertIn("app.py", manifest["project_policy_triages"][-1]["readonly_paths"])
 
+    def test_patch_planner_rejects_generated_test_triage_without_generated_failure(self):
+        calls = []
+        artifact_calls = 0
+        planner_calls = 0
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+            def complete(self, messages, agent_level="default", call_function="default", **_kwargs):
+                nonlocal artifact_calls, planner_calls
+                joined = "\n".join(str(message.get("content", "")) for message in messages)
+                calls.append((agent_level, call_function, joined))
+                if call_function == "root_cause_analysis":
+                    self_test.assertIn("Fixed external and read-only acceptance tests", joined)
+                    return textwrap.dedent(
+                        """
+                        ROOT_CAUSE_REPORT
+                        - repeated_failure_signature: fixed acceptance still rejects VALUE=1
+                        - failing_observation: acceptance_tests/test_app.py expects VALUE=2
+                        - rejected_hypotheses:
+                          - VALUE=1 satisfies the fixed contract
+                        - chosen_root_cause: product value does not satisfy fixed acceptance
+                        - patch_target: app.py VALUE
+                        - patch_rule: set VALUE to the fixed accepted value
+                        - stop_rule: stop if app.py is absent
+                        """
+                    ).strip()
+                if call_function == "failure_analysis":
+                    return json.dumps(
+                        {
+                            "failure_id": "fixed-acceptance",
+                            "round": 2,
+                            "failure_type": "repeated_same_failure",
+                            "failure_signature": "fixed acceptance still fails",
+                            "observed_facts": ["fixed acceptance expects VALUE=2"],
+                            "attempted_actions": [],
+                            "rejected_hypotheses": [],
+                            "active_constraints": ["fixed acceptance is read-only"],
+                            "next_required_action": {
+                                "role": "root_cause_analysis",
+                                "goal": "repair product ownership",
+                                "required_paths": ["app.py"],
+                                "readonly_paths": ["acceptance_tests/test_app.py"],
+                                "forbidden_paths": ["acceptance_tests/test_app.py"],
+                                "next_patch_type": "search_replace",
+                                "minimal_patch_goal": "set VALUE to 2",
+                                "forbidden_focus": ["test edits"],
+                                "required_focus": ["app.py VALUE"],
+                            },
+                            "formal_constraints": ["fixed_acceptance => readonly"],
+                        }
+                    )
+                if call_function == "patch_planner":
+                    planner_calls += 1
+                    if planner_calls == 1:
+                        return textwrap.dedent(
+                            """
+                            PATCH_PLAN
+                            - proposition: If acceptance disagrees, classify it as an oracle issue
+                            - required_path: app.py
+                            - readonly_paths: acceptance_tests/test_app.py
+                            - forbidden_paths: acceptance_tests/test_app.py
+                            - patch_type: missing_context
+                            - escalation: generated_test_oracle_triage
+                            - minimal_patch_goal: ask to modify acceptance
+                            - stop_rule: stop before writing product code
+                            """
+                        ).strip()
+                    return textwrap.dedent(
+                        """
+                        PATCH_PLAN
+                        - proposition: If fixed acceptance requires VALUE=2, change VALUE from 1 to 2
+                        - required_path: app.py
+                        - readonly_paths: acceptance_tests/test_app.py
+                        - forbidden_paths: acceptance_tests/test_app.py
+                        - patch_type: search_replace
+                        - escalation: none
+                        - minimal_patch_goal: set VALUE to 2
+                        - stop_rule: stop if VALUE=1 is absent
+                        """
+                    ).strip()
+                if call_function == "patch_conformance":
+                    return json.dumps(
+                        {
+                            "status": "pass",
+                            "obligations": [
+                                {
+                                    "id": "O1",
+                                    "requirement": "set VALUE to 2",
+                                    "status": "satisfied",
+                                    "candidate_evidence": "candidate replaces VALUE = 1 with VALUE = 2",
+                                    "counterexample": "(none)",
+                                }
+                            ],
+                            "missing_obligations": [],
+                            "missing_context_paths": [],
+                            "safe_next_action": "apply",
+                            "repair_instruction": "",
+                        }
+                    )
+                if call_function in {"generate_artifact", "artifact_writer", "repair_artifact"}:
+                    artifact_calls += 1
+                    old, new = ("0", "1") if artifact_calls == 1 else ("1", "2")
+                    return textwrap.dedent(
+                        f"""
+                        BEGIN_SEARCH_REPLACE: app.py
+                        <<<<<<< SEARCH
+                        VALUE = {old}
+                        =======
+                        VALUE = {new}
+                        >>>>>>> REPLACE
+                        END_SEARCH_REPLACE
+                        """
+                    ).strip()
+                if call_function == "project_policy_triage":
+                    raise AssertionError("fixed acceptance must not enter generated-test triage")
+                raise AssertionError(f"unexpected LLM call: {call_function}")
+
+        self_test = self
+        with tempfile.TemporaryDirectory() as temp:
+            project, skills_dir = self.make_agent_project(Path(temp), "# SPEC\n\nVALUE must equal 2.\n")
+            (project / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+            acceptance = project / "acceptance_tests"
+            acceptance.mkdir()
+            (acceptance / "test_app.py").write_text(
+                "import unittest\nfrom pathlib import Path\n"
+                "class Acceptance(unittest.TestCase):\n"
+                "    def test_value(self): self.assertIn('VALUE = 2', Path('app.py').read_text())\n",
+                encoding="utf-8",
+            )
+            run_dir = project / "run"
+            original_client = self.local_sdlc.LocalLLMClient
+            self.local_sdlc.LocalLLMClient = FakeClient
+            try:
+                args = self.local_sdlc.build_parser().parse_args(
+                    [
+                        "agent", "satisfy fixed acceptance", "--project", str(project),
+                        "--skills-dir", str(skills_dir), "--skip-pm", "--domain-modeling", "never",
+                        "--judge-mode", "command-only", "--include", "app.py", "--context",
+                        "acceptance_tests/test_app.py", "--apply", "--precheck", "--max-rounds", "4",
+                        "--protocol-repair-rounds", "0", "--adaptive-rounds", "0",
+                        "--root-cause-patch-rounds", "2", "--artifact-plan-repair-rounds", "1",
+                        "--test-command", f"{sys.executable} -m unittest discover -s acceptance_tests -v",
+                        "--run-dir", str(run_dir),
+                    ]
+                )
+                result = self.local_sdlc.command_agent(args)
+            finally:
+                self.local_sdlc.LocalLLMClient = original_client
+            manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            app_source = (project / "app.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0, manifest)
+        self.assertEqual(app_source, "VALUE = 2\n")
+        self.assertNotIn("project_policy_triage", [call[1] for call in calls])
+        self.assertIn(
+            "patch_plan_evidence_owner_mismatch",
+            {item["failure_type"] for item in manifest["state_transitions"]},
+        )
+        self.assertEqual(artifact_calls, 2)
+
     def test_agent_triages_new_generated_test_failure_before_it_repeats(self):
         calls = []
         artifact_calls = 0
