@@ -97,6 +97,21 @@ def collect_file_context(
             break
     return "\n\n".join(chunks)
 
+
+def existing_file_context_paths(project: Path, paths: Sequence[str]) -> list[str]:
+    """Keep ordered context paths that are currently readable project files.
+
+    Writable targets may legitimately name files that a later artifact will
+    create. They must not be promoted to read context before that happens.
+    """
+
+    existing: list[str] = []
+    for path in dict.fromkeys(paths):
+        candidate = resolve_project_path(project, path)
+        if candidate.is_file():
+            existing.append(path)
+    return existing
+
 def python_public_symbol_ledger(project: Path, includes: Sequence[str]) -> str:
     rows: list[str] = []
     for include in includes:

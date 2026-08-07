@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import itertools
 import json
 import re
 from pathlib import Path
@@ -171,6 +172,310 @@ def generated_test_receiver_lineage_facts(source: str, path: str) -> list[str]:
     return list(dict.fromkeys(facts))
 
 
+def _literal_loop_values(node: ast.AST) -> list[object]:
+    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return []
+    values: list[object] = []
+    for element in node.elts:
+        try:
+            values.append(ast.literal_eval(element))
+        except (ValueError, TypeError):
+            return []
+    return values
+
+
+def _concrete_call_signatures(
+    node: ast.Call,
+    bindings: dict[str, list[object]],
+) -> list[str]:
+    """Expand a call only when every argument has a concrete literal value."""
+
+    try:
+        callable_name = ast.unparse(node.func)
+    except (ValueError, TypeError):
+        return []
+    argument_options: list[list[str]] = []
+    for argument in node.args:
+        if isinstance(argument, ast.Name) and argument.id in bindings:
+            argument_options.append([repr(value) for value in bindings[argument.id]])
+            continue
+        try:
+            argument_options.append([repr(ast.literal_eval(argument))])
+        except (ValueError, TypeError):
+            return []
+    keyword_options: list[tuple[str, list[str]]] = []
+    for keyword in node.keywords:
+        if keyword.arg is None:
+            return []
+        value = keyword.value
+        if isinstance(value, ast.Name) and value.id in bindings:
+            keyword_options.append((keyword.arg, [repr(item) for item in bindings[value.id]]))
+            continue
+        try:
+            keyword_options.append((keyword.arg, [repr(ast.literal_eval(value))]))
+        except (ValueError, TypeError):
+            return []
+    options = argument_options + [values for _name, values in keyword_options]
+    combinations = itertools.product(*options) if options else [()]
+    signatures: list[str] = []
+    for combination in combinations:
+        positional_count = len(argument_options)
+        rendered = list(combination[:positional_count])
+        rendered.extend(
+            f"{name}={value}"
+            for (name, _values), value in zip(
+                keyword_options,
+                combination[positional_count:],
+            )
+        )
+        signatures.append(f"{callable_name}({', '.join(rendered)})")
+    return signatures
+
+
+def python_exception_call_obligations(
+    source: str,
+    path: str,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Return concrete calls required to raise and required not to raise.
+
+    A call under ``assertRaises``/``pytest.raises`` is a positive exception
+    obligation. A call elsewhere in a test must return normally for the test to
+    reach its later assertions, so it is a negative exception obligation.
+    Unknown argument expressions are deliberately ignored.
+    """
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}, {}
+
+    guarded: dict[str, list[str]] = {}
+    unguarded: dict[str, list[str]] = {}
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.exception_depth = 0
+            self.exception_roots: set[int] = set()
+            self.bindings: dict[str, list[object]] = {}
+            self.test_depth = 0
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if not node.name.startswith("test"):
+                return
+            previous = self.test_depth
+            self.test_depth += 1
+            for statement in node.body:
+                self.visit(statement)
+            self.test_depth = previous
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_For(self, node: ast.For) -> None:
+            previous = dict(self.bindings)
+            if isinstance(node.target, ast.Name):
+                values = _literal_loop_values(node.iter)
+                if values:
+                    self.bindings[node.target.id] = values
+            for statement in node.body:
+                self.visit(statement)
+            self.bindings = previous
+            for statement in node.orelse:
+                self.visit(statement)
+
+        def visit_With(self, node: ast.With) -> None:
+            is_exception_scope = any(
+                isinstance(item.context_expr, ast.Call)
+                and (
+                    isinstance(item.context_expr.func, ast.Attribute)
+                    and item.context_expr.func.attr in {"assertRaises", "raises"}
+                    or isinstance(item.context_expr.func, ast.Name)
+                    and item.context_expr.func.id == "raises"
+                )
+                for item in node.items
+            )
+            for item in node.items:
+                if not is_exception_scope:
+                    self.visit(item.context_expr)
+            if is_exception_scope:
+                self.exception_depth += 1
+                self.exception_roots.update(
+                    id(statement.value)
+                    for statement in node.body
+                    if isinstance(statement, ast.Expr)
+                    and isinstance(statement.value, ast.Call)
+                )
+            for statement in node.body:
+                self.visit(statement)
+            if is_exception_scope:
+                self.exception_depth -= 1
+
+        visit_AsyncWith = visit_With
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if self.test_depth:
+                if not self.exception_depth or id(node) in self.exception_roots:
+                    target = guarded if self.exception_depth else unguarded
+                    for signature in _concrete_call_signatures(node, self.bindings):
+                        target.setdefault(signature, []).append(f"{path}:{node.lineno}")
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    return guarded, unguarded
+
+
+def generated_fixed_exception_conflict_facts(
+    project: Path,
+    generated_test_paths: Sequence[str],
+    fixed_test_paths: Sequence[str],
+) -> list[str]:
+    """Prove R(c) and not-R(c) conflicts across generated and fixed tests."""
+
+    generated_guarded: dict[str, list[str]] = {}
+    fixed_unguarded: dict[str, list[str]] = {}
+    for path, target, guarded_side in [
+        *((path, generated_guarded, True) for path in generated_test_paths),
+        *((path, fixed_unguarded, False) for path in fixed_test_paths),
+    ]:
+        try:
+            source = resolve_project_path(project, path).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            continue
+        guarded, unguarded = python_exception_call_obligations(source, path)
+        selected = guarded if guarded_side else unguarded
+        for signature, locations in selected.items():
+            target.setdefault(signature, []).extend(locations)
+    facts: list[str] = []
+    for signature in sorted(set(generated_guarded) & set(fixed_unguarded)):
+        facts.append(
+            "MECHANICAL_ORACLE_CONFLICT: generated test requires "
+            f"{signature} to raise at {', '.join(generated_guarded[signature])}; "
+            "fixed acceptance executes the same concrete call outside an exception "
+            f"scope at {', '.join(fixed_unguarded[signature])}, requiring it not to raise."
+        )
+    return facts
+
+
+def _spec_api_parameters_and_regexes(
+    spec: str,
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    signatures: dict[str, list[str]] = {}
+    for line in spec.splitlines():
+        match = re.fullmatch(r"\s*([A-Za-z_]\w*)\((.*)\)(?:\s*->.*)?\s*", line)
+        if not match:
+            continue
+        parameters: list[str] = []
+        for raw in match.group(2).split(","):
+            name = raw.strip().split(":", 1)[0].split("=", 1)[0].strip()
+            if re.fullmatch(r"[A-Za-z_]\w*", name):
+                parameters.append(name)
+        signatures.setdefault(match.group(1), parameters)
+    regexes = {
+        name: pattern
+        for name, pattern in re.findall(
+            r"`([A-Za-z_]\w*)`\s+must match\s+`([^`]+)`",
+            spec,
+        )
+    }
+    return signatures, regexes
+
+
+def _call_literal_argument(signature: str, parameter: str, parameters: Sequence[str]) -> object:
+    try:
+        expression = ast.parse(signature, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(expression, ast.Call):
+        return None
+    for keyword in expression.keywords:
+        if keyword.arg == parameter:
+            try:
+                return ast.literal_eval(keyword.value)
+            except (ValueError, TypeError):
+                return None
+    try:
+        index = list(parameters).index(parameter)
+    except ValueError:
+        return None
+    if index >= len(expression.args):
+        return None
+    try:
+        return ast.literal_eval(expression.args[index])
+    except (ValueError, TypeError):
+        return None
+
+
+def generated_fixed_spec_partition_conflict_facts(
+    project: Path,
+    spec: str,
+    generated_test_paths: Sequence[str],
+    fixed_test_paths: Sequence[str],
+) -> list[str]:
+    """Detect unlicensed behavioral distinctions inside one SPEC partition.
+
+    If SPEC maps two concrete inputs to the same explicit invalid class, a
+    generated test cannot require a different exception boundary from fixed
+    acceptance without an additional SPEC predicate that distinguishes them.
+    """
+
+    api_parameters, regexes = _spec_api_parameters_and_regexes(spec)
+    if not api_parameters or not regexes:
+        return []
+    generated_guarded: dict[str, list[str]] = {}
+    fixed_unguarded: dict[str, list[str]] = {}
+    for path, target, guarded_side in [
+        *((path, generated_guarded, True) for path in generated_test_paths),
+        *((path, fixed_unguarded, False) for path in fixed_test_paths),
+    ]:
+        try:
+            source = resolve_project_path(project, path).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            continue
+        guarded, unguarded = python_exception_call_obligations(source, path)
+        for signature, locations in (guarded if guarded_side else unguarded).items():
+            target.setdefault(signature, []).extend(locations)
+    facts: list[str] = []
+    for generated_signature, generated_locations in sorted(generated_guarded.items()):
+        try:
+            generated_call = ast.parse(generated_signature, mode="eval").body
+            generated_name = ast.unparse(generated_call.func).rsplit(".", 1)[-1]
+        except (SyntaxError, AttributeError, ValueError, TypeError):
+            continue
+        parameters = api_parameters.get(generated_name, [])
+        for parameter, pattern in regexes.items():
+            if parameter not in parameters:
+                continue
+            generated_value = _call_literal_argument(
+                generated_signature, parameter, parameters
+            )
+            if not isinstance(generated_value, str) or re.fullmatch(pattern, generated_value):
+                continue
+            for fixed_signature, fixed_locations in sorted(fixed_unguarded.items()):
+                try:
+                    fixed_call = ast.parse(fixed_signature, mode="eval").body
+                    fixed_name = ast.unparse(fixed_call.func).rsplit(".", 1)[-1]
+                except (SyntaxError, AttributeError, ValueError, TypeError):
+                    continue
+                if fixed_name != generated_name:
+                    continue
+                fixed_value = _call_literal_argument(fixed_signature, parameter, parameters)
+                if not isinstance(fixed_value, str) or re.fullmatch(pattern, fixed_value):
+                    continue
+                facts.append(
+                    "SPEC_PARTITION_ORACLE_CONFLICT: SPEC predicate "
+                    f"{parameter} matches /{pattern}/ places {generated_value!r} and "
+                    f"{fixed_value!r} in the same invalid partition for {generated_name}; "
+                    f"generated test requires {generated_signature} to raise at "
+                    f"{', '.join(generated_locations)}, while fixed acceptance requires "
+                    f"{fixed_signature} not to raise at {', '.join(fixed_locations)}; "
+                    "SPEC provides no predicate licensing different behavior within this partition."
+                )
+    return list(dict.fromkeys(facts))
+
+
 def generated_test_oracle_evidence_document(
     project: Path,
     spec: str,
@@ -190,6 +495,22 @@ def generated_test_oracle_evidence_document(
     normalized_tests = [
         path for path in normalize_new_files(test_paths) if path.startswith("tests/")
     ]
+    fixed_tests = [
+        path.relative_to(project).as_posix()
+        for path in sorted((project / "acceptance_tests").rglob("*.py"))
+        if path.is_file()
+    ]
+    oracle_conflict_facts = generated_fixed_exception_conflict_facts(
+        project,
+        normalized_tests,
+        fixed_tests,
+    )
+    partition_conflict_facts = generated_fixed_spec_partition_conflict_facts(
+        project,
+        spec,
+        normalized_tests,
+        fixed_tests,
+    )
     sections = [
         "## Ownership Facts",
         "",
@@ -199,6 +520,11 @@ def generated_test_oracle_evidence_document(
         "- A generated assertion is provisional until its setup, action, and expected proposition agree with SPEC.md.",
         "- Repair advice and prior failure-analysis conclusions are intentionally excluded from this evidence packet.",
         "- stage_owned_generated_tests: " + (", ".join(normalized_tests) or "(none)"),
+        "",
+        "## Mechanical Oracle Conflict Facts",
+        "",
+        *(f"- {fact}" for fact in [*oracle_conflict_facts, *partition_conflict_facts]),
+        *(["- (none)"] if not oracle_conflict_facts and not partition_conflict_facts else []),
         "",
         "## Fixed Specification",
         "",
@@ -226,6 +552,21 @@ def generated_test_oracle_evidence_document(
                 *(["- (none)"] if not lineage_facts else []),
                 "",
                 f"## Generated Test Source: {path}",
+                "",
+                truncate_text(source, max_test_chars),
+            ]
+        )
+    for path in fixed_tests:
+        try:
+            source = resolve_project_path(project, path).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            source = "(unavailable)"
+        sections.extend(
+            [
+                "",
+                f"## Fixed Acceptance Source (readonly): {path}",
                 "",
                 truncate_text(source, max_test_chars),
             ]
@@ -268,6 +609,16 @@ def receiver_lineage_facts_from_evidence(evidence_doc: str) -> list[str]:
     ]
 
 
+def oracle_conflict_facts_from_evidence(evidence_doc: str) -> list[str]:
+    """Recover only machine-authored exception-timing contradiction facts."""
+
+    return [
+        line[2:].strip()
+        for line in evidence_doc.splitlines()
+        if line.startswith(("- MECHANICAL_ORACLE_CONFLICT:", "- SPEC_PARTITION_ORACLE_CONFLICT:"))
+    ]
+
+
 def shared_constructor_arguments_from_facts(facts: Sequence[str]) -> list[set[str]]:
     """Recover machine-authored shared constructor expressions from identity facts."""
 
@@ -295,6 +646,7 @@ def validate_project_policy_triage_proposition(
     *,
     receiver_identity_facts: Sequence[str] = (),
     receiver_lineage_facts: Sequence[str] = (),
+    oracle_conflict_facts: Sequence[str] = (),
     generated_test_paths: Sequence[str] = (),
 ) -> dict[str, object]:
     """Fail closed when a generated-oracle verdict lacks positive evidence."""
@@ -340,9 +692,15 @@ def validate_project_policy_triage_proposition(
     fixed_contradiction_items = [
         item for item in fixed_contradiction_evidence if isinstance(item, str) and item.strip()
     ] if isinstance(fixed_contradiction_evidence, list) else []
+    exact_conflict = any(
+        fact.startswith("MECHANICAL_ORACLE_CONFLICT:") for fact in oracle_conflict_facts
+    )
+    partition_conflict = any(
+        fact.startswith("SPEC_PARTITION_ORACLE_CONFLICT:") for fact in oracle_conflict_facts
+    )
+    mechanically_conflicting = exact_conflict or partition_conflict
     if (
-        jointly_satisfiable is False
-        and conflict_items
+        (jointly_satisfiable is False and conflict_items or mechanically_conflicting)
         and fixed_contradicts_spec is False
         and not fixed_contradiction_items
     ):
@@ -360,12 +718,22 @@ def validate_project_policy_triage_proposition(
                     "case_type": "test_harness",
                     "confidence": "high",
                     "selected_hypothesis": "H_test",
-                    "test_contradiction_evidence": [contradiction, *conflict_items],
+                    "test_contradiction_evidence": [
+                        contradiction,
+                        *oracle_conflict_facts,
+                        *conflict_items,
+                    ],
                     "safe_next_action": "edit_test_harness",
                     "editable_paths": test_paths,
                     "proposition_gate": {
                         "status": "corrected",
-                        "reason": "unsatisfiable_generated_oracle_precedence",
+                        "reason": (
+                            "mechanical_exception_timing_conflict"
+                            if exact_conflict
+                            else "undiscriminated_spec_partition_conflict"
+                            if partition_conflict
+                            else "unsatisfiable_generated_oracle_precedence"
+                        ),
                     },
                     "rationale": contradiction,
                 }

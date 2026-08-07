@@ -41,6 +41,7 @@ from .policy_triage import (
     validate_project_policy_triage_proposition,
     receiver_identity_facts_from_evidence,
     receiver_lineage_facts_from_evidence,
+    oracle_conflict_facts_from_evidence,
 )
 from .patch_conformance import (
     failed_patch_conformance_review,
@@ -1227,16 +1228,15 @@ def command_agent(args: argparse.Namespace) -> int:
         parsed["call_function"] = "project_policy_triage"
         identity_facts = receiver_identity_facts_from_evidence(evidence_doc)
         lineage_facts = receiver_lineage_facts_from_evidence(evidence_doc)
-        identity_fact_paths = unique_ordered(
-            fact.split(":", 1)[0]
-            for fact in [*identity_facts, *lineage_facts]
-            if ":" in fact and fact.split(":", 1)[0].startswith("tests/")
-        )
+        oracle_conflict_facts = oracle_conflict_facts_from_evidence(evidence_doc)
         parsed = validate_project_policy_triage_proposition(
             parsed,
             receiver_identity_facts=identity_facts,
             receiver_lineage_facts=lineage_facts,
-            generated_test_paths=identity_fact_paths,
+            oracle_conflict_facts=oracle_conflict_facts,
+            generated_test_paths=unique_ordered(
+                [*stage_generated_test_paths, *stage_scope_test_paths]
+            ),
         )
         return enforce_test_harness_triage_gate(
             parsed,
@@ -1971,16 +1971,15 @@ def command_agent(args: argparse.Namespace) -> int:
             for path in allowed_artifact_paths
             if (project / path).is_file()
         ]
-        return list(
-            dict.fromkeys(
-                [
-                    *focused_context_files,
-                    *args.include,
-                    *existing_writable_targets,
-                    *context_files,
-                    *slice_context_files,
-                ]
-            )
+        return existing_file_context_paths(
+            project,
+            [
+                *focused_context_files,
+                *args.include,
+                *existing_writable_targets,
+                *context_files,
+                *slice_context_files,
+            ],
         )
 
     def reject_replayed_regression(

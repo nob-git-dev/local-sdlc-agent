@@ -16,6 +16,18 @@ from tests.helpers import ENTRYPOINT_PATH, ROOT, LocalSDLCTestCase, product_name
 
 
 class LocalSDLCTest(LocalSDLCTestCase):
+    def test_existing_file_context_paths_excludes_not_yet_created_targets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+            paths = self.local_sdlc.existing_file_context_paths(
+                project,
+                ["app.py", "tests/test_app.py", "app.py"],
+            )
+
+        self.assertEqual(paths, ["app.py"])
+
     def test_parse_front_matter(self):
         metadata, body = self.local_sdlc.parse_front_matter(
             "---\nname: spec\ndescription: Example\n---\n# Body\n"

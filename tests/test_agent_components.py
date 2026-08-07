@@ -26,11 +26,14 @@ from local_sdlc.policy_triage import (
     generated_test_oracle_evidence_document,
     generated_test_receiver_identity_facts,
     generated_test_receiver_lineage_facts,
+    generated_fixed_exception_conflict_facts,
+    generated_fixed_spec_partition_conflict_facts,
     judge_ownership_classification,
     patch_plan_requests_generated_test_oracle_triage,
     project_policy_triage_enabled,
     receiver_identity_facts_from_evidence,
     receiver_lineage_facts_from_evidence,
+    oracle_conflict_facts_from_evidence,
     triage_allows_test_harness_edit,
     validate_project_policy_triage_proposition,
 )
@@ -46,6 +49,144 @@ from local_sdlc.repair_rules import generic as generic_repair_rules
 
 
 class AgentComponentTests(unittest.TestCase):
+    def test_mechanical_oracle_conflict_expands_literal_loop_bindings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "tests").mkdir()
+            (project / "acceptance_tests").mkdir()
+            (project / "tests" / "test_model.py").write_text(
+                "import unittest\n"
+                "class T(unittest.TestCase):\n"
+                " def test_ids(self):\n"
+                "  for value in ['bad id', 'also bad']:\n"
+                "   with self.assertRaises(ValueError):\n"
+                "    Item(value)\n",
+                encoding="utf-8",
+            )
+            (project / "acceptance_tests" / "test_acceptance.py").write_text(
+                "import unittest\n"
+                "class T(unittest.TestCase):\n"
+                " def test_graph(self):\n"
+                "  item = Item('bad id')\n"
+                "  with self.assertRaises(ValueError):\n"
+                "   Graph([item])\n",
+                encoding="utf-8",
+            )
+
+            facts = generated_fixed_exception_conflict_facts(
+                project,
+                ["tests/test_model.py"],
+                ["acceptance_tests/test_acceptance.py"],
+            )
+
+        self.assertEqual(len(facts), 1)
+        self.assertIn("Item('bad id')", facts[0])
+        self.assertIn("requiring it not to raise", facts[0])
+
+    def test_mechanical_oracle_conflict_does_not_match_different_calls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "tests").mkdir()
+            (project / "acceptance_tests").mkdir()
+            (project / "tests" / "test_model.py").write_text(
+                "import unittest\nclass T(unittest.TestCase):\n"
+                " def test_x(self):\n  with self.assertRaises(ValueError):\n   Item('x')\n",
+                encoding="utf-8",
+            )
+            (project / "acceptance_tests" / "test_acceptance.py").write_text(
+                "import unittest\nclass T(unittest.TestCase):\n"
+                " def test_y(self):\n  Item('y')\n",
+                encoding="utf-8",
+            )
+
+            facts = generated_fixed_exception_conflict_facts(
+                project,
+                ["tests/test_model.py"],
+                ["acceptance_tests/test_acceptance.py"],
+            )
+
+        self.assertEqual(facts, [])
+
+    def test_nested_call_in_assert_raises_is_not_a_direct_raise_obligation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "tests").mkdir()
+            (project / "acceptance_tests").mkdir()
+            (project / "tests" / "test_graph.py").write_text(
+                "import unittest\nclass T(unittest.TestCase):\n"
+                " def test_graph(self):\n  with self.assertRaises(ValueError):\n"
+                "   Graph([Item('x')])\n",
+                encoding="utf-8",
+            )
+            (project / "acceptance_tests" / "test_acceptance.py").write_text(
+                "import unittest\nclass T(unittest.TestCase):\n"
+                " def test_item(self):\n  Item('x')\n",
+                encoding="utf-8",
+            )
+
+            facts = generated_fixed_exception_conflict_facts(
+                project,
+                ["tests/test_graph.py"],
+                ["acceptance_tests/test_acceptance.py"],
+            )
+
+        self.assertEqual(facts, [])
+
+    def test_spec_partition_conflict_blocks_unlicensed_input_special_case(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "tests").mkdir()
+            (project / "acceptance_tests").mkdir()
+            (project / "tests" / "test_model.py").write_text(
+                "import unittest\nclass T(unittest.TestCase):\n"
+                " def test_ids(self):\n  with self.assertRaises(ValueError):\n   Item('a b')\n",
+                encoding="utf-8",
+            )
+            (project / "acceptance_tests" / "test_acceptance.py").write_text(
+                "import unittest\nclass T(unittest.TestCase):\n"
+                " def test_id(self):\n  Item('bad id')\n",
+                encoding="utf-8",
+            )
+
+            facts = generated_fixed_spec_partition_conflict_facts(
+                project,
+                "Item(item_id: str)\n- `item_id` must match `[A-Za-z]+`.",
+                ["tests/test_model.py"],
+                ["acceptance_tests/test_acceptance.py"],
+            )
+
+        self.assertEqual(len(facts), 1)
+        self.assertIn("same invalid partition", facts[0])
+        self.assertIn("SPEC provides no predicate licensing different behavior", facts[0])
+
+    def test_generated_oracle_gate_prefers_mechanical_exception_conflict(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "test_harness",
+                "confidence": "high",
+                "selected_hypothesis": "H_test",
+                "test_contradiction_evidence": ["calls disagree"],
+                "oracle_conflict_analysis": {
+                    "fixed_and_generated_jointly_satisfiable": True,
+                    "fixed_acceptance_explicitly_contradicts_spec": False,
+                    "conflict_evidence": ["advisory evidence"],
+                    "fixed_spec_contradiction_evidence": [],
+                },
+            },
+            oracle_conflict_facts=[
+                "MECHANICAL_ORACLE_CONFLICT: generated requires Item('x') to raise; fixed requires not raise."
+            ],
+            generated_test_paths=["tests/test_model.py"],
+        )
+
+        self.assertEqual(gated["safe_next_action"], "edit_test_harness")
+        self.assertEqual(gated["editable_paths"], ["tests/test_model.py"])
+        self.assertEqual(
+            gated["proposition_gate"]["reason"],
+            "mechanical_exception_timing_conflict",
+        )
+
     def test_patch_plan_rejects_mutation_of_its_forbidden_generated_test(self):
         plan = """
 PATCH_PLAN
