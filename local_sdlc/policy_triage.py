@@ -190,9 +190,18 @@ def _concrete_call_signatures(
 ) -> list[str]:
     """Expand a call only when every argument has a concrete literal value."""
 
-    try:
-        callable_name = ast.unparse(node.func)
-    except (ValueError, TypeError):
+    if isinstance(node.func, ast.Name):
+        callable_names = [node.func.id]
+    elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
+        callable_names = [
+            f"{receiver}.{node.func.attr}"
+            for receiver in _concrete_call_signatures(node.func.value, bindings)
+        ]
+    else:
+        # A method on a named receiver can hide different runtime state behind
+        # the same variable spelling. It is not a concrete call identity.
+        callable_names = []
+    if not callable_names:
         return []
     argument_options: list[list[str]] = []
     for argument in node.args:
@@ -216,19 +225,20 @@ def _concrete_call_signatures(
         except (ValueError, TypeError):
             return []
     options = argument_options + [values for _name, values in keyword_options]
-    combinations = itertools.product(*options) if options else [()]
+    combinations = list(itertools.product(*options)) if options else [()]
     signatures: list[str] = []
-    for combination in combinations:
-        positional_count = len(argument_options)
-        rendered = list(combination[:positional_count])
-        rendered.extend(
-            f"{name}={value}"
-            for (name, _values), value in zip(
-                keyword_options,
-                combination[positional_count:],
+    for callable_name in callable_names:
+        for combination in combinations:
+            positional_count = len(argument_options)
+            rendered = list(combination[:positional_count])
+            rendered.extend(
+                f"{name}={value}"
+                for (name, _values), value in zip(
+                    keyword_options,
+                    combination[positional_count:],
+                )
             )
-        )
-        signatures.append(f"{callable_name}({', '.join(rendered)})")
+            signatures.append(f"{callable_name}({', '.join(rendered)})")
     return signatures
 
 
@@ -707,6 +717,13 @@ def validate_project_policy_triage_proposition(
         test_paths = unique_ordered(
             path for path in generated_test_paths if path.startswith("tests/")
         )
+        if mechanically_conflicting:
+            evidenced_paths = {
+                match
+                for fact in oracle_conflict_facts
+                for match in re.findall(r"\b(tests/[A-Za-z0-9_./-]+\.py):\d+\b", fact)
+            }
+            test_paths = [path for path in test_paths if path in evidenced_paths]
         if test_paths:
             contradiction = (
                 "Fixed acceptance and generated test propositions are mechanically reported "

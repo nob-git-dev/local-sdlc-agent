@@ -132,6 +132,57 @@ class AgentComponentTests(unittest.TestCase):
 
         self.assertEqual(facts, [])
 
+    def test_named_method_receiver_is_not_concrete_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "tests").mkdir()
+            (project / "acceptance_tests").mkdir()
+            (project / "tests" / "test_state.py").write_text(
+                "import unittest\nclass T(unittest.TestCase):\n"
+                " def test_bad_state(self):\n  state = make_bad_state()\n"
+                "  engine = Engine(state)\n  with self.assertRaises(ValueError):\n"
+                "   engine.run()\n",
+                encoding="utf-8",
+            )
+            (project / "acceptance_tests" / "test_state.py").write_text(
+                "import unittest\nclass T(unittest.TestCase):\n"
+                " def test_good_state(self):\n  state = make_good_state()\n"
+                "  engine = Engine(state)\n  engine.run()\n",
+                encoding="utf-8",
+            )
+
+            facts = generated_fixed_exception_conflict_facts(
+                project,
+                ["tests/test_state.py"],
+                ["acceptance_tests/test_state.py"],
+            )
+
+        self.assertEqual(facts, [])
+
+    def test_mechanical_oracle_gate_limits_authority_to_evidenced_test_path(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "test_harness",
+                "confidence": "high",
+                "selected_hypothesis": "H_test",
+                "test_contradiction_evidence": ["conflict"],
+                "oracle_conflict_analysis": {
+                    "fixed_and_generated_jointly_satisfiable": True,
+                    "fixed_acceptance_explicitly_contradicts_spec": False,
+                    "conflict_evidence": [],
+                    "fixed_spec_contradiction_evidence": [],
+                },
+            },
+            oracle_conflict_facts=[
+                "MECHANICAL_ORACLE_CONFLICT: generated test requires Item('x') to raise "
+                "at tests/test_model.py:8; fixed acceptance requires it not to raise."
+            ],
+            generated_test_paths=["tests/test_model.py", "tests/test_unrelated.py"],
+        )
+
+        self.assertEqual(gated["editable_paths"], ["tests/test_model.py"])
+
     def test_spec_partition_conflict_blocks_unlicensed_input_special_case(self):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp)
@@ -175,7 +226,8 @@ class AgentComponentTests(unittest.TestCase):
                 },
             },
             oracle_conflict_facts=[
-                "MECHANICAL_ORACLE_CONFLICT: generated requires Item('x') to raise; fixed requires not raise."
+                "MECHANICAL_ORACLE_CONFLICT: generated requires Item('x') to raise at "
+                "tests/test_model.py:8; fixed requires not raise."
             ],
             generated_test_paths=["tests/test_model.py"],
         )
