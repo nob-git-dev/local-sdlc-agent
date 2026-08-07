@@ -42,6 +42,7 @@ from .policy_triage import (
     receiver_identity_facts_from_evidence,
     receiver_lineage_facts_from_evidence,
     oracle_conflict_facts_from_evidence,
+    spec_exception_boundary_facts_from_evidence,
 )
 from .patch_conformance import (
     failed_patch_conformance_review,
@@ -1229,11 +1230,13 @@ def command_agent(args: argparse.Namespace) -> int:
         identity_facts = receiver_identity_facts_from_evidence(evidence_doc)
         lineage_facts = receiver_lineage_facts_from_evidence(evidence_doc)
         oracle_conflict_facts = oracle_conflict_facts_from_evidence(evidence_doc)
+        exception_boundary_facts = spec_exception_boundary_facts_from_evidence(evidence_doc)
         parsed = validate_project_policy_triage_proposition(
             parsed,
             receiver_identity_facts=identity_facts,
             receiver_lineage_facts=lineage_facts,
             oracle_conflict_facts=oracle_conflict_facts,
+            spec_exception_boundary_facts=exception_boundary_facts,
             generated_test_paths=unique_ordered(
                 [*stage_generated_test_paths, *stage_scope_test_paths]
             ),

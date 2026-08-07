@@ -28,6 +28,7 @@ from local_sdlc.policy_triage import (
     generated_test_receiver_lineage_facts,
     generated_fixed_exception_conflict_facts,
     generated_fixed_spec_partition_conflict_facts,
+    spec_exception_boundary_facts,
     judge_ownership_classification,
     patch_plan_requests_generated_test_oracle_triage,
     project_policy_triage_enabled,
@@ -183,6 +184,57 @@ class AgentComponentTests(unittest.TestCase):
 
         self.assertEqual(gated["editable_paths"], ["tests/test_model.py"])
 
+    def test_mechanical_oracle_gate_ignores_unverified_llm_spec_conflict_claim(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "spec_conflict",
+                "confidence": "high",
+                "selected_hypothesis": "H_spec_conflict",
+                "test_contradiction_evidence": ["same call has opposite outcomes"],
+                "oracle_conflict_analysis": {
+                    "fixed_and_generated_jointly_satisfiable": False,
+                    "fixed_acceptance_explicitly_contradicts_spec": True,
+                    "conflict_evidence": ["opposite outcomes"],
+                    "fixed_spec_contradiction_evidence": ["value must satisfy a regex"],
+                },
+            },
+            oracle_conflict_facts=[
+                "MECHANICAL_ORACLE_CONFLICT: generated test requires Item('BAD') to raise "
+                "at tests/test_item.py:8; fixed acceptance requires it not to raise."
+            ],
+            generated_test_paths=["tests/test_item.py"],
+        )
+
+        self.assertEqual(gated["safe_next_action"], "edit_test_harness")
+
+    def test_mechanical_oracle_gate_respects_explicit_spec_exception_boundary(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "spec_conflict",
+                "confidence": "high",
+                "selected_hypothesis": "H_spec_conflict",
+                "test_contradiction_evidence": ["same call has opposite outcomes"],
+                "oracle_conflict_analysis": {
+                    "fixed_and_generated_jointly_satisfiable": False,
+                    "fixed_acceptance_explicitly_contradicts_spec": True,
+                    "conflict_evidence": ["opposite outcomes"],
+                    "fixed_spec_contradiction_evidence": ["explicit constructor rejection"],
+                },
+            },
+            oracle_conflict_facts=[
+                "MECHANICAL_ORACLE_CONFLICT: generated test requires Item('BAD') to raise "
+                "at tests/test_item.py:8; fixed acceptance requires it not to raise."
+            ],
+            spec_exception_boundary_facts=[
+                "SPEC_EXPLICIT_EXCEPTION_BOUNDARY: Item binds invalid item_id to rejection"
+            ],
+            generated_test_paths=["tests/test_item.py"],
+        )
+
+        self.assertNotEqual(gated.get("safe_next_action"), "edit_test_harness")
+
     def test_spec_partition_conflict_blocks_unlicensed_input_special_case(self):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp)
@@ -209,6 +261,30 @@ class AgentComponentTests(unittest.TestCase):
         self.assertEqual(len(facts), 1)
         self.assertIn("same invalid partition", facts[0])
         self.assertIn("SPEC provides no predicate licensing different behavior", facts[0])
+
+    def test_value_constraint_does_not_invent_constructor_exception_boundary(self):
+        facts = spec_exception_boundary_facts(
+            "### Item\nItem(item_id: str)\n- `item_id` must match `[a-z]+`.",
+            [
+                "MECHANICAL_ORACLE_CONFLICT: generated test requires Item('BAD') to raise "
+                "at tests/test_item.py:8; fixed acceptance requires it not to raise."
+            ],
+        )
+
+        self.assertEqual(facts, [])
+
+    def test_explicit_constructor_rejection_is_a_spec_boundary(self):
+        facts = spec_exception_boundary_facts(
+            "### Item\nItem(item_id: str)\n- `item_id` must match `[a-z]+`.\n"
+            "- Invalid `item_id` raises ValueError during Item construction.",
+            [
+                "MECHANICAL_ORACLE_CONFLICT: generated test requires Item('BAD') to raise "
+                "at tests/test_item.py:8; fixed acceptance requires it not to raise."
+            ],
+        )
+
+        self.assertEqual(len(facts), 1)
+        self.assertIn("Item binds invalid item_id to rejection", facts[0])
 
     def test_generated_oracle_gate_prefers_mechanical_exception_conflict(self):
         gated = validate_project_policy_triage_proposition(

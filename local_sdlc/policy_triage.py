@@ -486,6 +486,57 @@ def generated_fixed_spec_partition_conflict_facts(
     return list(dict.fromkeys(facts))
 
 
+def spec_exception_boundary_facts(
+    spec: str,
+    oracle_conflict_facts: Sequence[str],
+) -> list[str]:
+    """Find explicit SPEC statements that bind invalidity to one operation."""
+
+    api_parameters, regexes = _spec_api_parameters_and_regexes(spec)
+    sections: dict[str, list[str]] = {}
+    active = ""
+    for line in spec.splitlines():
+        heading = re.fullmatch(r"###\s+([A-Za-z_]\w*)\s*", line.strip())
+        if heading:
+            active = heading.group(1)
+            sections.setdefault(active, [])
+            continue
+        if active and line.startswith("### "):
+            active = ""
+        if active:
+            sections[active].append(line.strip())
+    facts: list[str] = []
+    for fact in oracle_conflict_facts:
+        match = re.search(
+            r"generated test requires\s+([A-Za-z_]\w*)\((.*?)\)\s+to raise",
+            fact,
+        )
+        if not match:
+            continue
+        operation = match.group(1)
+        parameters = api_parameters.get(operation, [])
+        signature = f"{operation}({match.group(2)})"
+        for parameter, pattern in regexes.items():
+            if parameter not in parameters:
+                continue
+            value = _call_literal_argument(signature, parameter, parameters)
+            if not isinstance(value, str) or re.fullmatch(pattern, value):
+                continue
+            for line in sections.get(operation, []):
+                if (
+                    parameter in line
+                    and re.search(
+                        r"\b(raise[sd]?|throw[s]?|reject(?:ed|s)?|fail[s]?)\b",
+                        line.lower(),
+                    )
+                ):
+                    facts.append(
+                        "SPEC_EXPLICIT_EXCEPTION_BOUNDARY: "
+                        f"{operation} binds invalid {parameter} to rejection: {line}"
+                    )
+    return list(dict.fromkeys(facts))
+
+
 def generated_test_oracle_evidence_document(
     project: Path,
     spec: str,
@@ -521,6 +572,10 @@ def generated_test_oracle_evidence_document(
         normalized_tests,
         fixed_tests,
     )
+    exception_boundary_facts = spec_exception_boundary_facts(
+        spec,
+        [*oracle_conflict_facts, *partition_conflict_facts],
+    )
     sections = [
         "## Ownership Facts",
         "",
@@ -535,6 +590,11 @@ def generated_test_oracle_evidence_document(
         "",
         *(f"- {fact}" for fact in [*oracle_conflict_facts, *partition_conflict_facts]),
         *(["- (none)"] if not oracle_conflict_facts and not partition_conflict_facts else []),
+        "",
+        "## Mechanical SPEC Exception Boundary Facts",
+        "",
+        *(f"- {fact}" for fact in exception_boundary_facts),
+        *(["- (none)"] if not exception_boundary_facts else []),
         "",
         "## Fixed Specification",
         "",
@@ -629,6 +689,16 @@ def oracle_conflict_facts_from_evidence(evidence_doc: str) -> list[str]:
     ]
 
 
+def spec_exception_boundary_facts_from_evidence(evidence_doc: str) -> list[str]:
+    """Recover only machine-authored explicit exception-boundary facts."""
+
+    return [
+        line[2:].strip()
+        for line in evidence_doc.splitlines()
+        if line.startswith("- SPEC_EXPLICIT_EXCEPTION_BOUNDARY:")
+    ]
+
+
 def shared_constructor_arguments_from_facts(facts: Sequence[str]) -> list[set[str]]:
     """Recover machine-authored shared constructor expressions from identity facts."""
 
@@ -657,6 +727,7 @@ def validate_project_policy_triage_proposition(
     receiver_identity_facts: Sequence[str] = (),
     receiver_lineage_facts: Sequence[str] = (),
     oracle_conflict_facts: Sequence[str] = (),
+    spec_exception_boundary_facts: Sequence[str] = (),
     generated_test_paths: Sequence[str] = (),
 ) -> dict[str, object]:
     """Fail closed when a generated-oracle verdict lacks positive evidence."""
@@ -709,10 +780,15 @@ def validate_project_policy_triage_proposition(
         fact.startswith("SPEC_PARTITION_ORACLE_CONFLICT:") for fact in oracle_conflict_facts
     )
     mechanically_conflicting = exact_conflict or partition_conflict
-    if (
-        (jointly_satisfiable is False and conflict_items or mechanically_conflicting)
+    advisory_unsatisfiable = (
+        jointly_satisfiable is False
+        and conflict_items
         and fixed_contradicts_spec is False
         and not fixed_contradiction_items
+    )
+    mechanical_fixed_spec_conflict = bool(spec_exception_boundary_facts)
+    if (advisory_unsatisfiable or mechanically_conflicting) and not (
+        mechanically_conflicting and mechanical_fixed_spec_conflict
     ):
         test_paths = unique_ordered(
             path for path in generated_test_paths if path.startswith("tests/")
@@ -726,9 +802,9 @@ def validate_project_policy_triage_proposition(
             test_paths = [path for path in test_paths if path in evidenced_paths]
         if test_paths:
             contradiction = (
-                "Fixed acceptance and generated test propositions are mechanically reported "
-                "as jointly unsatisfiable, while no explicit SPEC proposition refutes the "
-                "fixed acceptance contract. The generated oracle therefore owns the conflict."
+                "Fixed acceptance and generated tests require different exception boundaries, "
+                "while no mechanically explicit SPEC operation boundary refutes fixed "
+                "acceptance. The generated oracle therefore owns the conflict."
             )
             normalized.update(
                 {
