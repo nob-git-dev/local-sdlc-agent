@@ -375,6 +375,12 @@ def project_policy_triage_instruction(
                product_bug for a later call on that value only when SPEC.md
                explicitly defines the called method on the return value or
                explicitly states that the first method returns the same receiver.
+            10. Let S be SPEC.md, F immutable fixed acceptance, and G the
+                machine-owned generated test. Evaluate satisfiable(F and G)
+                independently from whether S explicitly refutes F. When F and
+                G are mutually exclusive and S does not explicitly refute F,
+                classify G as test_harness: fixed acceptance remains readonly
+                while the exact generated-test path may be repaired.
             Classify test_harness only when H_test has positive evidence. Otherwise classify product_bug or insufficient_context.
             """
         ).strip()
@@ -453,6 +459,12 @@ def project_policy_triage_instruction(
             "method_defined_on_return_value": false,
             "contract_evidence": ["exact SPEC witness; empty when false"]
           }},
+          "oracle_conflict_analysis": {{
+            "fixed_and_generated_jointly_satisfiable": true,
+            "fixed_acceptance_explicitly_contradicts_spec": false,
+            "conflict_evidence": ["exact mutually exclusive observations, or empty"],
+            "fixed_spec_contradiction_evidence": ["exact SPEC contradiction, or empty"]
+          }},
           "project_policy_basis": ["SPEC.md or document evidence line"],
           "safe_next_action": "format_repair|root_cause_analysis|repair_artifact|edit_test_harness|reject|ask_user",
           "editable_paths": ["project-relative paths that may be writable"],
@@ -492,6 +504,11 @@ def project_policy_arbitration_instruction(
         fresh receivers do not share prior instance state unless the evidence
         identifies an explicit shared-persistence channel or SPEC.md states a
         cross-instance contract.
+        For an oracle conflict, separately decide whether fixed acceptance and
+        generated tests are jointly satisfiable and whether an exact SPEC
+        proposition explicitly refutes fixed acceptance. Mutual exclusion alone
+        does not make fixed acceptance editable; absent explicit SPEC refutation,
+        route the machine-owned generated test to test_harness repair.
 
         Primary evidence:
         {evidence_doc}
@@ -515,6 +532,12 @@ def project_policy_arbitration_instruction(
             "mechanical_lineage": "constructor_receiver|method_return_value|not_applicable",
             "method_defined_on_return_value": false,
             "contract_evidence": ["exact SPEC witness; empty when false"]
+          }},
+          "oracle_conflict_analysis": {{
+            "fixed_and_generated_jointly_satisfiable": true,
+            "fixed_acceptance_explicitly_contradicts_spec": false,
+            "conflict_evidence": ["exact mutually exclusive observations, or empty"],
+            "fixed_spec_contradiction_evidence": ["exact SPEC contradiction, or empty"]
           }},
           "project_policy_basis": ["specific SPEC/setup/action/assertion fact"],
           "safe_next_action": "root_cause_analysis|edit_test_harness|reject|ask_user",

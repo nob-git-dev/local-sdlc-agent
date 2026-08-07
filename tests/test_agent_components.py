@@ -544,6 +544,54 @@ def test_resume():
         self.assertEqual(gated["case_type"], "product_bug")
         self.assertEqual(gated["proposition_gate"]["status"], "pass")
 
+    def test_generated_oracle_gate_routes_unsatisfiable_oracle_pair_to_generated_test(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "insufficient_context",
+                "selected_hypothesis": "undetermined",
+                "test_contradiction_evidence": ["the two checks require opposite lifecycle timing"],
+                "oracle_conflict_analysis": {
+                    "fixed_and_generated_jointly_satisfiable": False,
+                    "fixed_acceptance_explicitly_contradicts_spec": False,
+                    "conflict_evidence": ["one implementation cannot satisfy both observations"],
+                    "fixed_spec_contradiction_evidence": [],
+                },
+                "safe_next_action": "reject",
+                "editable_paths": [],
+            },
+            generated_test_paths=["tests/test_contract.py"],
+        )
+
+        self.assertEqual(gated["case_type"], "test_harness")
+        self.assertEqual(gated["editable_paths"], ["tests/test_contract.py"])
+        self.assertEqual(
+            gated["proposition_gate"]["reason"],
+            "unsatisfiable_generated_oracle_precedence",
+        )
+
+    def test_generated_oracle_gate_does_not_override_explicit_fixed_spec_conflict(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "spec_conflict",
+                "selected_hypothesis": "H_spec_conflict",
+                "test_contradiction_evidence": ["the two checks disagree"],
+                "oracle_conflict_analysis": {
+                    "fixed_and_generated_jointly_satisfiable": False,
+                    "fixed_acceptance_explicitly_contradicts_spec": True,
+                    "conflict_evidence": ["the checks require opposite results"],
+                    "fixed_spec_contradiction_evidence": ["SPEC explicitly requires the opposite fixed result"],
+                },
+                "safe_next_action": "ask_user",
+                "editable_paths": [],
+            },
+            generated_test_paths=["tests/test_contract.py"],
+        )
+
+        self.assertNotEqual(gated.get("safe_next_action"), "edit_test_harness")
+        self.assertEqual(gated.get("editable_paths"), [])
+
     def test_generated_oracle_gate_rejects_conditional_persistence_missing_from_calls(self):
         gated = validate_project_policy_triage_proposition(
             {

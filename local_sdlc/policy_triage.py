@@ -328,6 +328,49 @@ def validate_project_policy_triage_proposition(
     return_value_evidence_items = [
         item for item in return_value_evidence if isinstance(item, str) and item.strip()
     ] if isinstance(return_value_evidence, list) else []
+    oracle_scope = normalized.get("oracle_conflict_analysis", {})
+    oracle_scope = oracle_scope if isinstance(oracle_scope, dict) else {}
+    jointly_satisfiable = oracle_scope.get("fixed_and_generated_jointly_satisfiable")
+    fixed_contradicts_spec = oracle_scope.get("fixed_acceptance_explicitly_contradicts_spec")
+    conflict_evidence = oracle_scope.get("conflict_evidence", [])
+    conflict_items = [
+        item for item in conflict_evidence if isinstance(item, str) and item.strip()
+    ] if isinstance(conflict_evidence, list) else []
+    fixed_contradiction_evidence = oracle_scope.get("fixed_spec_contradiction_evidence", [])
+    fixed_contradiction_items = [
+        item for item in fixed_contradiction_evidence if isinstance(item, str) and item.strip()
+    ] if isinstance(fixed_contradiction_evidence, list) else []
+    if (
+        jointly_satisfiable is False
+        and conflict_items
+        and fixed_contradicts_spec is False
+        and not fixed_contradiction_items
+    ):
+        test_paths = unique_ordered(
+            path for path in generated_test_paths if path.startswith("tests/")
+        )
+        if test_paths:
+            contradiction = (
+                "Fixed acceptance and generated test propositions are mechanically reported "
+                "as jointly unsatisfiable, while no explicit SPEC proposition refutes the "
+                "fixed acceptance contract. The generated oracle therefore owns the conflict."
+            )
+            normalized.update(
+                {
+                    "case_type": "test_harness",
+                    "confidence": "high",
+                    "selected_hypothesis": "H_test",
+                    "test_contradiction_evidence": [contradiction, *conflict_items],
+                    "safe_next_action": "edit_test_harness",
+                    "editable_paths": test_paths,
+                    "proposition_gate": {
+                        "status": "corrected",
+                        "reason": "unsatisfiable_generated_oracle_precedence",
+                    },
+                    "rationale": contradiction,
+                }
+            )
+            return normalized
     if case_type == "product_bug" and (selected != "H_product" or not product_items):
         valid = False
         reason = "product_bug requires selected_hypothesis=H_product and positive product_violation_evidence"
