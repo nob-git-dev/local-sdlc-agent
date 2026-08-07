@@ -1399,6 +1399,28 @@ class Result:
         self.assertEqual(artifacts, [])
         self.assertEqual(files, [])
 
+    def test_loose_python_function_replacement_rejects_empty_path_without_crashing(self):
+        output = """BEGIN_SEARCH_REPLACE: :
+```python
+def run():
+    return "new"
+```
+"""
+
+        artifacts = self.local_sdlc.loose_python_function_replacement_artifacts(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(allowed_paths=(), allow_extra_new_files=True),
+        )
+        findings = self.local_sdlc.lint_artifact_output(
+            output,
+            [],
+            [],
+            format_repair_mode=True,
+        )
+
+        self.assertEqual(artifacts, [])
+        self.assertIn("format_repair_no_artifact", {finding.code for finding in findings})
+
     def test_loose_python_function_replacement_does_not_swallow_conflict_markers(self):
         output = """BEGIN_SEARCH_REPLACE: app.py
 ```python

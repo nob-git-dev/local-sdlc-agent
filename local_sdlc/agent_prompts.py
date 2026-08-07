@@ -369,6 +369,12 @@ def project_policy_triage_instruction(
                independently before selecting either hypothesis. An exception
                location proves where execution stopped, not which proposition
                is correct.
+            9. Treat Mechanical Receiver Lineage Facts as authoritative. A
+               variable assigned from `receiver.method()` is syntactically the
+               method return value, not the original receiver. Select
+               product_bug for a later call on that value only when SPEC.md
+               explicitly defines the called method on the return value or
+               explicitly states that the first method returns the same receiver.
             Classify test_harness only when H_test has positive evidence. Otherwise classify product_bug or insufficient_context.
             """
         ).strip()
@@ -442,6 +448,11 @@ def project_policy_triage_instruction(
             "continuity_witness_expression": "exact shared constructor expression|none_required|empty string",
             "witness_evidence": ["exact SPEC or test-setup fact; empty when continuity_witness is none"]
           }},
+          "receiver_lineage_analysis": {{
+            "mechanical_lineage": "constructor_receiver|method_return_value|not_applicable",
+            "method_defined_on_return_value": false,
+            "contract_evidence": ["exact SPEC witness; empty when false"]
+          }},
           "project_policy_basis": ["SPEC.md or document evidence line"],
           "safe_next_action": "format_repair|root_cause_analysis|repair_artifact|edit_test_harness|reject|ask_user",
           "editable_paths": ["project-relative paths that may be writable"],
@@ -499,6 +510,11 @@ def project_policy_arbitration_instruction(
             "continuity_witness": "explicit_shared_persistence|unconditional_spec_contract|same_receiver|none",
             "continuity_witness_expression": "exact shared constructor expression|none_required|empty string",
             "witness_evidence": ["exact SPEC or test-setup fact; empty when continuity_witness is none"]
+          }},
+          "receiver_lineage_analysis": {{
+            "mechanical_lineage": "constructor_receiver|method_return_value|not_applicable",
+            "method_defined_on_return_value": false,
+            "contract_evidence": ["exact SPEC witness; empty when false"]
           }},
           "project_policy_basis": ["specific SPEC/setup/action/assertion fact"],
           "safe_next_action": "root_cause_analysis|edit_test_harness|reject|ask_user",

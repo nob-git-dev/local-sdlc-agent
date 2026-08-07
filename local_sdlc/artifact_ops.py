@@ -999,6 +999,8 @@ def malformed_search_replace_full_file_artifacts(
             body = match.group("body")
             path = normalize_legacy_file_artifact_path(match.group("path"))
             duplicate_path = normalize_legacy_file_artifact_path(match.group("duplicate_path") or "")
+            if not path:
+                continue
             if duplicate_path and duplicate_path != path:
                 continue
             terminal = re.search(
@@ -1180,6 +1182,8 @@ def multi_pair_search_replace_artifacts(
     for candidate in artifact_candidate_texts(text):
         for block_match in block_pattern.finditer(candidate):
             path = normalize_legacy_file_artifact_path(block_match.group("path"))
+            if not path:
+                continue
             check_artifact_path(path, policy, "multi-pair search/replace")
             body = block_match.group("body")
             pairs = list(pair_pattern.finditer(body))
@@ -1231,6 +1235,8 @@ def fenced_conflict_search_replace_artifacts(
     for candidate in artifact_candidate_texts(text):
         for match in pattern.finditer(candidate):
             path = normalize_legacy_file_artifact_path(match.group("path"))
+            if not path:
+                continue
             check_artifact_path(path, policy, "fenced search/replace")
             artifact = SearchReplaceArtifact(
                 path=path,
@@ -1267,6 +1273,8 @@ def loose_python_function_replacement_artifacts(
         for match in pattern.finditer(candidate):
             path = normalize_legacy_file_artifact_path(match.group("path"))
             duplicate_path = normalize_legacy_file_artifact_path(match.group("duplicate_path") or "")
+            if not path:
+                continue
             if duplicate_path and duplicate_path != path:
                 continue
             check_artifact_path(path, policy, "loose Python function replacement")

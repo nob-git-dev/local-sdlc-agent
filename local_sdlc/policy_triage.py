@@ -110,6 +110,67 @@ def generated_test_receiver_identity_facts(source: str, path: str) -> list[str]:
     return facts
 
 
+def generated_test_receiver_lineage_facts(source: str, path: str) -> list[str]:
+    """Extract method calls made on aliases of a prior method return value."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    facts: list[str] = []
+    for function in (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test")
+    ):
+        lineage: dict[str, str] = {}
+        processed_calls: set[int] = set()
+
+        def call_lineage(call: ast.Call) -> str | None:
+            if not isinstance(call.func, ast.Attribute):
+                return None
+            receiver = call.func.value
+            if isinstance(receiver, ast.Call):
+                constructor = receiver.func
+                if isinstance(constructor, ast.Name) and constructor.id[:1].isupper():
+                    return f"syntactic return value of {constructor.id}.{call.func.attr}()"
+            if isinstance(receiver, ast.Name) and receiver.id in lineage:
+                origin = lineage[receiver.id]
+                if origin.startswith("syntactic return value"):
+                    facts.append(
+                        f"{path}:{function.name} calls {receiver.id}.{call.func.attr}() at line "
+                        f"{call.lineno} on an alias of the {origin}; source syntax does not "
+                        "establish that this value is the original constructor receiver."
+                    )
+                return f"syntactic return value of {origin}.{call.func.attr}()"
+            return None
+
+        nodes = sorted(
+            ast.walk(function),
+            key=lambda node: (
+                getattr(node, "lineno", 0),
+                0 if isinstance(node, ast.Assign) else 1,
+                getattr(node, "col_offset", 0),
+            ),
+        )
+        for node in nodes:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                if not isinstance(target, ast.Name):
+                    continue
+                if isinstance(node.value, ast.Name) and node.value.id in lineage:
+                    lineage[target.id] = lineage[node.value.id]
+                elif isinstance(node.value, ast.Call):
+                    derived = call_lineage(node.value)
+                    processed_calls.add(id(node.value))
+                    if derived:
+                        lineage[target.id] = derived
+            elif isinstance(node, ast.Call) and id(node) not in processed_calls:
+                call_lineage(node)
+    return list(dict.fromkeys(facts))
+
+
 def generated_test_oracle_evidence_document(
     project: Path,
     spec: str,
@@ -150,6 +211,7 @@ def generated_test_oracle_evidence_document(
         except OSError:
             source = "(unavailable)"
         identity_facts = generated_test_receiver_identity_facts(source, path)
+        lineage_facts = generated_test_receiver_lineage_facts(source, path)
         sections.extend(
             [
                 "",
@@ -157,6 +219,11 @@ def generated_test_oracle_evidence_document(
                 "",
                 *(f"- {fact}" for fact in identity_facts),
                 *(["- (none)"] if not identity_facts else []),
+                "",
+                f"## Mechanical Receiver Lineage Facts: {path}",
+                "",
+                *(f"- {fact}" for fact in lineage_facts),
+                *(["- (none)"] if not lineage_facts else []),
                 "",
                 f"## Generated Test Source: {path}",
                 "",
@@ -189,6 +256,18 @@ def receiver_identity_facts_from_evidence(evidence_doc: str) -> list[str]:
     ]
 
 
+def receiver_lineage_facts_from_evidence(evidence_doc: str) -> list[str]:
+    """Recover only machine-authored return-value lineage facts."""
+
+    return [
+        line[2:].strip()
+        for line in evidence_doc.splitlines()
+        if line.startswith("- ")
+        and "on an alias of the syntactic return value" in line
+        and "source syntax does not establish" in line
+    ]
+
+
 def shared_constructor_arguments_from_facts(facts: Sequence[str]) -> list[set[str]]:
     """Recover machine-authored shared constructor expressions from identity facts."""
 
@@ -215,6 +294,7 @@ def validate_project_policy_triage_proposition(
     record: dict[str, object],
     *,
     receiver_identity_facts: Sequence[str] = (),
+    receiver_lineage_facts: Sequence[str] = (),
     generated_test_paths: Sequence[str] = (),
 ) -> dict[str, object]:
     """Fail closed when a generated-oracle verdict lacks positive evidence."""
@@ -241,6 +321,13 @@ def validate_project_policy_triage_proposition(
         item for item in witness_evidence if isinstance(item, str) and item.strip()
     ] if isinstance(witness_evidence, list) else []
     shared_argument_sets = shared_constructor_arguments_from_facts(receiver_identity_facts)
+    lineage_scope = normalized.get("receiver_lineage_analysis", {})
+    lineage_scope = lineage_scope if isinstance(lineage_scope, dict) else {}
+    return_value_contract = lineage_scope.get("method_defined_on_return_value")
+    return_value_evidence = lineage_scope.get("contract_evidence", [])
+    return_value_evidence_items = [
+        item for item in return_value_evidence if isinstance(item, str) and item.strip()
+    ] if isinstance(return_value_evidence, list) else []
     if case_type == "product_bug" and (selected != "H_product" or not product_items):
         valid = False
         reason = "product_bug requires selected_hypothesis=H_product and positive product_violation_evidence"
@@ -250,6 +337,35 @@ def validate_project_policy_triage_proposition(
     elif distinct_fresh_receivers and mechanical_identity != "distinct_fresh":
         valid = False
         reason = "receiver_scope_analysis must acknowledge mechanically distinct fresh receivers"
+    elif (
+        case_type == "product_bug"
+        and receiver_lineage_facts
+        and not (return_value_contract is True and return_value_evidence_items)
+    ):
+        test_paths = unique_ordered(
+            path for path in generated_test_paths if path.startswith("tests/")
+        )
+        contradiction = (
+            "The generated test invokes a method on a syntactic method return value, but "
+            "no explicit SPEC contract defines that method on the return value or proves "
+            "that the return value is the original receiver."
+        )
+        normalized.update(
+            {
+                "case_type": "test_harness",
+                "confidence": "high",
+                "selected_hypothesis": "H_test",
+                "test_contradiction_evidence": [contradiction, *receiver_lineage_facts],
+                "safe_next_action": "edit_test_harness",
+                "editable_paths": test_paths,
+                "proposition_gate": {
+                    "status": "corrected",
+                    "reason": "unsupported_return_value_receiver",
+                },
+                "rationale": contradiction,
+            }
+        )
+        return normalized
     elif (
         case_type == "product_bug"
         and distinct_fresh_receivers

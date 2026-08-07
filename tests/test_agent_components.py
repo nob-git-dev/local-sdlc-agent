@@ -25,10 +25,12 @@ from local_sdlc.policy_triage import (
     apply_project_policy_triage_to_advice,
     generated_test_oracle_evidence_document,
     generated_test_receiver_identity_facts,
+    generated_test_receiver_lineage_facts,
     judge_ownership_classification,
     patch_plan_requests_generated_test_oracle_triage,
     project_policy_triage_enabled,
     receiver_identity_facts_from_evidence,
+    receiver_lineage_facts_from_evidence,
     triage_allows_test_harness_edit,
     validate_project_policy_triage_proposition,
 )
@@ -388,6 +390,42 @@ def test_resume():
         self.assertIn("these receivers are not the same instance", evidence)
         self.assertEqual(len(receiver_identity_facts_from_evidence(evidence)), 1)
 
+    def test_generated_test_receiver_lineage_facts_track_method_return_aliases(self):
+        source = """
+def test_resume():
+    first = Engine(tasks, handlers).run(max_tasks=1)
+    second = first
+    second = second.run()
+"""
+
+        facts = generated_test_receiver_lineage_facts(source, "tests/test_engine.py")
+
+        self.assertEqual(len(facts), 1)
+        self.assertIn("second.run()", facts[0])
+        self.assertIn("alias of the syntactic return value of Engine.run()", facts[0])
+        self.assertIn("does not establish that this value is the original constructor receiver", facts[0])
+
+    def test_generated_test_oracle_evidence_includes_receiver_lineage_facts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "tests").mkdir()
+            (project / "tests" / "test_engine.py").write_text(
+                "def test_resume():\n"
+                "    report = Engine(tasks, handlers).run(max_tasks=1)\n"
+                "    report.run()\n",
+                encoding="utf-8",
+            )
+            evidence = generated_test_oracle_evidence_document(
+                project,
+                "# SPEC\nEngine.run returns a report.\n",
+                ["tests/test_engine.py"],
+                [("Command", "AttributeError")],
+            )
+
+        self.assertIn("Mechanical Receiver Lineage Facts", evidence)
+        self.assertIn("syntactic return value of Engine.run()", evidence)
+        self.assertEqual(len(receiver_lineage_facts_from_evidence(evidence)), 1)
+
     def test_generated_oracle_gate_corrects_unsupported_cross_instance_continuity(self):
         fact = (
             "tests/test_engine.py:test_resume calls Engine(...).run(...) on 2 distinct "
@@ -440,6 +478,67 @@ def test_resume():
                 'shared constructor arguments JSON: ["state_path", "tasks"].'
             ],
             generated_test_paths=["tests/test_engine.py"],
+        )
+
+        self.assertEqual(gated["case_type"], "product_bug")
+        self.assertEqual(gated["proposition_gate"]["status"], "pass")
+
+    def test_generated_oracle_gate_corrects_unsupported_return_value_receiver(self):
+        fact = (
+            "tests/test_engine.py:test_resume calls report.run() at line 5 on an alias of "
+            "the syntactic return value of Engine.run(); source syntax does not establish "
+            "that this value is the original constructor receiver."
+        )
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "product_bug",
+                "selected_hypothesis": "H_product",
+                "product_violation_evidence": ["the returned report should continue execution"],
+                "test_contradiction_evidence": [],
+                "receiver_lineage_analysis": {
+                    "mechanical_lineage": "method_return_value",
+                    "method_defined_on_return_value": False,
+                    "contract_evidence": [],
+                },
+                "safe_next_action": "root_cause_analysis",
+                "editable_paths": ["engine.py"],
+            },
+            receiver_lineage_facts=[fact],
+            generated_test_paths=["tests/test_engine.py"],
+        )
+
+        self.assertEqual(gated["case_type"], "test_harness")
+        self.assertEqual(gated["selected_hypothesis"], "H_test")
+        self.assertEqual(gated["safe_next_action"], "edit_test_harness")
+        self.assertEqual(gated["editable_paths"], ["tests/test_engine.py"])
+        self.assertEqual(
+            gated["proposition_gate"]["reason"],
+            "unsupported_return_value_receiver",
+        )
+
+    def test_generated_oracle_gate_accepts_explicit_fluent_return_contract(self):
+        gated = validate_project_policy_triage_proposition(
+            {
+                "trigger": "generated_test_oracle_conflict",
+                "case_type": "product_bug",
+                "selected_hypothesis": "H_product",
+                "product_violation_evidence": ["SPEC says advance returns the same workflow"],
+                "test_contradiction_evidence": [],
+                "receiver_lineage_analysis": {
+                    "mechanical_lineage": "method_return_value",
+                    "method_defined_on_return_value": True,
+                    "contract_evidence": ["SPEC: advance() returns self for fluent continuation"],
+                },
+                "safe_next_action": "root_cause_analysis",
+                "editable_paths": ["workflow.py"],
+            },
+            receiver_lineage_facts=[
+                "tests/test_workflow.py:test_chain calls result.advance() at line 5 on an alias "
+                "of the syntactic return value of Workflow.advance(); source syntax does not "
+                "establish that this value is the original constructor receiver."
+            ],
+            generated_test_paths=["tests/test_workflow.py"],
         )
 
         self.assertEqual(gated["case_type"], "product_bug")
