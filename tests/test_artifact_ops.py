@@ -328,6 +328,61 @@ END_SEARCH_REPLACE"""
         self.assertEqual(artifacts[0].search, "validate_here()")
         self.assertEqual(artifacts[1].replace, "validate_later()\nbuild_graph()")
 
+    def test_extract_search_replace_collapses_identical_duplicate_replacements(self):
+        output = textwrap.dedent(
+            """
+            BEGIN_SEARCH_REPLACE: pkg/checkpoint.py
+            <<<<< SEARCH
+            def load():
+                return None
+            =======
+            def load():
+                return {"status": "ok"}
+            =======
+            def load():
+                return {"status": "ok"}
+            >>>>>>> REPLACE
+            END_SEARCH_REPLACE
+            """
+        ).strip()
+
+        artifact = self.local_sdlc.extract_search_replace_artifact(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(
+                allowed_paths=("pkg/checkpoint.py",),
+                existing_paths=("pkg/checkpoint.py",),
+            ),
+        )
+
+        self.assertEqual(artifact.path, "pkg/checkpoint.py")
+        self.assertEqual(artifact.search, "def load():\n    return None")
+        self.assertEqual(artifact.replace, 'def load():\n    return {"status": "ok"}')
+
+    def test_duplicate_replace_normalization_rejects_distinct_alternatives(self):
+        output = textwrap.dedent(
+            """
+            BEGIN_SEARCH_REPLACE: pkg/checkpoint.py
+            <<<<<<< SEARCH
+            VALUE = "old"
+            =======
+            VALUE = "first"
+            =======
+            VALUE = "second"
+            >>>>>>> REPLACE
+            END_SEARCH_REPLACE
+            """
+        ).strip()
+
+        self.assertEqual(self.local_sdlc.normalize_duplicated_replace_payloads(output), output)
+        with self.assertRaises(self.local_sdlc.RunnerError):
+            self.local_sdlc.extract_search_replace_artifact(
+                output,
+                self.local_sdlc.ArtifactPathPolicy(
+                    allowed_paths=("pkg/checkpoint.py",),
+                    existing_paths=("pkg/checkpoint.py",),
+                ),
+            )
+
     def test_short_search_marker_normalization_rejects_ambiguous_envelopes(self):
         short_search = "<" * 5 + " SEARCH"
         separator = "=" * 7

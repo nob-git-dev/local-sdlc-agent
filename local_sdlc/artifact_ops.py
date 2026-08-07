@@ -223,6 +223,58 @@ def normalize_short_search_replace_start_markers(text: str) -> str:
     return block_pattern.sub(replace_block, text)
 
 
+def normalize_duplicated_replace_payloads(text: str) -> str:
+    """Collapse byte-equivalent replacement payloads in one exact envelope.
+
+    Local models sometimes repeat the replacement half after a second
+    ``=======`` marker.  Recovery is mechanical only when the block has an
+    explicit path, one SEARCH and one REPLACE end marker, and every repeated
+    replacement payload is identical after newline trimming.  Distinct
+    alternatives remain invalid because choosing between them would infer
+    intent.
+    """
+    block_pattern = re.compile(
+        rf"(?ms)^(?P<header>\s*BEGIN_SEARCH_REPLACE:\s*[^\n]+\n)"
+        rf"(?P<body>.*?^[ \t]*{SEARCH_REPLACE_END_MARKER}[ \t]*$)"
+        r"(?P<footer>\n[ \t]*END_SEARCH_REPLACE[ \t]*$)?"
+    )
+
+    def replace_block(match: re.Match[str]) -> str:
+        body = match.group("body")
+        search_pattern = r"(?m)^(?P<indent>[ \t]*)<{5,7} SEARCH[ \t]*$"
+        if len(re.findall(search_pattern, body)) != 1:
+            return match.group(0)
+        if len(re.findall(rf"(?m)^[ \t]*{SEARCH_REPLACE_END_MARKER}[ \t]*$", body)) != 1:
+            return match.group(0)
+        separator_matches = list(re.finditer(r"(?m)^[ \t]*=======[ \t]*$", body))
+        if len(separator_matches) < 2:
+            return match.group(0)
+        search_marker = re.search(search_pattern, body)
+        replace_end = re.search(rf"(?m)^[ \t]*{SEARCH_REPLACE_END_MARKER}[ \t]*$", body)
+        if search_marker is None or replace_end is None:
+            return match.group(0)
+        payload_region = body[search_marker.end() : replace_end.start()]
+        parts = re.split(r"(?m)^[ \t]*=======[ \t]*$", payload_region)
+        if len(parts) < 3:
+            return match.group(0)
+        replacements = [part.strip("\n") for part in parts[1:]]
+        if not replacements or any(part != replacements[0] for part in replacements[1:]):
+            return match.group(0)
+        normalized_body = (
+            body[: search_marker.start()]
+            + search_marker.group("indent")
+            + "<<<<<<< SEARCH"
+            + parts[0]
+            + "=======\n"
+            + replacements[0]
+            + "\n"
+            + body[replace_end.start() :]
+        )
+        return match.group("header") + normalized_body + (match.group("footer") or "")
+
+    return block_pattern.sub(replace_block, text)
+
+
 def artifact_candidate_texts(text: str) -> list[str]:
     normalized_file_headers = normalize_inline_file_artifact_headers(text)
     normalized_next_line_headers = normalize_next_line_search_replace_headers(
@@ -231,8 +283,11 @@ def artifact_candidate_texts(text: str) -> list[str]:
     normalized_short_search_markers = normalize_short_search_replace_start_markers(
         normalized_next_line_headers
     )
-    normalized_search_replace = normalize_file_header_search_replace_artifacts(
+    normalized_duplicate_replacements = normalize_duplicated_replace_payloads(
         normalized_short_search_markers
+    )
+    normalized_search_replace = normalize_file_header_search_replace_artifacts(
+        normalized_duplicate_replacements
     )
     normalized_terminal = normalize_terminal_end_search_replace_artifact(normalized_search_replace)
     candidates = [
@@ -240,6 +295,7 @@ def artifact_candidate_texts(text: str) -> list[str]:
         normalized_file_headers,
         normalized_next_line_headers,
         normalized_short_search_markers,
+        normalized_duplicate_replacements,
         normalized_search_replace,
         normalized_terminal,
         strip_markdown_fence(text),
@@ -1138,10 +1194,14 @@ def extract_search_replace_artifacts(text: str, allowed_paths: Sequence[str] | A
         for match in pattern.finditer(candidate):
             path = normalize_legacy_file_artifact_path(match.group("path"))
             check_artifact_path(path, policy, "search/replace")
+            search = clean_artifact_block(match.group("search"))
+            replace = clean_artifact_block(match.group("replace"))
+            if contains_conflict_markers(search) or contains_conflict_markers(replace):
+                continue
             artifact = SearchReplaceArtifact(
                 path=path,
-                search=clean_artifact_block(match.group("search")),
-                replace=clean_artifact_block(match.group("replace")),
+                search=search,
+                replace=replace,
             )
             key = (artifact.path, artifact.search, artifact.replace)
             if key in seen:
