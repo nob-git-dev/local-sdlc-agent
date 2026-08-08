@@ -2162,6 +2162,36 @@ def command_agent(args: argparse.Namespace) -> int:
         active_patch_plan_doc = pending_patch_plan_doc
         write_partial_manifest("round_started", {"current_round": round_index})
         active_repair_strategy = str(latest_repair_advice.get("strategy", "")) if latest_repair_advice else ""
+        authorized_triage_tests = authorized_test_edit_paths_from_triages()
+        triaged_test_repair_pending = bool(
+            active_repair_strategy in TEST_HARNESS_WRITE_STRATEGIES
+            and authorized_triage_tests
+        )
+        if triaged_test_repair_pending:
+            # An independent ownership decision is binding for the next repair
+            # attempt. Product plans and deterministic product edits must not
+            # silently override that decision before the generated oracle has
+            # been given one bounded repair round.
+            active_patch_plan_doc = ""
+            pending_patch_plan_doc = ""
+            pending_deterministic_repair = None
+            root_cause_patch_pending = False
+            prior_writable_paths = list(allowed_artifact_paths)
+            allowed_artifact_paths = unique_ordered(authorized_triage_tests)
+            readonly_artifact_paths = unique_ordered(
+                path
+                for path in [*readonly_artifact_paths, *prior_writable_paths]
+                if path not in allowed_artifact_paths
+            )
+            context_files = unique_ordered(
+                [*context_files, *prior_writable_paths, *allowed_artifact_paths]
+            )
+            artifact_policy = ArtifactPathPolicy(
+                allowed_paths=tuple(allowed_artifact_paths),
+                readonly_paths=tuple(readonly_artifact_paths),
+                existing_paths=tuple(existing_project_paths),
+                allow_extra_new_files=not bool(args.no_extra_files),
+            )
         pending_declared_test_harness_paths = [
             path
             for path in stage_generated_test_paths
@@ -2686,6 +2716,8 @@ def command_agent(args: argparse.Namespace) -> int:
             else "stage_coder"
         )
         if role_label == "root_cause_repair" and test_harness_creation_pending:
+            role_label = "repair_coder"
+        if role_label in {"root_cause_repair", "artifact_plan_repair"} and triaged_test_repair_pending:
             role_label = "repair_coder"
         transition_instruction = ""
         if (round_index > 1 or force_root_cause_recovery) and current_transition.instructions:

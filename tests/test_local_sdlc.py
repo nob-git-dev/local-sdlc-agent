@@ -10038,6 +10038,18 @@ END_SEARCH_REPLACE"""
                             "rationale": "The failing generated BTree test calls a Pager setup API outside the BTree stage owner.",
                         }
                     )
+                if "strategy: replace_test_harness" in joined:
+                    return textwrap.dedent(
+                        """
+                        BEGIN_SEARCH_REPLACE: tests/test_btree.py
+                        <<<<<<< SEARCH
+                                Pager().init_db()
+                        =======
+                                Pager()
+                        >>>>>>> REPLACE
+                        END_SEARCH_REPLACE
+                        """
+                    ).strip()
                 return textwrap.dedent(
                     """
                     BEGIN_SEARCH_REPLACE: minisqlite/storage/btree.py
@@ -10105,7 +10117,7 @@ END_SEARCH_REPLACE"""
                         "minisqlite/storage/pager.py",
                         "--apply",
                         "--max-rounds",
-                        "1",
+                        "2",
                         "--test-command",
                         f"{sys.executable} -m unittest discover -s tests",
                         "--run-dir",
@@ -10118,7 +10130,7 @@ END_SEARCH_REPLACE"""
 
             manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(result, 1)
+        self.assertEqual(result, 0)
         self.assertIn("project_policy_triage", [call[1] for call in calls])
         triage = manifest["project_policy_triages"][0]
         self.assertEqual(triage["call_function"], "project_policy_triage")
@@ -10126,6 +10138,17 @@ END_SEARCH_REPLACE"""
         self.assertEqual(triage["safe_next_action"], "edit_test_harness")
         self.assertEqual(manifest["repair_advice"]["strategy"], "replace_test_harness")
         self.assertIn("tests/test_btree.py", manifest["repair_advice"]["focus_files"])
+        repair_call = next(
+            joined
+            for _level, function, joined in calls
+            if function in {"repair_artifact", "artifact_writer"}
+            and "strategy: replace_test_harness" in joined
+        )
+        self.assertIn("Writable targets:\n            tests/test_btree.py", repair_call)
+        self.assertNotIn(
+            "Writable targets:\n            minisqlite/storage/btree.py",
+            repair_call,
+        )
 
     def test_patch_planner_escalation_routes_only_generated_test_to_independent_triage(self):
         calls = []
