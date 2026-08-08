@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
+import re
 import signal
 import socket
 import threading
@@ -20,14 +22,68 @@ from .models import *
 from .utils import compact_preview, strip_markdown_fence
 
 MAX_REASONING_RECORD_CHARS = 20000
+HEALTH_CHECK_ATTEMPTS = 3
+HEALTH_RETRY_DELAY_SECONDS = 0.25
+
+
+def profiles_for_served_models(served_models: list[str]) -> list[str]:
+    served = {str(model).strip() for model in served_models if str(model).strip()}
+    return sorted(
+        profile
+        for profile, default_model in MODEL_PROFILE_DEFAULT_MODELS.items()
+        if default_model in served
+    )
+
+
+def model_profile_compatibility(
+    profile: str,
+    requested_model: str,
+    served_models: list[str],
+) -> tuple[bool, str]:
+    normalized_profile = normalize_model_profile(profile)
+    if normalized_profile == "default":
+        return True, "default profile does not require a fixed served model"
+
+    served = [str(model).strip() for model in served_models if str(model).strip()]
+    if requested_model in served:
+        return True, f"profile model {requested_model!r} is served by /v1/models"
+
+    available = ", ".join(served) if served else "(none)"
+    matching_profiles = profiles_for_served_models(served)
+    suggestion = (
+        f" Matching profiles for the current runtime: {', '.join(matching_profiles)}."
+        if matching_profiles
+        else ""
+    )
+    return (
+        False,
+        f"model profile {normalized_profile!r} requests {requested_model!r}, but /v1/models exposes: "
+        f"{available}.{suggestion} Switch the externally managed resident model or select a matching "
+        "--model-profile. No generation request was sent.",
+    )
+
+
+def require_profile_model_compatibility(
+    profile: str,
+    requested_model: str,
+    served_models: list[str],
+) -> None:
+    compatible, detail = model_profile_compatibility(profile, requested_model, served_models)
+    if not compatible:
+        raise RunnerError(detail)
 
 class LocalLLMClient:
     def __init__(self, config: LLMConfig):
         self.config = config
         self.reasoning_records: list[dict[str, object]] = []
+        self.completion_recovery_records: list[dict[str, object]] = []
+        self.health_recovery_records: list[dict[str, object]] = []
+        self.generation_request_count = 0
+        self.last_completion_attempts = 0
         self.runtime_timeout_limit: float | None = None
         self.runtime_timeout_callback: Callable[[], None] | None = None
         self.runtime_progress_callback: Callable[[LLMStreamStats], None] | None = None
+        self.runtime_completion_fallback_callback: Callable[[str, str, str], None] | None = None
 
     def set_runtime_timeout_limit(
         self,
@@ -51,6 +107,13 @@ class LocalLLMClient:
         callback: Callable[[LLMStreamStats], None] | None,
     ) -> None:
         self.runtime_progress_callback = callback
+
+    def set_runtime_completion_fallback_callback(
+        self,
+        callback: Callable[[str, str, str], None] | None,
+    ) -> None:
+        """Authorize and account for one physical no-thinking retry."""
+        self.runtime_completion_fallback_callback = callback
 
     def _record_reasoning_content(
         self,
@@ -97,6 +160,7 @@ class LocalLLMClient:
         temperature = self.config.temperature
         max_tokens = self.config.max_tokens
         disable_thinking = self.config.disable_thinking
+        reasoning_effort = None
         for override in (role_override, function_override):
             if not override:
                 continue
@@ -108,6 +172,10 @@ class LocalLLMClient:
                 max_tokens = override.max_tokens
             if override.disable_thinking is not None:
                 disable_thinking = override.disable_thinking
+            if override.reasoning_effort is not None:
+                reasoning_effort = override.reasoning_effort
+        if disable_thinking:
+            reasoning_effort = None
         return LLMCallSettings(
             agent_level=normalized,
             call_function=normalized_function,
@@ -115,7 +183,19 @@ class LocalLLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
             disable_thinking=disable_thinking,
+            reasoning_effort=reasoning_effort,
         )
+
+    @staticmethod
+    def _chat_template_kwargs(settings: LLMCallSettings) -> dict | None:
+        if settings.disable_thinking:
+            return {"enable_thinking": False}
+        if settings.reasoning_effort:
+            return {
+                "enable_thinking": True,
+                "reasoning_effort": settings.reasoning_effort,
+            }
+        return None
 
     def _request(
         self,
@@ -154,6 +234,8 @@ class LocalLLMClient:
                 self._notify_runtime_timeout()
                 raise LLMTimeoutError(path, request_timeout) from exc
             raise RunnerError(f"LLM API connection failed: {exc.reason}") from exc
+        except ConnectionError as exc:
+            raise RunnerError(f"LLM API connection interrupted during {path}: {exc}") from exc
         finally:
             if use_wall_clock_alarm:
                 signal.setitimer(signal.ITIMER_REAL, 0)
@@ -161,15 +243,62 @@ class LocalLLMClient:
                     signal.signal(signal.SIGALRM, old_handler)
 
     def models(self, timeout: float | None = None) -> list[str]:
-        request_timeout = self.config.health_timeout if timeout is None else timeout
-        result = self._request("GET", "/models", timeout=request_timeout)
-        return [item.get("id", "") for item in result.get("data", []) if item.get("id")]
+        alive, status, models = self.health_check(timeout=timeout)
+        if not alive:
+            raise RunnerError(status)
+        return models
 
-    def health_check(self) -> tuple[bool, str, list[str]]:
-        try:
-            result = self._request("GET", "/models", timeout=self.config.health_timeout)
-        except RunnerError as exc:
-            return False, f"unreachable (/v1/models failed: {exc})", []
+    def health_check(
+        self,
+        *,
+        attempts: int = HEALTH_CHECK_ATTEMPTS,
+        retry_delay_seconds: float = HEALTH_RETRY_DELAY_SECONDS,
+        timeout: float | None = None,
+    ) -> tuple[bool, str, list[str]]:
+        bounded_attempts = max(1, int(attempts))
+        request_timeout = self.config.health_timeout if timeout is None else float(timeout)
+        result: dict | None = None
+        errors: list[str] = []
+        for attempt in range(1, bounded_attempts + 1):
+            try:
+                result = self._request("GET", "/models", timeout=request_timeout)
+                if errors:
+                    self.health_recovery_records.append(
+                        {
+                            "endpoint": "/v1/models",
+                            "attempt": attempt,
+                            "max_attempts": bounded_attempts,
+                            "action": "models_probe_recovered",
+                            "prior_errors": list(errors),
+                        }
+                    )
+                break
+            except RunnerError as exc:
+                errors.append(str(exc))
+                action = (
+                    "retry_models_probe"
+                    if attempt < bounded_attempts
+                    else "models_probe_failed"
+                )
+                self.health_recovery_records.append(
+                    {
+                        "endpoint": "/v1/models",
+                        "attempt": attempt,
+                        "max_attempts": bounded_attempts,
+                        "action": action,
+                        "error": str(exc),
+                    }
+                )
+                if attempt < bounded_attempts and retry_delay_seconds > 0:
+                    time.sleep(float(retry_delay_seconds) * attempt)
+
+        if result is None:
+            latest = errors[-1] if errors else "unknown health probe failure"
+            return (
+                False,
+                f"unreachable (/v1/models failed after {bounded_attempts} attempts: {latest})",
+                [],
+            )
 
         models = [item.get("id", "") for item in result.get("data", []) if item.get("id")]
         if models:
@@ -392,14 +521,16 @@ class LocalLLMClient:
         elif self.runtime_progress_callback:
             self.runtime_progress_callback(stats)
         content_text = "".join(output_parts).strip()
+        reasoning_text = "".join(reasoning_parts)
         if not content_text and reasoning_chunks:
-            raise RunnerError(
+            raise LLMReasoningOnlyError(
                 "LLM streaming API returned reasoning-only output with empty content; "
-                "keep thinking disabled for artifact calls or use a model that emits delta.content"
+                "keep thinking disabled for artifact calls or use a model that emits delta.content",
+                reasoning=reasoning_text,
+                reasoning_chars=reasoning_chars,
             )
         if not content_text:
             raise RunnerError("LLM streaming API returned an empty message with no content")
-        reasoning_text = "".join(reasoning_parts)
         return content_text, stats, reasoning_text, reasoning_chars
 
     def complete(
@@ -411,6 +542,7 @@ class LocalLLMClient:
         stream_callback: Callable[[LLMStreamStats], None] | None = None,
         stream_guard: Callable[[str], ArtifactStreamGuardResult] | None = None,
     ) -> str:
+        self.last_completion_attempts = 0
         alive, health_status, health_models = self.health_check()
         if not alive:
             raise RunnerError(f"LLM API preflight failed: {health_status}")
@@ -423,68 +555,138 @@ class LocalLLMClient:
             selected_model = models[0]
         settings = self.call_settings(agent_level, call_function, default_model=selected_model)
         model = settings.model or selected_model
+        require_profile_model_compatibility(self.config.model_profile, model, health_models)
+
+        def complete_once(
+            active_settings: LLMCallSettings,
+            active_messages: list[dict[str, str]] | None = None,
+        ) -> str:
+            request_messages = active_messages or messages
+            self.last_completion_attempts += 1
+            self.generation_request_count += 1
+            try:
+                if self.config.stream:
+                    content, _stats, reasoning, reasoning_chars = self.chat_completion_stream(
+                        request_messages,
+                        model=model,
+                        temperature=active_settings.temperature,
+                        max_tokens=active_settings.max_tokens,
+                        chat_template_kwargs=self._chat_template_kwargs(active_settings),
+                        partial_output_path=stream_output_path,
+                        progress_callback=stream_callback,
+                        stream_guard=stream_guard,
+                    )
+                    if reasoning:
+                        self._record_reasoning_content(
+                            agent_level=agent_level,
+                            call_function=call_function,
+                            model=model,
+                            reasoning=reasoning,
+                            original_chars=reasoning_chars,
+                        )
+                    return content
+                result = self.chat_completion_raw(
+                    request_messages,
+                    model=model,
+                    temperature=active_settings.temperature,
+                    max_tokens=active_settings.max_tokens,
+                    chat_template_kwargs=self._chat_template_kwargs(active_settings),
+                )
+            except LLMTimeoutError as exc:
+                health = self.health_probe()
+                raise RunnerError(
+                    f"LLM generation request timed out after {exc.timeout:g}s. "
+                    f"API health after timeout: {health}. "
+                    "This does not prove the server is dead; it means this generation "
+                    "did not return within the client timeout. For large jobs, retry "
+                    "with --timeout 600, reduce --max-tokens/context, or use a smaller step."
+                ) from exc
+            choices = result.get("choices") or []
+            if not choices:
+                raise RunnerError("LLM API returned no choices")
+            choice = choices[0]
+            message = choice.get("message") or {}
+            reasoning = message.get("reasoning") or message.get("reasoning_content")
+            content = message.get("content")
+            if content is None:
+                content = choice.get("text")
+            if content is None:
+                if reasoning:
+                    raise LLMReasoningOnlyError(
+                        "LLM API returned reasoning-only output with empty content; "
+                        "try the default no-thinking mode, a larger --max-tokens, or a model that emits message.content",
+                        reasoning=str(reasoning),
+                        reasoning_chars=len(str(reasoning)),
+                    )
+                raise RunnerError("LLM API returned an empty message with no content")
+            if reasoning:
+                self._record_reasoning_content(
+                    agent_level=agent_level,
+                    call_function=call_function,
+                    model=model,
+                    reasoning=reasoning,
+                )
+            return str(content).strip()
 
         try:
-            if self.config.stream:
-                content, _stats, reasoning, reasoning_chars = self.chat_completion_stream(
-                    messages,
+            return complete_once(settings)
+        except LLMReasoningOnlyError as exc:
+            if exc.reasoning:
+                self._record_reasoning_content(
+                    agent_level=agent_level,
+                    call_function=call_function,
                     model=model,
-                    temperature=settings.temperature,
-                    max_tokens=settings.max_tokens,
-                    chat_template_kwargs={"enable_thinking": False} if settings.disable_thinking else None,
-                    partial_output_path=stream_output_path,
-                    progress_callback=stream_callback,
-                    stream_guard=stream_guard,
+                    reasoning=exc.reasoning,
+                    original_chars=exc.reasoning_chars,
                 )
-                if reasoning:
-                    self._record_reasoning_content(
-                        agent_level=agent_level,
-                        call_function=call_function,
-                        model=model,
-                        reasoning=reasoning,
-                        original_chars=reasoning_chars,
-                    )
-                return content
-            result = self.chat_completion_raw(
-                messages,
-                model=model,
-                temperature=settings.temperature,
-                max_tokens=settings.max_tokens,
-                chat_template_kwargs={"enable_thinking": False} if settings.disable_thinking else None,
-            )
-        except LLMTimeoutError as exc:
-            health = self.health_probe()
-            raise RunnerError(
-                f"LLM generation request timed out after {exc.timeout:g}s. "
-                f"API health after timeout: {health}. "
-                "This does not prove the server is dead; it means this generation "
-                "did not return within the client timeout. For large jobs, retry "
-                "with --timeout 600, reduce --max-tokens/context, or use a smaller step."
-            ) from exc
-        choices = result.get("choices") or []
-        if not choices:
-            raise RunnerError("LLM API returned no choices")
-        choice = choices[0]
-        message = choice.get("message") or {}
-        reasoning = message.get("reasoning") or message.get("reasoning_content")
-        if reasoning:
-            self._record_reasoning_content(
-                agent_level=agent_level,
-                call_function=call_function,
-                model=model,
-                reasoning=reasoning,
-            )
-        content = message.get("content")
-        if content is None:
-            content = choice.get("text")
-        if content is None:
-            if reasoning:
-                raise RunnerError(
-                    "LLM API returned reasoning-only output with empty content; "
-                    "try the default no-thinking mode, a larger --max-tokens, or a model that emits message.content"
+            if settings.disable_thinking:
+                raise
+            if self.runtime_completion_fallback_callback is not None:
+                self.runtime_completion_fallback_callback(
+                    normalize_agent_level(agent_level),
+                    normalize_call_function(call_function),
+                    "reasoning_only_output",
                 )
-            raise RunnerError("LLM API returned an empty message with no content")
-        return str(content).strip()
+            fallback_settings = dataclasses.replace(
+                settings,
+                temperature=0.0,
+                max_tokens=min(settings.max_tokens, 2048),
+                disable_thinking=True,
+                reasoning_effort=None,
+            )
+            reasoning_excerpt = exc.reasoning[-6000:].strip()
+            fallback_messages = [
+                *messages,
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Prior private analysis excerpt for same-call condensation:\n"
+                        "<private_analysis>\n"
+                        f"{reasoning_excerpt}\n"
+                        "</private_analysis>"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Condense the prior analysis into the exact output contract requested by the original "
+                        "prompt. Return only the final answer, with no analysis, self-revision, or commentary. "
+                        "Do not introduce conclusions unsupported by the prior analysis or supplied evidence."
+                    ),
+                },
+            ]
+            self.completion_recovery_records.append(
+                {
+                    "agent_level": normalize_agent_level(agent_level),
+                    "call_function": normalize_call_function(call_function),
+                    "model": model,
+                    "reason": "reasoning_only_output",
+                    "action": "condense_reasoning_once_with_thinking_off",
+                    "fallback_max_tokens": fallback_settings.max_tokens,
+                    "reasoning_excerpt_chars": len(reasoning_excerpt),
+                }
+            )
+            return complete_once(fallback_settings, fallback_messages)
 
 def _app_config_for_args(args: argparse.Namespace) -> AppConfig:
     project = getattr(args, "project", Path.cwd())
@@ -829,7 +1031,7 @@ def run_llm_capability_probes(client: LocalLLMClient, model: str, timeout: float
         "model": model,
         "messages": [{"role": "user", "content": "Reply exactly: OK"}],
         "temperature": 0.0,
-        "max_tokens": 16,
+        "max_tokens": 256,
         "chat_template_kwargs": None,
     }
 
@@ -900,7 +1102,16 @@ def llm_role_recommendations(model: str) -> list[str]:
         "judge calls: use temperature=0 and evidence-only prompts",
         "coder calls: prefer larger max_tokens than PM/judge when generating patches or file artifacts",
     ]
-    if "nemotron" in model_key:
+    if "deepseek" in model_key:
+        recommendations.insert(
+            0,
+            "DeepSeek on the verified local llama.cpp endpoint: keep chat_template_kwargs.enable_thinking=false for strict artifacts; opt in to thinking only for analysis calls that return separate reasoning_content and content",
+        )
+        recommendations.insert(
+            1,
+            "size max_tokens for the server's active context window, not the model's training-context claim",
+        )
+    elif "nemotron" in model_key:
         recommendations.insert(
             0,
             "Nemotron reasoning models on vLLM: use --reasoning-parser nemotron_v3 and send chat_template_kwargs.enable_thinking=false for normal content",
@@ -924,6 +1135,18 @@ def llm_reasoning_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
     return list(getattr(client, "reasoning_records", []))
 
 
+def llm_completion_recovery_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
+    return list(getattr(client, "completion_recovery_records", []))
+
+
+def llm_health_recovery_manifest(client: LocalLLMClient) -> list[dict[str, object]]:
+    return list(getattr(client, "health_recovery_records", []))
+
+
+def llm_generation_request_count(client: LocalLLMClient) -> int:
+    return int(getattr(client, "generation_request_count", 0) or 0)
+
+
 def llm_settings_manifest(client: LocalLLMClient) -> dict[str, dict[str, object]]:
     result: dict[str, dict[str, object]] = {}
     if not hasattr(client, "call_settings"):
@@ -935,6 +1158,7 @@ def llm_settings_manifest(client: LocalLLMClient) -> dict[str, dict[str, object]
             "temperature": settings.temperature,
             "max_tokens": settings.max_tokens,
             "thinking": "off" if settings.disable_thinking else "on",
+            "reasoning_effort": settings.reasoning_effort,
         }
     for function_name in sorted(DEFAULT_FUNCTION_PROFILES):
         settings = client.call_settings("default", function_name)
@@ -944,6 +1168,7 @@ def llm_settings_manifest(client: LocalLLMClient) -> dict[str, dict[str, object]
             "temperature": settings.temperature,
             "max_tokens": settings.max_tokens,
             "thinking": "off" if settings.disable_thinking else "on",
+            "reasoning_effort": settings.reasoning_effort,
         }
     return result
 
@@ -953,6 +1178,9 @@ def llm_model_profile_manifest(args: argparse.Namespace) -> dict[str, object]:
         "profile": profile,
         "config_file": str(_app_config_for_args(args).path or ""),
         "default_model": MODEL_PROFILE_DEFAULT_MODELS.get(profile, ""),
+        "runtime_model_requirement": (
+            "listed_by_v1_models" if profile != "default" else "automatic"
+        ),
         "function_overrides": {
             name: {
                 "model": override.model,
@@ -963,6 +1191,7 @@ def llm_model_profile_manifest(args: argparse.Namespace) -> dict[str, object]:
                     if override.disable_thinking is None
                     else ("off" if override.disable_thinking else "on")
                 ),
+                "reasoning_effort": override.reasoning_effort,
             }
             for name, override in sorted(profile_function_overrides(profile).items())
         },

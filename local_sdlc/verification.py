@@ -93,10 +93,18 @@ def command_failure_count_from_text(text: str) -> int | None:
     return None
 
 def command_failure_score(command_docs: Sequence[tuple[str, str]]) -> int | None:
+    """Count failures in the stable executable verification vector.
+
+    The acceptance evidence gate is derived from the other checks, so counting
+    it would double-count the same failure and make initial/repair scores
+    incomparable. Required-path checks remain part of the vector.
+    """
     total = 0
     observed = False
     for _name, document in command_docs:
         parsed = parse_command_result_document(document)
+        if parsed.get("command") == "acceptance-evidence-gate":
+            continue
         if parsed.get("status") != "FAIL":
             continue
         text = f"{parsed.get('stdout', '')}\n{parsed.get('stderr', '')}"
@@ -107,11 +115,297 @@ def command_failure_score(command_docs: Sequence[tuple[str, str]]) -> int | None
         observed = True
     return total if observed else None
 
+
+COLLECTION_BLOCKER_PATTERNS = (
+    re.compile(r"Failed to import test module", re.IGNORECASE),
+    re.compile(r"unittest\.loader\._FailedTest"),
+    re.compile(r"ERROR collecting", re.IGNORECASE),
+    re.compile(r"errors? during collection", re.IGNORECASE),
+    re.compile(r"test suite failed to run", re.IGNORECASE),
+)
+
+
+def command_failure_profile(
+    command_docs: Sequence[tuple[str, str]],
+    *,
+    generated_test_paths: Sequence[str] = (),
+    existing_paths: Sequence[str] = (),
+) -> dict[str, int]:
+    """Describe failure severity without conflating coverage with failures.
+
+    A collection/import blocker may report only one error because the test
+    body never ran. Once that blocker is fixed, many real failures can become
+    visible. Raw failure counts alone would incorrectly rank that expansion as
+    a regression, so the profile also records blocked commands and executed
+    test count.
+    """
+
+    failure_score = command_failure_score(command_docs)
+    blocked_commands = 0
+    executed_tests = 0
+    failed_commands = 0
+    for _name, document in command_docs:
+        parsed = parse_command_result_document(document)
+        if parsed.get("command") == "acceptance-evidence-gate":
+            continue
+        text = f"{parsed.get('stdout', '')}\n{parsed.get('stderr', '')}"
+        if parsed.get("status") == "FAIL":
+            failed_commands += 1
+            if any(pattern.search(text) for pattern in COLLECTION_BLOCKER_PATTERNS):
+                blocked_commands += 1
+        count_matches = re.findall(
+            r"(?im)(?:\bRan\s+(\d+)\s+tests?\b|\bcollected\s+(\d+)\s+items?\b)",
+            text,
+        )
+        counts = [int(count) for match in count_matches for count in match if count]
+        if counts:
+            executed_tests += max(counts)
+    profile = {
+        "failure_score": failure_score if failure_score is not None else 0,
+        "blocked_commands": blocked_commands,
+        "executed_tests": executed_tests,
+        "failed_commands": failed_commands,
+    }
+    generated_docs, authoritative_docs = partition_command_docs_by_test_ownership(
+        command_docs,
+        generated_test_paths,
+        existing_paths,
+    )
+    if generated_test_paths and existing_paths:
+        for prefix, documents in (
+            ("generated", generated_docs),
+            ("authoritative", authoritative_docs),
+        ):
+            subset = command_failure_profile(documents)
+            profile.update({f"{prefix}_{key}": value for key, value in subset.items()})
+    return profile
+
+
+def partition_command_docs_by_test_ownership(
+    command_docs: Sequence[tuple[str, str]],
+    generated_test_paths: Sequence[str],
+    existing_paths: Sequence[str],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Separate commands that exclusively execute runner-owned generated tests.
+
+    Ownership is granted only for unittest discovery roots whose existing Python
+    test files are all named in ``generated_test_paths``. Unknown, mixed, and
+    non-discovery commands remain authoritative so uncertainty cannot weaken a
+    fixed acceptance gate.
+    """
+    generated = {str(Path(path)) for path in generated_test_paths}
+    existing = {str(Path(path)) for path in existing_paths}
+    generated_docs: list[tuple[str, str]] = []
+    authoritative_docs: list[tuple[str, str]] = []
+    for item in command_docs:
+        parsed = parse_command_result_document(item[1])
+        command = parsed.get("command", "")
+        try:
+            tokens = shlex.split(command)
+            start_index = tokens.index("-s")
+            root = str(Path(tokens[start_index + 1]))
+        except (ValueError, IndexError):
+            authoritative_docs.append(item)
+            continue
+        prefix = root.rstrip("/") + "/"
+        scoped_tests = {
+            path
+            for path in existing
+            if path.startswith(prefix)
+            and path.endswith(".py")
+            and Path(path).name != "__init__.py"
+        }
+        if scoped_tests and scoped_tests <= generated:
+            generated_docs.append(item)
+        else:
+            authoritative_docs.append(item)
+    return generated_docs, authoritative_docs
+
+
+def command_failure_profile_progressed(
+    previous_profile: Mapping[str, int] | None,
+    current_profile: Mapping[str, int] | None,
+) -> bool:
+    """Return true when executable evidence expands without a new blocker."""
+
+    if previous_profile is None or current_profile is None:
+        return False
+    previous_blocked = int(previous_profile.get("blocked_commands", 0))
+    current_blocked = int(current_profile.get("blocked_commands", 0))
+    previous_tests = int(previous_profile.get("executed_tests", 0))
+    current_tests = int(current_profile.get("executed_tests", 0))
+    return bool(
+        current_blocked <= previous_blocked
+        and current_tests >= previous_tests
+        and (current_blocked < previous_blocked or current_tests > previous_tests)
+    )
+
+
+def executable_command_gate_blockers(
+    command_docs: Sequence[tuple[str, str]],
+) -> list[dict[str, object]]:
+    """Return fail-closed acceptance blockers for failed executable checks.
+
+    Requirement-to-evidence mapping can be incomplete or overly broad. A
+    failed configured command is nevertheless direct executable evidence and
+    must prevent an acceptance gate from reporting ``ok: true``.
+    """
+
+    blockers: list[dict[str, object]] = []
+    for index, (label, document) in enumerate(command_docs, start=1):
+        parsed = parse_command_result_document(document)
+        command = parsed.get("command", "")
+        status = parsed.get("status", "")
+        if command == "acceptance-evidence-gate" or status not in {"FAIL", "BLOCKED"}:
+            continue
+        blockers.append(
+            {
+                "id": f"X{index:02d}",
+                "text": f"Executable check must pass: {command or label}",
+                "status": "fail" if status == "FAIL" else "blocked",
+                "evidence_ids": [],
+                "evidence_scope": "executable_command",
+                "command": command,
+                "label": label,
+            }
+        )
+    return blockers
+
+
+def candidate_behavior_regressed(
+    previous_score: int | None,
+    current_score: int | None,
+    changed_paths: Sequence[str],
+    *,
+    previous_profile: Mapping[str, int] | None = None,
+    current_profile: Mapping[str, int] | None = None,
+) -> bool:
+    """Return true when an applied candidate increases executable failures.
+
+    Scores are comparable inside one agent run because every round executes the
+    same configured command vector.  A candidate that changed no files cannot
+    be the cause and is therefore excluded from this rollback rule.
+    """
+    if not changed_paths or previous_score is None or current_score is None:
+        return False
+    if previous_profile is not None and current_profile is not None:
+        authoritative_keys = {
+            "failure_score",
+            "blocked_commands",
+            "executed_tests",
+            "failed_commands",
+        }
+        if all(
+            f"authoritative_{key}" in previous_profile
+            and f"authoritative_{key}" in current_profile
+            for key in authoritative_keys
+        ):
+            previous_authoritative = {
+                key: int(previous_profile[f"authoritative_{key}"])
+                for key in authoritative_keys
+            }
+            current_authoritative = {
+                key: int(current_profile[f"authoritative_{key}"])
+                for key in authoritative_keys
+            }
+            if _failure_profile_regressed(previous_authoritative, current_authoritative):
+                return True
+            if _failure_profile_improved(previous_authoritative, current_authoritative):
+                return False
+        previous_blocked = int(previous_profile.get("blocked_commands", 0))
+        current_blocked = int(current_profile.get("blocked_commands", 0))
+        previous_tests = int(previous_profile.get("executed_tests", 0))
+        current_tests = int(current_profile.get("executed_tests", 0))
+        if current_blocked > previous_blocked:
+            return True
+        if current_blocked < previous_blocked:
+            return False
+        if command_failure_profile_progressed(previous_profile, current_profile):
+            return False
+        if current_tests < previous_tests and current_blocked >= previous_blocked:
+            return True
+        if current_tests > previous_tests:
+            return False
+    return current_score > previous_score
+
+
+def _failure_profile_regressed(
+    previous_profile: Mapping[str, int],
+    current_profile: Mapping[str, int],
+) -> bool:
+    previous_blocked = int(previous_profile.get("blocked_commands", 0))
+    current_blocked = int(current_profile.get("blocked_commands", 0))
+    previous_tests = int(previous_profile.get("executed_tests", 0))
+    current_tests = int(current_profile.get("executed_tests", 0))
+    if current_blocked > previous_blocked:
+        return True
+    if current_blocked < previous_blocked:
+        return False
+    if current_tests < previous_tests:
+        return True
+    if current_tests > previous_tests:
+        return False
+    return int(current_profile.get("failure_score", 0)) > int(
+        previous_profile.get("failure_score", 0)
+    )
+
+
+def _failure_profile_improved(
+    previous_profile: Mapping[str, int],
+    current_profile: Mapping[str, int],
+) -> bool:
+    previous_blocked = int(previous_profile.get("blocked_commands", 0))
+    current_blocked = int(current_profile.get("blocked_commands", 0))
+    previous_tests = int(previous_profile.get("executed_tests", 0))
+    current_tests = int(current_profile.get("executed_tests", 0))
+    if current_blocked < previous_blocked and current_tests >= previous_tests:
+        return True
+    return bool(
+        current_blocked == previous_blocked
+        and current_tests >= previous_tests
+        and int(current_profile.get("failure_score", 0))
+        < int(previous_profile.get("failure_score", 0))
+    )
+
+
+def candidate_test_harness_bootstrap_progress(
+    previous_score: int | None,
+    current_score: int | None,
+    changed_paths: Sequence[str],
+    missing_required_paths_before: Sequence[str],
+    missing_required_paths_after: Sequence[str],
+    *,
+    isolated: bool,
+) -> bool:
+    """Admit a failing candidate that makes a missing test harness executable.
+
+    Let ``M0`` and ``M1`` be the missing required-path sets before and after a
+    candidate. A newly executable generated test can increase the raw failure
+    count from a vacuous zero-test run. In an isolated worktree this is useful
+    intermediate evidence when ``M1`` is a strict subset of ``M0`` and at least
+    one newly satisfied path is a changed test file. The candidate remains
+    quarantined and still cannot be copied back until every check passes.
+    """
+    if not isolated or not candidate_behavior_regressed(previous_score, current_score, changed_paths):
+        return False
+    before = set(missing_required_paths_before)
+    after = set(missing_required_paths_after)
+    if not after < before:
+        return False
+    newly_satisfied = before - after
+    changed = set(changed_paths)
+    return bool(
+        newly_satisfied
+        and newly_satisfied <= changed
+        and any(path.startswith("tests/") for path in newly_satisfied)
+    )
+
 def normalize_failure_line(line: str) -> str:
     normalized = re.sub(r'File "[^"]+", line \d+', 'File "<path>", line <n>', line.strip())
     normalized = re.sub(r"/tmp/[^/\s]+/project/", "<project>/", normalized)
     normalized = re.sub(r"/home/[^/\s]+/[^\s\"]+", "<path>", normalized)
     normalized = re.sub(r"\b0x[0-9a-fA-F]+\b", "0x<addr>", normalized)
+    normalized = re.sub(r"(?i)\bround\s+\d+(?:\.\d+)?\b", "round <n>", normalized)
     return normalized
 
 def command_failure_signature(command_docs: Sequence[tuple[str, str]]) -> str | None:
@@ -122,6 +416,8 @@ def command_failure_signature(command_docs: Sequence[tuple[str, str]]) -> str | 
         if parsed.get("status") != "FAIL":
             continue
         command = parsed.get("command", "")
+        if command == "acceptance-evidence-gate":
+            continue
         try:
             returncode = int(parsed.get("exit_code", "1"))
         except ValueError:
@@ -163,6 +459,8 @@ def command_failure_family_signature(command_docs: Sequence[tuple[str, str]]) ->
         if parsed.get("status") != "FAIL":
             continue
         command = parsed.get("command", "")
+        if command == "acceptance-evidence-gate":
+            continue
         try:
             returncode = int(parsed.get("exit_code", "1"))
         except ValueError:
@@ -193,6 +491,8 @@ def classify_failure(returncode: int | None, stdout: str = "", stderr: str = "",
     text = f"{stdout}\n{stderr}".lower()
     if blocked_reason:
         return "blocked_command"
+    if "unittest command discovered zero tests" in text:
+        return "missing_test_harness"
     if returncode == 0:
         return "passed"
     if "start directory is not importable" in text and "tests" in text:
@@ -338,15 +638,21 @@ def run_checked_command(
                 check=False,
             )
             duration = time.monotonic() - started
+            returncode, stdout, stderr = normalize_test_command_result(
+                command,
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
             return (
                 command_result_document(
                     command,
-                    result.returncode,
-                    result.stdout,
-                    result.stderr,
+                    returncode,
+                    stdout,
+                    stderr,
                     duration,
                 ),
-                result.returncode == 0,
+                returncode == 0,
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - started
@@ -457,9 +763,15 @@ def run_checked_command(
             stderr = stderr_file.read().decode("utf-8", errors="replace")
             duration = time.monotonic() - started
             if not timed_out:
+                returncode, stdout, stderr = normalize_test_command_result(
+                    command,
+                    process.returncode,
+                    stdout,
+                    stderr,
+                )
                 return (
-                    command_result_document(command, process.returncode, stdout, stderr, duration),
-                    process.returncode == 0,
+                    command_result_document(command, returncode, stdout, stderr, duration),
+                    returncode == 0,
                 )
 
             if run_dir is not None:
@@ -496,6 +808,35 @@ def unsupported_shell_command_reason(command: str) -> str:
             "separate --test-command instead"
         )
     return ""
+
+
+def normalize_test_command_result(
+    command: str,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+) -> tuple[int, str, str]:
+    """Reject vacuous test success when a recognized runner executes no tests."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return returncode, stdout, stderr
+    is_unittest = (
+        len(tokens) >= 3
+        and Path(tokens[0]).name.startswith("python")
+        and tokens[1:3] == ["-m", "unittest"]
+    )
+    if not is_unittest:
+        return returncode, stdout, stderr
+    match = re.search(r"(?m)^Ran\s+(\d+)\s+tests?\b", f"{stdout}\n{stderr}")
+    if not match or int(match.group(1)) != 0:
+        return returncode, stdout, stderr
+    detail = (
+        "verification infrastructure: unittest command discovered zero tests; "
+        "successful evidence must execute at least one test"
+    )
+    normalized_stderr = f"{stderr.rstrip()}\n{detail}".lstrip()
+    return returncode or 1, stdout, normalized_stderr
 
 def unittest_discover_pattern(command: str) -> tuple[str, str] | None:
     try:

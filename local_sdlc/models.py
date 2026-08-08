@@ -46,6 +46,21 @@ class LLMTimeoutError(RunnerError):
         super().__init__(f"LLM API request to {path} timed out after {timeout:g}s")
 
 
+class LLMReasoningOnlyError(RunnerError):
+    """Raised when a thinking call consumes its response without a conclusion."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reasoning: str = "",
+        reasoning_chars: int = 0,
+    ):
+        self.reasoning = reasoning
+        self.reasoning_chars = max(int(reasoning_chars), len(reasoning))
+        super().__init__(message)
+
+
 class LLMStreamAbortError(RunnerError):
     """Raised when a partial streaming response is provably malformed."""
 
@@ -99,6 +114,7 @@ class LLMRoleOverride:
     max_tokens: int | None = None
     disable_thinking: bool | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
 
 
 LEARNING_FUNCTION_PROFILES_REASONING: dict[str, LLMRoleOverride] = {
@@ -124,6 +140,7 @@ class LLMCallSettings:
     temperature: float
     max_tokens: int
     disable_thinking: bool
+    reasoning_effort: str | None = None
 
 
 DEFAULT_FUNCTION_PROFILES: dict[str, LLMRoleOverride] = {
@@ -140,9 +157,13 @@ DEFAULT_FUNCTION_PROFILES: dict[str, LLMRoleOverride] = {
     # bounded proposition, not an executable artifact. The artifact writer below
     # remains no-thinking so reasoning cannot leak into patches.
     "patch_planner": LLMRoleOverride(temperature=0.0, max_tokens=DEFAULT_PM_MAX_TOKENS, disable_thinking=True),
+    # Independent semantic review of an executable artifact must emit a short
+    # machine-readable verdict. It never writes or applies code.
+    "patch_conformance": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
     # Project-policy triage classifies context-dependent ownership decisions.
     # It never emits patches; the runner validates and enforces the decision.
     "project_policy_triage": LLMRoleOverride(temperature=0.0, max_tokens=DEFAULT_PM_MAX_TOKENS, disable_thinking=True),
+    "policy_arbitration": LLMRoleOverride(temperature=0.0, max_tokens=DEFAULT_PM_MAX_TOKENS, disable_thinking=True),
     # Artifact generation can require long outputs, but should remain low
     # temperature because the output is an executable contract.
     "generate_artifact": LLMRoleOverride(temperature=0.1, max_tokens=DEFAULT_CODER_MAX_TOKENS, disable_thinking=True),
@@ -161,6 +182,13 @@ DEFAULT_FUNCTION_PROFILES: dict[str, LLMRoleOverride] = {
 MODEL_PROFILE_ALIASES: dict[str, str] = {
     "default": "default",
     "none": "default",
+    "deepseek": "deepseek-v4-flash-agent",
+    "deepseek-agent": "deepseek-v4-flash-agent",
+    "deepseek-agent-deep": "deepseek-v4-flash-agent-deep",
+    "deepseek-v4": "deepseek-v4-flash-agent",
+    "deepseek-v4-flash": "deepseek-v4-flash-agent",
+    "deepseek-v4-flash-agent": "deepseek-v4-flash-agent",
+    "deepseek-v4-flash-agent-deep": "deepseek-v4-flash-agent-deep",
     "nemotron": "nemotron3-super-agent",
     "nemotron3": "nemotron3-super-agent",
     "nemotron3-super": "nemotron3-super-agent",
@@ -179,6 +207,8 @@ MODEL_PROFILE_ALIASES: dict[str, str] = {
 }
 
 MODEL_PROFILE_DEFAULT_MODELS: dict[str, str] = {
+    "deepseek-v4-flash-agent": "deepseek-v4-flash-0731",
+    "deepseek-v4-flash-agent-deep": "deepseek-v4-flash-0731",
     "nemotron3-super-agent": "nemotron-3-super",
     "nemotron-labs-puzzle-75b-agent": "nemotron-labs-3-puzzle-75b-a9b",
     "qwen-agent": "qwen3.5-122b",
@@ -189,6 +219,73 @@ MODEL_PROFILE_DEFAULT_MODELS: dict[str, str] = {
 
 MODEL_PROFILE_FUNCTION_PROFILES: dict[str, dict[str, LLMRoleOverride]] = {
     "default": {},
+    # The local llama.cpp DeepSeek-V4-Flash deployment is intentionally a
+    # bounded profile. Its active context is commonly smaller than the model's
+    # training context, so staged work is safer than copying Qwen's long
+    # artifact budgets. This stable profile keeps every call no-thinking.
+    "deepseek-v4-flash-agent": {
+        "default": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
+        "episode_review": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "candidate_abstraction": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=True),
+        "scope_classification": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "counterexample_search": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=True),
+        "candidate_serialization": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "promotion_review": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "route_task": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "plan_work": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=True),
+        "explore_code": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "failure_analysis": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=True),
+        "patch_planner": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=True),
+        "project_policy_triage": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "policy_arbitration": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "generate_artifact": LLMRoleOverride(temperature=0.05, max_tokens=8192, disable_thinking=True),
+        "repair_artifact": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "root_cause_analysis": LLMRoleOverride(temperature=0.0, max_tokens=6144, disable_thinking=True),
+        "root_cause_patch": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "artifact_writer": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
+        "semantic_repair": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "format_repair": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "judge_review": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "verify_acceptance": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+    },
+    # DeepSeek can return reasoning_content separately from content on the
+    # verified local llama.cpp endpoint. Opt in only for non-artifact analysis;
+    # every machine-readable artifact path stays identical to the stable preset.
+    # The active 16K server context caps output at 8192, so harder analysis uses
+    # the model's explicit high/max effort rather than unsafe Qwen-sized limits.
+    "deepseek-v4-flash-agent-deep": {
+        "default": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
+        "episode_review": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "candidate_abstraction": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "scope_classification": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "counterexample_search": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
+        "candidate_serialization": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "promotion_review": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
+        "route_task": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "plan_work": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="max"),
+        "explore_code": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        # These functions must emit short structured decisions.  On the local
+        # DeepSeek endpoint, thinking frequently consumed the entire output
+        # budget and forced a duplicate condensation request, so keep the
+        # exploratory/root-cause calls thoughtful and the classifiers direct.
+        "failure_analysis": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "patch_planner": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "project_policy_triage": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "policy_arbitration": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "generate_artifact": LLMRoleOverride(temperature=0.05, max_tokens=8192, disable_thinking=True),
+        "repair_artifact": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        # Root-cause traces can require a complete cross-file state transition.
+        # A 4K cap cut verified analyses off before their conclusion, causing the
+        # no-thinking condensation pass to invent a different hypothesis. Keep
+        # the analysis within the profile's documented 8K ceiling instead.
+        "root_cause_analysis": LLMRoleOverride(temperature=1.0, max_tokens=8192, disable_thinking=False, reasoning_effort="high"),
+        "root_cause_patch": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "artifact_writer": LLMRoleOverride(temperature=0.0, max_tokens=8192, disable_thinking=True),
+        "semantic_repair": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "format_repair": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "judge_review": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+        "verify_acceptance": LLMRoleOverride(temperature=0.0, max_tokens=4096, disable_thinking=True),
+    },
     # Nemotron-3-Super on vLLM exposes reasoning separately. Keep thinking
     # disabled for every call until the runner intentionally consumes
     # reasoning fields; otherwise message.content can be null.
@@ -479,6 +576,7 @@ class StageWorkItem:
     test_commands: tuple[str, ...] = ()
     required_observables: tuple[str, ...] = ()
     writable_paths: tuple[str, ...] = ()
+    repair_scope_paths: tuple[str, ...] = ()
     readonly_evidence_paths: tuple[str, ...] = ()
     api_profile: tuple[str, ...] = ()
     max_rounds: int | None = None
@@ -510,6 +608,7 @@ class StageRunSummary:
     final_verdict: str = ""
     changed_paths: tuple[str, ...] = ()
     required_paths: tuple[str, ...] = ()
+    repair_focus_paths: tuple[str, ...] = ()
     failure_summary: dict[str, object] | None = None
 
 

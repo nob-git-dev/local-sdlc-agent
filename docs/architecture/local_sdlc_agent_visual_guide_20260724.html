@@ -785,7 +785,7 @@
         <div class="brand-mark">LS</div>
         <div>
           <strong>local-sdlc-agent</strong>
-          <small>VISUAL CODE GUIDE / 2026-08-03</small>
+          <small>VISUAL CODE GUIDE / 2026-08-08</small>
         </div>
       </div>
       <div class="sidebar-tools">
@@ -811,7 +811,8 @@
         <a href="#cli"><span>15</span><span>CLIリファレンス</span></a>
         <a href="#learning-runtime"><span>16</span><span>学習ランタイム</span></a>
         <a href="#reality"><span>17</span><span>現行テストと制約</span></a>
-        <a href="#assessment"><span>18</span><span>評価と読解ガイド</span></a>
+        <a href="#qualification"><span>18</span><span>最新の完走証拠</span></a>
+        <a href="#assessment"><span>19</span><span>評価と読解ガイド</span></a>
       </nav>
       <div class="sidebar-note">
         <code>main</code> 向け作業ツリー / 製品非依存化版<br>
@@ -831,14 +832,15 @@
         <div class="hero-actions">
           <a class="button" href="#architecture">全体像を見る ↓</a>
           <a class="button secondary" href="#learning-runtime">新しい学習機構を見る</a>
+          <a class="button secondary" href="#qualification">最新の完走証拠を見る</a>
           <a class="button secondary" href="#prompts">実プロンプトを見る</a>
           <a class="button secondary" href="https://github.com/nob-git-dev/local-sdlc-agent/tree/main" target="_blank" rel="noreferrer">公開後の対象ソース ↗</a>
         </div>
         <div class="metrics" aria-label="コードベースの主要指標">
-          <div class="metric"><b>31,826</b><span>3パッケージのPython行数</span></div>
-          <div class="metric"><b>985</b><span>関数・メソッド</span></div>
+          <div class="metric"><b>38,703</b><span>実行系Python行数（tests除外）</span></div>
+          <div class="metric"><b>1,117</b><span>関数・メソッド</span></div>
           <div class="metric"><b>12 + 4</b><span>Skill + Agent prompt資産</span></div>
-          <div class="metric"><b>575</b><span>全テスト成功</span></div>
+          <div class="metric"><b>732</b><span>全テスト成功</span></div>
         </div>
       </header>
 
@@ -895,8 +897,8 @@
                 <tbody>
                   <tr><th>Repository</th><td><a href="https://github.com/nob-git-dev/local-sdlc-agent">nob-git-dev/local-sdlc-agent</a></td></tr>
                   <tr><th>Source</th><td><code>main</code> 向け作業ツリー / 源流資産を含む製品非依存化版</td></tr>
-                  <tr><th>Source state</th><td>2026-08-03 / Integration Gate I 完了時点</td></tr>
-                  <tr><th>Report date</th><td>2026-08-03 / Asia/Tokyo</td></tr>
+                  <tr><th>Source state</th><td>2026-08-08 / held-out DAG qualification 完了時点</td></tr>
+                  <tr><th>Report date</th><td>2026-08-08 / Asia/Tokyo</td></tr>
                   <tr><th>Package</th><td><code>local-sdlc-agent 0.1.0</code> / Python <code>&gt;=3.10</code> を宣言</td></tr>
                   <tr><th>License</th><td>コードは PolyForm Noncommercial、文書・Promptは CC BY-NC-SA 4.0</td></tr>
                 </tbody>
@@ -906,7 +908,7 @@
           <div class="card">
             <h3>重要な現状注記</h3>
             <p><span class="badge limit">検証結果</span></p>
-            <p>Python 3.12.3 で <strong>575テストすべて成功</strong>。そのうち103件が、経験収集から反例検証、昇格、snapshot固定、中断・予算までを扱う学習系テストです。</p>
+            <p>Python 3.12.3 で <strong>732テストすべて成功</strong>。そのうち103件が、経験収集から反例検証、昇格、snapshot固定、中断・予算までを扱う学習系テストです。</p>
             <p>Python 3.10 / 3.11 の構文として静的解析済みで、3.12以上専用の構文・本体標準ライブラリAPIは確認されていません。実行確認済みの基準は3.12.3です。</p>
             <p>Python 3.13 は検証matrixに未追加です。「動く見込み」と「検証済み」を区別し、対応保証には別環境での全テストを必要とします。</p>
             <a class="source-link" href="https://github.com/nob-git-dev/local-sdlc-agent/blob/main/pyproject.toml" target="_blank" rel="noreferrer">pyproject.toml</a>
@@ -2417,7 +2419,7 @@ flowchart LR
           <div class="status-cell"><b>L12 / EL12</b><span>Definition of Done</span></div>
           <div class="status-cell"><b>Gate I</b><span>integration pass</span></div>
           <div class="status-cell"><b>103</b><span>learning tests</span></div>
-          <div class="status-cell"><b>575</b><span>full-suite pass</span></div>
+          <div class="status-cell"><b>732</b><span>full-suite pass</span></div>
           <div class="status-cell"><b>4 + cancel</b><span>work limits</span></div>
         </div>
 
@@ -2639,7 +2641,7 @@ python3 local_sdlc_learning.py mine-candidates \
 
         <div class="status-strip pass" aria-label="Python 3.12 test status">
           <div class="status-cell"><b>Python 3.12.3</b><span><code>python3 -m unittest discover -s tests</code></span></div>
-          <div class="status-cell"><b>575</b><span>pass</span></div>
+          <div class="status-cell"><b>732</b><span>pass</span></div>
           <div class="status-cell"><b>0</b><span>failure</span></div>
           <div class="status-cell"><b>0</b><span>error</span></div>
           <div class="status-cell"><b>103</b><span>learning tests</span></div>
@@ -2649,7 +2651,7 @@ python3 local_sdlc_learning.py mine-candidates \
           <article class="card card-accent card-green">
             <span class="badge impl">Verified baseline</span>
             <h3>現在の基準環境では全件green</h3>
-            <p>実行面、Web UI、安全・予算・停止・回復、canonical event、学習制御面を含む全575件が成功しています。L12の横断scenarioだけでなく、既存機能の回帰も同じsuiteで確認します。</p>
+            <p>実行面、Web UI、安全・予算・停止・回復、canonical event、学習制御面を含む全732件が成功しています。L12の横断scenarioだけでなく、既存機能の回帰も同じsuiteで確認します。</p>
           </article>
           <article class="card card-accent card-orange">
             <span class="badge rule">Compatibility boundary</span>
@@ -2682,9 +2684,96 @@ python3 local_sdlc_learning.py mine-candidates \
         </div>
       </section>
 
+      <section id="qualification" data-search-section>
+        <div class="section-head">
+          <div class="section-no">18 / LATEST QUALIFICATION</div>
+          <div>
+            <h2>今回の改善が実際に効いた場所</h2>
+            <p class="section-kicker">Q24では、別ドメインの仕様からDAGジョブ実行エンジンを生成し、5つのStageと固定受入テストを自律的に完了しました。ここでは、完走を可能にした修正を実行証拠と分けて示します。</p>
+          </div>
+        </div>
+
+        <div class="big-concept">
+          このプロジェクトが作るものは、特定のアプリそのものではありません。<br>
+          <code>SPEC.md → Stage queue → bounded agent run → executable evidence → final acceptance</code>
+          を実行する、ローカルLLM向けの <strong>DAGジョブ実行エンジン</strong> と、その開発を監督するハーネスです。
+        </div>
+
+        <div class="status-strip pass" aria-label="Q24 held-out qualification status">
+          <div class="status-cell"><b>Q24</b><span>held-out qualification</span></div>
+          <div class="status-cell"><b>5 / 5</b><span>Stage completed</span></div>
+          <div class="status-cell"><b>11 / 11</b><span>acceptance gate</span></div>
+          <div class="status-cell"><b>20 / 20</b><span>generated tests</span></div>
+          <div class="status-cell"><b>7 / 7</b><span>fixed acceptance tests</span></div>
+        </div>
+
+        <div class="grid two" style="margin-top:1rem">
+          <article class="card card-accent card-orange searchable-card">
+            <span class="mini-label">OWNERSHIP TRANSACTION</span>
+            <h3>テスト修復の権限を一回で消費する</h3>
+            <p>生成テストを修正してよいという判定は、通常の製品書込み権限を一時停止する限定トランザクションです。許可されたテストだけを一度適用すると権限を消費し、次のラウンドでは製品コードの書込み範囲を復元します。</p>
+            <p class="small muted">ロールバック時は、適用済み印とファイル内容を同時に戻します。つまり、テスト修正の許可が後続ラウンドへ漏れません。</p>
+          </article>
+          <article class="card card-accent card-green searchable-card">
+            <span class="mini-label">LIVE TIMEOUT RECOVERY</span>
+            <h3>APIが生きているタイムアウトだけを延長する</h3>
+            <p>生成要求が時間切れになっても、直後のAPI health checkが生存を示す場合だけ、同じStageを再開します。要求時間は <code>300 → 600 → 1200 → 1800秒</code> のように上限付きで伸ばし、設定エラーや上限到達はfail closedにします。</p>
+            <p class="small muted">CLI既定値が未指定でも既定タイムアウトへ正規化し、回復で時間枠が小さくなることを防ぎます。</p>
+          </article>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-title">失敗を種類に分けてから回復する <span>FIG 18.1 / bounded recovery</span></div>
+          <pre class="mermaid">
+flowchart LR
+  FAIL["失敗または停止"] --> CLASS{"観測で分類"}
+  CLASS -->|API health alive + timeout| EXT["同じStageを再開\n要求時間を上限付き延長"]
+  CLASS -->|configuration / health dead / limit| CLOSED["fail closed\n証拠を保存して停止"]
+  CLASS -->|final gate failure| S99["S99 integration repair\nreadonly acceptanceを維持"]
+  EXT --> GATE["Stage / final gate"]
+  S99 --> GATE
+  GATE -->|pass| DONE["approved"]
+  GATE -->|fail| CLOSED
+          </pre>
+        </div>
+
+        <h3>Q24で確認できたこと</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>観測項目</th><th>結果</th><th>意味</th></tr></thead>
+            <tbody>
+              <tr><td>対象</td><td><code>dagrunner</code> DAGジョブ実行エンジン</td><td>Mini SQLite固有ではない仕様で検証した</td></tr>
+              <tr><td>Stage</td><td>5 / 5完了、実行試行5回</td><td>分割された作業単位を順番に完了した</td></tr>
+              <tr><td>最終Gate</td><td>必須11件中11件pass</td><td>Stage通過だけでなく受入条件を全件確認した</td></tr>
+              <tr><td>最終統合</td><td>S99の初回は失敗、回復Runでapproved</td><td>初回無失敗ではなく、失敗分析から自律回復して完了した</td></tr>
+              <tr><td>介入監査</td><td>自律判断4、human request 0、external intervention 0、unauthorized 0</td><td>このRunの記録上、外部介入なしで回復した</td></tr>
+              <tr><td>API</td><td>115 calls</td><td>長時間処理を無制限にせず、Run証跡へ記録した</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid three">
+          <article class="card searchable-card">
+            <span class="badge impl">Implemented</span>
+            <h3>テストと製品を混同しない</h3>
+            <p>生成テストの矛盾を検出しても、外部受入テストを勝手に弱めません。所有判定、対象パス、適用済み状態をRun文書へ残します。</p>
+          </article>
+          <article class="card searchable-card">
+            <span class="badge impl">Implemented</span>
+            <h3>回復を別の無限ループにしない</h3>
+            <p>timeout、形式崩れ、機能失敗を別の回復戦略へルーティングし、それぞれの回数・時間・API予算を使い切ったら停止します。</p>
+          </article>
+          <article class="card searchable-card">
+            <span class="badge limit">Boundary</span>
+            <h3>証拠は保証範囲を超えない</h3>
+            <p>Q24はこのRunの自律完走を示しますが、すべての未知仕様で完走する証明ではありません。未検証領域は次のholdoutとして残します。</p>
+          </article>
+        </div>
+      </section>
+
       <section id="assessment" data-search-section>
         <div class="section-head">
-          <div class="section-no">18 / ASSESSMENT</div>
+          <div class="section-no">19 / ASSESSMENT</div>
           <div>
             <h2>技術評価と次に読む場所</h2>
             <p class="section-kicker">このプログラムの価値は“賢いモデル”より“間違えるモデルを扱う制御設計”にあります。</p>
@@ -2793,7 +2882,7 @@ python3 local_sdlc_learning.py mine-candidates \
         <div class="foot-grid">
           <div>
             <strong>local-sdlc-agent — 実装を読み解くビジュアルガイド</strong>
-            <p>対象は <code>main</code> 向けの製品非依存化作業ツリー。本文は2026-08-03時点のコード、L12 / EL12正本仕様、ローカル全テスト結果に基づきます。未検証範囲は制約として明示しました。</p>
+            <p>対象は <code>main</code> 向けの製品非依存化作業ツリー。本文は2026-08-08時点のコード、L12 / EL12正本仕様、Q24 held-out qualification、ローカル全テスト結果に基づきます。未検証範囲は制約として明示しました。</p>
           </div>
           <div>
             <strong>CDN / offline</strong>

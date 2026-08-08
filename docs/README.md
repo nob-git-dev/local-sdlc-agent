@@ -19,6 +19,7 @@ diagrams and charts.
 
 - **Autonomous execution plane:** [`architecture/autonomous_supervisor_runtime_spec.md`](architecture/autonomous_supervisor_runtime_spec.md)
 - **Experience learning control plane:** [`../learning-runtime/SPEC.md`](../learning-runtime/SPEC.md)
+- **Qwen / DeepSeek profile switching:** [`usage/model_profiles.md`](usage/model_profiles.md)
 
 ## Structure
 

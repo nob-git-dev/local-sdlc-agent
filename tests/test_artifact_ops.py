@@ -15,6 +15,28 @@ class ArtifactOpsTests(LocalSDLCTestCase):
         self.assertEqual(artifact.mode, "replace")
         self.assertIn("<html>", artifact.content)
 
+    def test_extract_file_artifact_normalizes_missing_header_colon(self):
+        output = "BEGIN_FILE app.py\n```python\nprint('ok')\n```\nEND_FILE"
+
+        artifact = self.local_sdlc.extract_file_artifact(output, ["app.py"])
+
+        self.assertEqual(artifact.path, "app.py")
+        self.assertEqual(artifact.content, "print('ok')")
+
+    def test_missing_header_colon_still_enforces_readonly_stream_policy(self):
+        policy = self.local_sdlc.ArtifactPathPolicy(
+            allowed_paths=("app.py",),
+            readonly_paths=("tests/test_app.py",),
+        )
+
+        result = self.local_sdlc.artifact_stream_guard(
+            "BEGIN_FILE tests/test_app.py\n",
+            artifact_policy=policy,
+        )
+
+        self.assertTrue(result.should_abort)
+        self.assertEqual(result.code, "stream_readonly_artifact_path")
+
     def test_extract_file_artifact_accepts_path_on_next_line(self):
         output = "BEGIN_FILE\nindex.html\n<!doctype html>\n<html></html>\nEND_FILE"
         artifact = self.local_sdlc.extract_file_artifact(output, ["index.html"])
@@ -113,6 +135,46 @@ if __name__ == "__main__":
         self.assertEqual(artifacts[0].path, "app.py")
         self.assertEqual(artifacts[0].mode, "replace")
         self.assertIn("def main", artifacts[0].content)
+
+    def test_extract_file_artifact_recovers_fenced_full_python_file_with_terminal_marker(self):
+        output = '''BEGIN_SEARCH_REPLACE: pkg/worker.py
+```python
+"""Worker module."""
+
+def run():
+    return "ok"
+```
+END_SEARCH_REPLACE: pkg/worker.py
+'''
+        policy = self.local_sdlc.ArtifactPathPolicy(
+            allowed_paths=("pkg/worker.py",),
+            existing_paths=("pkg/__init__.py",),
+        )
+
+        artifacts = self.local_sdlc.extract_file_artifacts(output, policy)
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].path, "pkg/worker.py")
+        self.assertEqual(artifacts[0].mode, "replace")
+        self.assertIn('return "ok"', artifacts[0].content)
+        self.assertNotIn("```", artifacts[0].content)
+
+    def test_extract_file_artifact_rejects_mismatched_terminal_path(self):
+        output = '''BEGIN_SEARCH_REPLACE: pkg/worker.py
+```python
+def run():
+    return "ok"
+```
+END_SEARCH_REPLACE: pkg/other.py
+'''
+        policy = self.local_sdlc.ArtifactPathPolicy(
+            allowed_paths=("pkg/worker.py",),
+            existing_paths=("pkg/__init__.py",),
+        )
+
+        artifacts = self.local_sdlc.extract_file_artifacts(output, policy)
+
+        self.assertEqual(artifacts, [])
 
     def test_extract_file_artifact_does_not_recover_malformed_search_replace_fragment(self):
         output = """BEGIN_SEARCH_REPLACE: app.py
@@ -214,6 +276,170 @@ END_SEARCH_REPLACE"""
 
         self.assertIn("PASS", doc)
         self.assertEqual(text, "initBoard();\nrenderBoard();\n")
+
+    def test_extract_search_replace_normalizes_path_on_next_line(self):
+        output = textwrap.dedent(
+            """
+            BEGIN_SEARCH_REPLACE
+            pkg/worker.py
+            <<<<<<< SEARCH
+            VALUE = "old"
+            =======
+            VALUE = "new"
+            >>>>>>> REPLACE
+            END_SEARCH_REPLACE
+            """
+        ).strip()
+
+        artifact = self.local_sdlc.extract_search_replace_artifact(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(
+                allowed_paths=("pkg/worker.py",),
+                existing_paths=("pkg/worker.py",),
+            ),
+        )
+
+        self.assertEqual(artifact.path, "pkg/worker.py")
+        self.assertEqual(artifact.search, 'VALUE = "old"')
+        self.assertEqual(artifact.replace, 'VALUE = "new"')
+
+    def test_extract_search_replace_normalizes_unambiguous_short_search_markers(self):
+        short_search = "<" * 5 + " SEARCH"
+        separator = "=" * 7
+        replace_end = ">" * 7 + " REPLACE"
+        output = (
+            "BEGIN_SEARCH_REPLACE: pkg/model.py\n"
+            f"{short_search}\nvalidate_here()\n{separator}\nvalidate_later()\n"
+            f"{replace_end}\nEND_SEARCH_REPLACE\n\n"
+            "BEGIN_SEARCH_REPLACE: pkg/graph.py\n"
+            f"{short_search}\nbuild_graph()\n{separator}\n"
+            f"validate_later()\nbuild_graph()\n{replace_end}\nEND_SEARCH_REPLACE"
+        )
+
+        artifacts = self.local_sdlc.extract_search_replace_artifacts(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(
+                allowed_paths=("pkg/model.py", "pkg/graph.py"),
+                existing_paths=("pkg/model.py", "pkg/graph.py"),
+            ),
+        )
+
+        self.assertEqual([artifact.path for artifact in artifacts], ["pkg/model.py", "pkg/graph.py"])
+        self.assertEqual(artifacts[0].search, "validate_here()")
+        self.assertEqual(artifacts[1].replace, "validate_later()\nbuild_graph()")
+
+    def test_extract_search_replace_collapses_identical_duplicate_replacements(self):
+        output = textwrap.dedent(
+            """
+            BEGIN_SEARCH_REPLACE: pkg/checkpoint.py
+            <<<<< SEARCH
+            def load():
+                return None
+            =======
+            def load():
+                return {"status": "ok"}
+            =======
+            def load():
+                return {"status": "ok"}
+            >>>>>>> REPLACE
+            END_SEARCH_REPLACE
+            """
+        ).strip()
+
+        artifact = self.local_sdlc.extract_search_replace_artifact(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(
+                allowed_paths=("pkg/checkpoint.py",),
+                existing_paths=("pkg/checkpoint.py",),
+            ),
+        )
+
+        self.assertEqual(artifact.path, "pkg/checkpoint.py")
+        self.assertEqual(artifact.search, "def load():\n    return None")
+        self.assertEqual(artifact.replace, 'def load():\n    return {"status": "ok"}')
+
+    def test_duplicate_replace_normalization_rejects_distinct_alternatives(self):
+        output = textwrap.dedent(
+            """
+            BEGIN_SEARCH_REPLACE: pkg/checkpoint.py
+            <<<<<<< SEARCH
+            VALUE = "old"
+            =======
+            VALUE = "first"
+            =======
+            VALUE = "second"
+            >>>>>>> REPLACE
+            END_SEARCH_REPLACE
+            """
+        ).strip()
+
+        self.assertEqual(self.local_sdlc.normalize_duplicated_replace_payloads(output), output)
+        with self.assertRaises(self.local_sdlc.RunnerError):
+            self.local_sdlc.extract_search_replace_artifact(
+                output,
+                self.local_sdlc.ArtifactPathPolicy(
+                    allowed_paths=("pkg/checkpoint.py",),
+                    existing_paths=("pkg/checkpoint.py",),
+                ),
+            )
+
+    def test_short_search_marker_normalization_rejects_ambiguous_envelopes(self):
+        short_search = "<" * 5 + " SEARCH"
+        separator = "=" * 7
+        replace_end = ">" * 7 + " REPLACE"
+        for marker_body in (
+            "<" * 4 + f" SEARCH\nold\n{separator}\nnew\n{replace_end}",
+            f"{short_search}\nold\n{short_search}\nother\n{separator}\nnew\n{replace_end}",
+        ):
+            with self.subTest(marker_body=marker_body):
+                output = (
+                    "BEGIN_SEARCH_REPLACE: pkg/model.py\n"
+                    + marker_body
+                    + "\nEND_SEARCH_REPLACE"
+                )
+                normalized = self.local_sdlc.normalize_short_search_replace_start_markers(output)
+                self.assertEqual(normalized, output)
+                with self.assertRaises(self.local_sdlc.RunnerError):
+                    self.local_sdlc.extract_search_replace_artifacts(
+                        output,
+                        self.local_sdlc.ArtifactPathPolicy(
+                            allowed_paths=("pkg/model.py",),
+                            existing_paths=("pkg/model.py",),
+                        ),
+                    )
+
+    def test_next_line_search_replace_still_enforces_readonly_stream_policy(self):
+        policy = self.local_sdlc.ArtifactPathPolicy(
+            allowed_paths=("pkg/worker.py",),
+            readonly_paths=("tests/test_worker.py",),
+        )
+
+        result = self.local_sdlc.artifact_stream_guard(
+            "BEGIN_SEARCH_REPLACE\ntests/test_worker.py\n<<<<<<< SEARCH\n",
+            artifact_policy=policy,
+        )
+
+        self.assertTrue(result.should_abort)
+        self.assertEqual(result.code, "stream_readonly_artifact_path")
+
+    def test_next_line_search_replace_does_not_guess_without_search_marker(self):
+        output = """BEGIN_SEARCH_REPLACE
+pkg/worker.py
+def run():
+    return "new"
+END_SEARCH_REPLACE"""
+
+        normalized = self.local_sdlc.normalize_next_line_search_replace_headers(output)
+
+        self.assertEqual(normalized, output)
+        with self.assertRaises(self.local_sdlc.RunnerError):
+            self.local_sdlc.extract_search_replace_artifact(
+                output,
+                self.local_sdlc.ArtifactPathPolicy(
+                    allowed_paths=("pkg/worker.py",),
+                    existing_paths=("pkg/worker.py",),
+                ),
+            )
 
     def test_extract_fenced_search_replace_normalizes_extra_colon_path(self):
         output = """BEGIN_SEARCH_REPLACE: : tests/test_core.py
@@ -331,6 +557,44 @@ END_SEARCH_REPLACE"""
         self.assertEqual(replacements[0].search, "old, still inside string")
         self.assertEqual(replacements[0].replace, "new")
 
+    def test_json_artifacts_repairs_only_missing_terminal_container_closers(self):
+        output = """{
+  "artifacts": [
+    {
+      "type": "search_replace",
+      "path": "app.py",
+      "search": "old",
+      "replace": "new"
+    }
+}"""
+
+        replacements, files = self.local_sdlc.extract_json_artifacts(output, ("app.py",))
+
+        self.assertEqual(files, [])
+        self.assertEqual(len(replacements), 1)
+        self.assertEqual(replacements[0].replace, "new")
+
+    def test_json_artifacts_repairs_missing_terminal_array_and_object_closers(self):
+        output = """{
+  "artifacts": [
+    {
+      "type": "replace_file",
+      "path": "app.py",
+      "content": "print('ok')\\n"
+    }"""
+
+        replacements, files = self.local_sdlc.extract_json_artifacts(output, ("app.py",))
+
+        self.assertEqual(replacements, [])
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].content, "print('ok')\n")
+
+    def test_json_artifacts_do_not_repair_truncated_string(self):
+        output = '{"artifacts":[{"type":"replace_file","path":"app.py","content":"unfinished}'
+
+        with self.assertRaisesRegex(self.local_sdlc.RunnerError, "invalid JSON artifact"):
+            self.local_sdlc.extract_json_artifacts(output, ("app.py",))
+
     def test_multi_pair_search_replace_recovers_end_marker_typo(self):
         output = """BEGIN_SEARCH_REPLACE: app.py
 <<<<<<< SEARCH
@@ -361,13 +625,17 @@ def two():
         self.assertIn("def two", artifacts[1].search)
 
     def test_search_replace_recovers_extra_gt_end_marker(self):
-        output = """BEGIN_SEARCH_REPLACE: app.py
-<<<<<<< SEARCH
-old
-=======
-new
->>>>>>>> REPLACE
-END_SEARCH_REPLACE"""
+        output = "\n".join(
+            [
+                "BEGIN_SEARCH_REPLACE: app.py",
+                ("<" * 7) + " SEARCH",
+                "old",
+                "=" * 7,
+                "new",
+                (">" * 8) + " REPLACE",
+                "END_SEARCH_REPLACE",
+            ]
+        )
 
         artifacts = self.local_sdlc.extract_search_replace_artifacts(
             output,
@@ -378,6 +646,55 @@ END_SEARCH_REPLACE"""
         self.assertEqual(artifacts[0].path, "app.py")
         self.assertEqual(artifacts[0].search, "old")
         self.assertEqual(artifacts[0].replace, "new")
+
+    def test_search_replace_recovers_terminal_end_marker_used_as_pair_end(self):
+        output = "\n".join(
+            [
+                "BEGIN_SEARCH_REPLACE: app.py",
+                ("<" * 7) + " SEARCH",
+                "old",
+                "=" * 7,
+                "new",
+                "END_SEARCH_REPLACE",
+            ]
+        )
+
+        artifacts = self.local_sdlc.extract_search_replace_artifacts(
+            output,
+            self.local_sdlc.ArtifactPathPolicy(allowed_paths=("app.py",), existing_paths=("app.py",)),
+        )
+        findings = self.local_sdlc.lint_artifact_output(
+            output,
+            [],
+            [],
+            semantic_repair_mode=True,
+        )
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].path, "app.py")
+        self.assertEqual(artifacts[0].search, "old")
+        self.assertEqual(artifacts[0].replace, "new")
+        self.assertEqual({finding.code for finding in findings}, set())
+
+    def test_artifact_lint_rejects_unchanged_whole_file_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "app.py").write_text("print('same')\n", encoding="utf-8")
+            output = json.dumps(
+                {
+                    "artifacts": [
+                        {
+                            "type": "replace_file",
+                            "path": "app.py",
+                            "content": "print('same')\n\n",
+                        }
+                    ]
+                }
+            )
+
+            findings = self.local_sdlc.lint_artifact_output(output, [], [], project=project)
+
+        self.assertIn("unchanged_replace_file", {finding.code for finding in findings})
 
     def test_file_artifact_html_fallback_ignores_search_replace_protocol(self):
         output = """BEGIN_SEARCH_REPLACE: tetris.html

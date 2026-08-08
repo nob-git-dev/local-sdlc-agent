@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from typing import Sequence
 
 from ..artifact_ops import *
-from ..models import RepairAdvice
+from ..models import RepairAdvice, RunnerError
 from ..python_project_analysis import *
 from ..utils import unique_ordered
 from .generic import acceptance_gate_blockers_from_command_docs
@@ -54,6 +55,28 @@ def stage_test_paths_in_command_docs(
     return unique_ordered(path for path in normalized if path in combined)
 
 
+def unittest_discovery_test_paths(test_commands: Sequence[str]) -> list[str]:
+    """Return concrete test files named by unittest discovery commands."""
+    paths: list[str] = []
+    for command in test_commands:
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            continue
+        try:
+            start = tokens[tokens.index("-s") + 1]
+            pattern = tokens[tokens.index("-p") + 1]
+        except (ValueError, IndexError):
+            continue
+        if not pattern.endswith(".py") or any(character in pattern for character in "*?[]"):
+            continue
+        paths.append(str(Path(start) / pattern))
+    try:
+        return normalize_project_relative_paths(paths)
+    except RunnerError:
+        return []
+
+
 
 def repair_advice_from_command_docs(
     command_docs: Sequence[tuple[str, str]],
@@ -70,20 +93,32 @@ def repair_advice_from_command_docs(
     state_probe_points_below_cli = False
     direct_pager_flush_clears_metadata = False
     row_persistence_loss = False
+    existing_product_paths = project_python_product_paths(project)
+    existing_python_paths = list(existing_product_paths)
+    if project is not None:
+        try:
+            existing_python_paths.extend(
+                str(path.relative_to(project))
+                for path in project.rglob("*.py")
+                if "/.sdlc-runner/" not in str(path)
+            )
+        except OSError:
+            pass
+    existing_python_paths = unique_ordered(existing_python_paths)
 
     for raw_path in re.findall(r'File "([^"]+)", line \d+', combined):
-        if "/tests/" in raw_path:
-            focus_files.append("tests/" + raw_path.split("/tests/", 1)[1])
-        elif "/minisqlite/" in raw_path:
-            focus_files.append("minisqlite/" + raw_path.split("/minisqlite/", 1)[1])
-        elif "/benchmarks/" in raw_path:
-            focus_files.append(Path(raw_path).name)
+        relative = project_relative_trace_path(project, raw_path, existing_python_paths)
+        if relative:
+            focus_files.append(relative)
 
     test_focus_files = unique_ordered(path for path in focus_files if path.startswith("tests/"))
     inferred_stage_focus = unique_ordered(
         product_path
         for test_path in test_focus_files
-        for product_path in inferred_product_focus_from_test_path(test_path)
+        for product_path in inferred_product_focus_from_test_path(
+            test_path,
+            existing_product_paths,
+        )
     )
     product_trace_focus = unique_ordered(path for path in focus_files if not path.startswith("tests/"))
     generated_test_focus = unique_ordered(
@@ -304,8 +339,20 @@ def repair_advice_from_command_docs(
         r"ImportError:\s*cannot import name '([^']+)' from '([^']+)'",
         combined,
     ):
-        module_path = module_name_to_project_path(module_name)
+        module_path = module_name_to_project_path(module_name, project)
         existing_symbols = python_defined_symbols(project, module_path)
+        package_export_owners: list[str] = []
+        if project is not None and module_path.endswith("/__init__.py"):
+            package_dir = Path(module_path).parent
+            try:
+                package_export_owners = unique_ordered(
+                    str(path.relative_to(project))
+                    for path in (project / package_dir).glob("*.py")
+                    if path.name != "__init__.py"
+                    and missing_symbol in python_defined_symbols(project, str(path.relative_to(project)))
+                )
+            except (OSError, ValueError):
+                package_export_owners = []
         importing_paths = unique_ordered([*generated_test_focus, *inferred_stage_focus, *product_trace_focus])
         projections = import_api_alias_projections(
             project,
@@ -314,10 +361,14 @@ def repair_advice_from_command_docs(
             existing_symbols,
         )
         aliases = likely_symbol_aliases(missing_symbol, existing_symbols)
-        same_stage_import_contract = module_path in set([*inferred_stage_focus, *product_trace_focus])
+        same_stage_import_contract = bool(package_export_owners) or module_path in set(
+            [*inferred_stage_focus, *product_trace_focus]
+        )
         if same_stage_import_contract:
             strategy = "root_cause_patch"
-            focus_files.extend([module_path, *inferred_stage_focus, *product_trace_focus])
+            focus_files.extend(
+                [module_path, *package_export_owners, *inferred_stage_focus, *product_trace_focus]
+            )
             instructions.extend(
                 [
                     (
@@ -506,7 +557,11 @@ def repair_advice_from_command_docs(
         or "tmp_path" in lowered
     ):
         strategy = "replace_test_harness"
-        focus_files.append("tests/test_minisqlite.py")
+        focus_files.extend(
+            unique_ordered(
+                [*generated_test_focus, *unittest_discovery_test_paths(test_commands)]
+            )
+        )
         instructions.extend(
             [
                 "Rewrite the affected test file as pure unittest when pytest dependency or fixtures are observed.",
@@ -516,17 +571,34 @@ def repair_advice_from_command_docs(
         )
         evidence.append("unittest runner observed pytest-specific test harness usage")
 
-    if "start directory is not importable: 'tests'" in lowered or 'start directory is not importable: "tests"' in lowered:
+    missing_generated_test_harness = bool(generated_test_focus) and (
+        "start directory is not importable: 'tests'" in lowered
+        or 'start directory is not importable: "tests"' in lowered
+        or "verification infrastructure: unittest command discovered zero tests" in lowered
+        or "no tests ran" in lowered
+        or any(
+            f"required path missing: {path}" in lowered
+            for path in generated_test_focus
+        )
+    )
+    if missing_generated_test_harness:
         strategy = "create_test_harness"
-        focus_files.extend(["tests/__init__.py", "tests/test_minisqlite.py"])
+        focus_files.extend(
+            unique_ordered(
+                [*generated_test_focus, *unittest_discovery_test_paths(test_commands)]
+            )
+        )
         instructions.extend(
             [
-                "Create a unittest-compatible tests directory instead of patching unrelated implementation files.",
-                "Add focused tests that encode the completed stage contracts and can run with `python3 -m unittest discover -s tests`.",
+                "Create only the stage-authorized unittest file paths; their parent directory will be created during artifact application.",
+                "Do not invent package initializer or benchmark-specific test names that are absent from the writable stage contract.",
+                "Add focused tests that encode the completed stage contracts and run with the configured unittest discovery command.",
                 "Keep tests dependency-free; do not use pytest fixtures or pytest-only assertions unless the configured command uses pytest.",
             ]
         )
-        evidence.append("final unittest discovery failed because tests directory was missing or not importable")
+        evidence.append(
+            "configured unittest discovery could not execute the declared stage-owned generated test harness"
+        )
 
     if "search text must occur exactly once" in lowered or "found 0" in lowered:
         strategy = "whole_file_or_shorter_search"
@@ -635,14 +707,37 @@ def repair_advice_from_command_docs(
         )
         evidence.append("binary round-trip failures indicate struct byte-order/alignment or field-order mismatch")
 
-    contract_lines = re.findall(r"(?m)^-\s+(C\d+)\s+\[[^\]]+\]:\s*(.+)$", combined)
-    if contract_lines:
+    contract_lines = re.findall(r"(?m)^-\s+(C\d+)\s+\[([^\]]+)\]:\s*(.+)$", combined)
+    authoritative_contract_lines = [
+        (contract_id, contract_text)
+        for contract_id, kind, contract_text in contract_lines
+        if kind != "provisional_test_oracle"
+    ]
+    provisional_contract_lines = [
+        (contract_id, contract_text)
+        for contract_id, kind, contract_text in contract_lines
+        if kind == "provisional_test_oracle"
+    ]
+    if authoritative_contract_lines:
         if strategy == "small_patch":
             strategy = "semantic_contract_patch"
         if strategy not in TEST_HARNESS_WRITE_STRATEGIES:
-            for contract_id, contract_text in contract_lines[:5]:
+            for contract_id, contract_text in authoritative_contract_lines[:5]:
                 instructions.append(f"Preserve semantic contract {contract_id}: {contract_text.strip()}")
             evidence.append("semantic contracts extracted from executable test evidence")
+    if provisional_contract_lines and not authoritative_contract_lines and strategy == "small_patch":
+        strategy = "test_oracle_review"
+        instructions.extend(
+            [
+                "A stage-owned generated test assertion is a provisional oracle, not a fixed product contract.",
+                "Classify the assertion against SPEC.md and its complete setup/action sequence before editing product code or the test.",
+                "Only the project-policy action gate may authorize an edit to a machine-verified stage-owned test path.",
+            ]
+        )
+        evidence.extend(
+            f"provisional generated-test proposition {contract_id}: {contract_text.strip()}"
+            for contract_id, contract_text in provisional_contract_lines[:5]
+        )
 
     repeated = re.findall(r"count=(\d+):\s*exception:\s*([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception):[^\n]+)", combined)
     if repeated:
@@ -751,7 +846,10 @@ def repair_advice_from_command_docs(
         product_path
         for test_path in focus_files
         if test_path.startswith("tests/")
-        for product_path in inferred_product_focus_from_test_path(test_path)
+        for product_path in inferred_product_focus_from_test_path(
+            test_path,
+            existing_product_paths,
+        )
     )
     if inferred_product_focus and strategy not in TEST_HARNESS_WRITE_STRATEGIES:
         focus_files.extend(inferred_product_focus)

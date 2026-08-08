@@ -30,3 +30,20 @@ def restore_artifact_targets(project: Path, snapshots: dict[str, bytes | None]) 
         target.write_bytes(content)
         restored.append(path)
     return restored
+
+
+def artifact_snapshot_mismatches(
+    project: Path,
+    snapshots: dict[str, bytes | None],
+) -> list[str]:
+    """Return targets whose current bytes differ from the saved transaction state."""
+    mismatches: list[str] = []
+    for path, expected in snapshots.items():
+        target = resolve_project_path(project, path)
+        if expected is None:
+            if target.exists():
+                mismatches.append(path)
+            continue
+        if not target.is_file() or target.read_bytes() != expected:
+            mismatches.append(path)
+    return mismatches

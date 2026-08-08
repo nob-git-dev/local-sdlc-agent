@@ -90,6 +90,11 @@ def _begin_supervisor_action(
         return
     set_timeout_limit = getattr(client, "set_runtime_timeout_limit", None)
     set_progress_callback = getattr(client, "set_runtime_progress_callback", None)
+    set_completion_fallback = getattr(
+        client,
+        "set_runtime_completion_fallback_callback",
+        None,
+    )
 
     def enforce_api_deadline() -> None:
         try:
@@ -130,6 +135,21 @@ def _begin_supervisor_action(
 
     if callable(set_progress_callback):
         set_progress_callback(record_stream_progress)
+    if callable(set_completion_fallback):
+        def authorize_completion_fallback(
+            agent_level: str,
+            call_function: str,
+            reason: str,
+        ) -> None:
+            _begin_supervisor_action(
+                client,
+                run_dir,
+                f"{action}:reasoning_condensation_fallback:{agent_level}:{call_function}:{reason}",
+                action_type="api_call",
+                risk_class="read_only",
+            )
+
+        set_completion_fallback(authorize_completion_fallback)
     if callable(set_timeout_limit):
         bind_timeout()
 
@@ -177,6 +197,9 @@ def command_supervisor(args: argparse.Namespace) -> int:
         ("Run-bound validated knowledge", knowledge_context_document(knowledge_binding))
     ]
     api_calls = 0
+
+    def effective_api_calls() -> int:
+        return max(api_calls, llm_generation_request_count(client))
 
     deterministic_route_doc = route_document(route)
     path = write_run_document(run_dir, "00-deterministic-route.md", deterministic_route_doc)
@@ -285,9 +308,11 @@ def command_supervisor(args: argparse.Namespace) -> int:
         "execute": bool(args.execute),
         "completed_phases": completed_phases,
         "final_verdict": final_verdict,
-        "api_calls": api_calls,
+        "api_calls": effective_api_calls(),
         "llm_settings": llm_settings_manifest(client),
         "reasoning_records": llm_reasoning_manifest(client),
+        "completion_recoveries": llm_completion_recovery_manifest(client),
+        "health_recoveries": llm_health_recovery_manifest(client),
         "action_gate_audit": action_gate_audit(run_dir),
         "pending_safety_decisions": pending_safety_decisions(run_dir),
         "blocked_safety_decisions": blocked_safety_decisions(run_dir),
@@ -300,7 +325,7 @@ def command_supervisor(args: argparse.Namespace) -> int:
     written.append(manifest_path)
 
     print(f"run_dir: {run_dir}")
-    print(f"api_calls: {api_calls}")
+    print(f"api_calls: {effective_api_calls()}")
     print(f"final_verdict: {final_verdict}")
     print(f"recommended_phases: {' -> '.join(route.phases) if route.phases else '(none)'}")
     for path in written:
@@ -339,6 +364,10 @@ def command_supervise(args: argparse.Namespace) -> int:
     ]
     written: list[Path] = [knowledge_binding_path(run_dir)]
     call_count = 0
+
+    def effective_api_calls() -> int:
+        return max(call_count, llm_generation_request_count(client))
+
     final_verdict = "not_judged"
     completed_rounds = 0
 
@@ -583,9 +612,11 @@ def command_supervise(args: argparse.Namespace) -> int:
         "max_rounds": args.max_rounds,
         "completed_rounds": completed_rounds,
         "final_verdict": final_verdict,
-        "api_calls": call_count,
+        "api_calls": effective_api_calls(),
         "llm_settings": llm_settings_manifest(client),
         "reasoning_records": llm_reasoning_manifest(client),
+        "completion_recoveries": llm_completion_recovery_manifest(client),
+        "health_recoveries": llm_health_recovery_manifest(client),
         "action_gate_audit": action_gate_audit(run_dir),
         "pending_safety_decisions": pending_safety_decisions(run_dir),
         "blocked_safety_decisions": blocked_safety_decisions(run_dir),
@@ -598,7 +629,7 @@ def command_supervise(args: argparse.Namespace) -> int:
     written.append(manifest_path)
 
     print(f"run_dir: {run_dir}")
-    print(f"api_calls: {call_count}")
+    print(f"api_calls: {effective_api_calls()}")
     for path in written:
         print(f"wrote: {path}")
     return 0

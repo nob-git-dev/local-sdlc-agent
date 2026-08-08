@@ -22,15 +22,63 @@ PATCH_PLANNER_OUTPUT_CONTRACT = (
     "No code. No artifacts. No prose outside the schema."
 )
 
+PATCH_CONFORMANCE_OUTPUT_CONTRACT = (
+    "Return ONLY one compact JSON object matching the patch-conformance schema. "
+    "No markdown fences. No prose. No code artifacts."
+)
+
 PROJECT_POLICY_TRIAGE_OUTPUT_CONTRACT = (
     "Return ONLY one JSON object matching the project-policy triage schema. "
+    "receiver_scope_analysis is mandatory and must agree with Mechanical Receiver Identity Facts. "
     "No markdown fences. No prose. No code artifacts."
 )
 
 JUDGE_REVIEW_OUTPUT_CONTRACT = (
-    "Return Markdown with Verdict, Proposition Ledger, Graph Edges, Findings, "
-    "Required fixes, and Evidence gaps."
+    "Return compact Markdown with Verdict, one exact OWNERSHIP line, Proposition Ledger, "
+    "Graph Edges, Findings, Required fixes, and Evidence gaps. Maximum 3 entries per section, "
+    "one line per entry, no duplicated premise/evidence/finding, and no code artifact."
 )
+
+
+def root_cause_evidence_documents(
+    documents: Sequence[tuple[str, str]],
+    recent_window: int,
+) -> list[tuple[str, str]]:
+    """Keep recent context plus bounded executable evidence for diagnosis."""
+    items = list(documents)
+    if not items:
+        return []
+
+    recent_window = max(1, recent_window)
+    selected: set[int] = set(range(max(0, len(items) - recent_window), len(items)))
+
+    def matching_indices(*needles: str) -> list[int]:
+        return [
+            index
+            for index, (title, _document) in enumerate(items)
+            if any(needle in title.lower() for needle in needles)
+        ]
+
+    command_indices = matching_indices(
+        "initial command",
+        "command result",
+        "html smoke",
+        "redis smoke",
+        "required path",
+    )
+    selected.update(command_indices[-4:])
+
+    for category in (
+        ("observation summary",),
+        ("acceptance evidence gate",),
+        ("failure analysis", "mechanical probe"),
+        ("candidate regression rollback", "replayed regressing candidate", "root cause plan rejection"),
+    ):
+        indices = matching_indices(*category)
+        if indices:
+            selected.add(indices[-1])
+
+    return [items[index] for index in sorted(selected)]
 
 
 def failure_analysis_instruction(
@@ -86,9 +134,16 @@ def failure_analysis_instruction(
         - R_i is executable evidence after A_i.
         - If same(F_i, F_t) and applied(A_i), then reject H_i unless
           new evidence strictly refines H_i.
-        - The next action must satisfy:
-          changes_behavior(A) and not touches_tests(A) and
-          not based_on(rejected_hypothesis).
+        - Fixed acceptance tests are immutable evidence.
+        - Assertions from machine-owned stage-generated tests are provisional
+          propositions until project-policy triage validates their setup,
+          action, and expected result against SPEC.md.
+        - If ownership is unresolved for a stage-generated test, the next
+          action must be project_policy_triage. Do not silently promote that
+          assertion into a product contract and do not authorize an edit.
+        - After ownership is resolved, the next action must satisfy:
+          changes_behavior(A) and not based_on(rejected_hypothesis), while the
+          machine action gate determines which exact paths are writable.
 
         Return exactly one JSON object with this schema:
         {{
@@ -107,7 +162,7 @@ def failure_analysis_instruction(
             "1-5 constraints the next role must obey"
           ],
           "next_required_action": {{
-            "role": "root_cause_analysis|format_repair|repair_artifact",
+            "role": "root_cause_analysis|format_repair|repair_artifact|project_policy_triage",
             "goal": "one sentence",
             "required_paths": ["project-relative writable product path required for the next patch"],
             "readonly_paths": ["project-relative evidence/context path that must not be edited"],
@@ -145,17 +200,126 @@ def patch_planner_instruction(brief: str, role_label: str, analysis_doc: str) ->
         Return exactly this schema:
         PATCH_PLAN
         - proposition: one sentence of the form "If P, change A so C"
-        - required_path: one project-relative writable product file
+        - required_paths: comma-separated project-relative writable product files
         - readonly_paths: comma-separated evidence paths or "(none)"
         - forbidden_paths: comma-separated paths that must not be edited
         - patch_type: search_replace|unified_diff|missing_context
+        - escalation: none|generated_test_oracle_triage|collect_context
         - minimal_patch_goal: one smallest behavior change
         - stop_rule: when the artifact writer must stop instead of guessing
 
         Validity rule:
-        The plan is valid only if required_path is not under tests/ and the
-        minimal_patch_goal can be implemented as one atomic product-code edit.
-        If that is impossible, use patch_type=missing_context.
+        The plan is valid only if required_paths contains the smallest
+        non-empty set of product files needed for one atomic behavioral
+        transaction and no path is under tests/. A single-file plan should
+        name one path. A responsibility move, API relocation, or invariant
+        transfer may name multiple product files only when adding the new
+        owner without removing or adapting the old owner cannot satisfy the
+        same proposition.
+        Select one independent defect or behavioral invariant per plan. When
+        the analysis names multiple independent defects, do not join them with
+        "and"; choose the one whose repair should produce the next observable
+        improvement and leave the others for later evidence-driven rounds.
+        Use patch_type=search_replace only when the complete obligation fits in
+        one contiguous source span, including any required import. Use
+        patch_type=unified_diff when one invariant requires coordinated edits
+        in multiple spans or multiple product files. A no-op candidate is an
+        artifact failure and does not by itself prove that an otherwise
+        actionable binding plan is false.
+        Fixed external and read-only acceptance tests are authoritative
+        evidence, never generated-test oracle candidates. Preserve the
+        receiver, call site, and lifecycle boundary asserted by that evidence.
+        If a value is rejected before the operation whose fixed acceptance
+        assertion expects the rejection, treat that as a product ownership or
+        lifecycle mismatch unless SPEC.md explicitly assigns validation to the
+        earlier operation.
+        If that is impossible, use patch_type=missing_context. Use
+        escalation=generated_test_oracle_triage only when the executable
+        evidence identifies a machine-owned generated test that may contradict
+        SPEC.md and no admissible product edit can satisfy both propositions.
+        The planner cannot authorize or apply a test edit; independent
+        project-policy triage and the runner's path gate must do that. Use
+        escalation=collect_context only when a named missing file or symbol
+        could make a product-code plan possible. Otherwise use escalation=none.
+        """
+    ).strip()
+
+
+def patch_conformance_instruction(
+    brief: str,
+    patch_plan_doc: str,
+    candidate_artifact: str,
+) -> str:
+    return textwrap.dedent(
+        f"""
+        Act as the independent patch-plan conformance reviewer for this
+        coding-agent run.
+
+        Request:
+        {brief}
+
+        Binding patch plan:
+        {patch_plan_doc}
+
+        Candidate artifact:
+        {candidate_artifact}
+
+        Your only job is to decide whether the candidate artifact implements
+        every behavioral obligation in the binding plan. Do not write code,
+        repair the artifact, approve application, or rely on tests that have
+        not run yet.
+
+        Counterexample procedure:
+        1. Extract each behavior required by proposition and
+           minimal_patch_goal. Path selection, syntactic validity, stop_rule,
+           and post-apply test success are not candidate behavioral
+           obligations.
+        2. Derive the candidate's post-edit behavior from its SEARCH and
+           REPLACE text, diff, or file content plus the supplied file context.
+        3. For each obligation, try to name one input/state transition for
+           which the candidate would still violate the plan.
+        4. Mark status=pass only when every obligation is satisfied and each
+           satisfied obligation cites concrete candidate evidence.
+        5. If the candidate implements only deletion, persistence, validation,
+           or one branch of a requested exact synchronization/replacement,
+           mark the uncovered state transition not_satisfied.
+        6. If context is genuinely insufficient, return
+           status=insufficient_context and exact missing_context_paths. Do not
+           guess either pass or fail.
+        7. Never require executable proof that tests pass at this pre-apply
+           step. The runner applies an approved candidate in an isolated
+           worktree and owns executable verification and rollback.
+        8. The binding plan is the only source of candidate obligations.
+           Prior reviews, repair advice, generated tests, and earlier plans
+           are not binding here. Do not preserve an old-owner behavior when
+           the binding proposition explicitly relocates that responsibility.
+           A readonly or forbidden test is post-apply evidence, never a
+           candidate artifact obligation.
+
+        Formal rule:
+        Let O be the set of explicit behavioral obligations in the plan and A
+        be the candidate artifact. conformance(A, O) is true iff for every
+        o in O, implements(A, o) is supported by candidate evidence and no
+        derived counterexample remains. Merely touching required_path does not
+        imply implements(A, o).
+
+        Return exactly one JSON object:
+        {{
+          "status": "pass|fail|insufficient_context",
+          "obligations": [
+            {{
+              "id": "O1",
+              "requirement": "one explicit behavioral obligation",
+              "status": "satisfied|not_satisfied|uncertain",
+              "candidate_evidence": "exact candidate operation or (none)",
+              "counterexample": "remaining input/state transition or (none)"
+            }}
+          ],
+          "missing_obligations": ["required behavior not implemented"],
+          "missing_context_paths": ["project-relative path needed for review"],
+          "safe_next_action": "apply|repair_artifact|collect_context",
+          "repair_instruction": "one concise instruction; empty when status=pass"
+        }}
         """
     ).strip()
 
@@ -170,6 +334,56 @@ def project_policy_triage_instruction(
 ) -> str:
     transition_text = json.dumps(list(state_transitions)[-8:], ensure_ascii=False, indent=2)
     prior_text = json.dumps(list(prior_triages)[-5:], ensure_ascii=False, indent=2)
+    oracle_obligation = ""
+    if trigger == "generated_test_oracle_conflict":
+        oracle_obligation = textwrap.dedent(
+            """
+            Mandatory generated-test counterexample procedure:
+            1. Read the complete failing test setup and action sequence from the supplied file context.
+            2. Treat Mechanical Receiver Identity Facts as authoritative. If
+               they say two calls use distinct fresh constructor expressions,
+               never describe those calls as operating on the same instance.
+               Continuity across those calls requires persistence explicitly
+               supplied by SPEC.md or the test setup; do not invent it.
+               The default scope of "call this method again" is another call
+               on the same receiver. It does not impose continuity on a newly
+               constructed receiver unless SPEC.md explicitly defines
+               cross-instance persistence.
+               A conditional contract such as "a new instance with the same
+               checkpoint/session/store" applies only when that carrier is
+               actually supplied to every fresh constructor. Shared ordinary
+               inputs, configuration, graph objects, or handlers are not a
+               persistence channel unless SPEC.md explicitly defines them as one.
+               Copy the exact shared constructor expression into
+               continuity_witness_expression. Use none_required only when
+               SPEC.md unconditionally requires fresh instances to share state
+               without any persistence carrier.
+            3. Derive the relevant state immediately before the action under test.
+            4. Derive the state selected by the action target, revision, key, or input.
+            5. Compare the assertion with that derived state and with SPEC.md.
+            6. Try to falsify both hypotheses independently:
+               H_product = product behavior violates a valid test proposition.
+               H_test = generated test setup or assertion contradicts its own name, target state, SPEC.md, or an approved API.
+            7. Cite the concrete setup/action/assertion facts in project_policy_basis. A prior repair advice saying tests are readonly is not evidence for H_product; ownership is the question being reviewed.
+            8. Fill product_violation_evidence and test_contradiction_evidence
+               independently before selecting either hypothesis. An exception
+               location proves where execution stopped, not which proposition
+               is correct.
+            9. Treat Mechanical Receiver Lineage Facts as authoritative. A
+               variable assigned from `receiver.method()` is syntactically the
+               method return value, not the original receiver. Select
+               product_bug for a later call on that value only when SPEC.md
+               explicitly defines the called method on the return value or
+               explicitly states that the first method returns the same receiver.
+            10. Let S be SPEC.md, F immutable fixed acceptance, and G the
+                machine-owned generated test. Evaluate satisfiable(F and G)
+                independently from whether S explicitly refutes F. When F and
+                G are mutually exclusive and S does not explicitly refute F,
+                classify G as test_harness: fixed acceptance remains readonly
+                while the exact generated-test path may be repaired.
+            Classify test_harness only when H_test has positive evidence. Otherwise classify product_bug or insufficient_context.
+            """
+        ).strip()
     return textwrap.dedent(
         f"""
         Act as the project-policy triage role for this coding-agent run.
@@ -214,16 +428,121 @@ def project_policy_triage_instruction(
         - T = your triage classification.
         - T may select a next role/action, but T cannot directly apply an edit.
         - valid(T) requires basis(T) subset of P union E and no violation of U.
+        - A generated test may be classified as the owner only when evidence
+          shows that its setup violates an earlier invariant before the
+          asserted behavior is reached, or its expected proposition conflicts
+          with SPEC.md or an already approved API contract.
+        - A product exception that merely differs from the test expectation is
+          not enough to classify the test as wrong.
+        - Even when you select edit_test_harness, the action gate will permit
+          only exact paths mechanically verified as stage-owned generated tests.
+
+        {oracle_obligation}
 
         Return exactly one JSON object:
         {{
           "trigger": "{trigger}",
           "case_type": "artifact_format|test_harness|product_bug|spec_conflict|insufficient_context|reject",
           "confidence": "high|medium|low",
+          "selected_hypothesis": "H_product|H_test|H_spec_conflict|undetermined",
+          "product_violation_evidence": ["observed product behavior that contradicts one cited SPEC proposition"],
+          "test_contradiction_evidence": ["generated setup/action/assertion fact that contradicts SPEC or its own target state"],
+          "receiver_scope_analysis": {{
+            "mechanical_identity": "same_receiver|distinct_fresh|not_applicable",
+            "requires_cross_instance_continuity": true,
+            "continuity_witness": "explicit_shared_persistence|unconditional_spec_contract|same_receiver|none",
+            "continuity_witness_expression": "exact shared constructor expression|none_required|empty string",
+            "witness_evidence": ["exact SPEC or test-setup fact; empty when continuity_witness is none"]
+          }},
+          "receiver_lineage_analysis": {{
+            "mechanical_lineage": "constructor_receiver|method_return_value|not_applicable",
+            "method_defined_on_return_value": false,
+            "contract_evidence": ["exact SPEC witness; empty when false"]
+          }},
+          "oracle_conflict_analysis": {{
+            "fixed_and_generated_jointly_satisfiable": true,
+            "fixed_acceptance_explicitly_contradicts_spec": false,
+            "conflict_evidence": ["exact mutually exclusive observations, or empty"],
+            "fixed_spec_contradiction_evidence": ["exact SPEC contradiction, or empty"]
+          }},
           "project_policy_basis": ["SPEC.md or document evidence line"],
           "safe_next_action": "format_repair|root_cause_analysis|repair_artifact|edit_test_harness|reject|ask_user",
           "editable_paths": ["project-relative paths that may be writable"],
           "readonly_paths": ["project-relative paths that must remain context/evidence only"],
+          "forbidden_actions": ["actions the next role must not take"],
+          "rationale": "one concise sentence"
+        }}
+        """
+    ).strip()
+
+
+def project_policy_arbitration_instruction(
+    brief: str,
+    prior_judge_vote: str,
+    primary_triage: dict[str, object],
+    evidence_doc: str,
+) -> str:
+    return textwrap.dedent(
+        f"""
+        Act as an independent project-policy arbiter for this coding-agent run.
+
+        Request:
+        {brief}
+
+        Two advisory roles disagree about ownership:
+        - prior_judge_vote: {prior_judge_vote}
+        - primary_triage_vote: {primary_triage.get('case_type', 'insufficient_context')}
+
+        Recompute the result from the primary evidence below. Do not decide by
+        majority, role seniority, exception location, or prior repair advice.
+        For each hypothesis, cite one positive fact or leave its evidence list
+        empty. Select product_bug only when observed product behavior contradicts
+        a cited SPEC proposition. Select test_harness only when a machine-owned
+        generated test's setup/action/assertion contradicts SPEC.md or its own
+        selected target state. Otherwise select insufficient_context and reject.
+        A repeated method-call contract is receiver-local by default. Distinct
+        fresh receivers do not share prior instance state unless the evidence
+        identifies an explicit shared-persistence channel or SPEC.md states a
+        cross-instance contract.
+        For an oracle conflict, separately decide whether fixed acceptance and
+        generated tests are jointly satisfiable and whether an exact SPEC
+        proposition explicitly refutes fixed acceptance. Mutual exclusion alone
+        does not make fixed acceptance editable; absent explicit SPEC refutation,
+        route the machine-owned generated test to test_harness repair.
+
+        Primary evidence:
+        {evidence_doc}
+
+        Return exactly one JSON object:
+        {{
+          "trigger": "generated_test_oracle_conflict",
+          "case_type": "test_harness|product_bug|spec_conflict|insufficient_context|reject",
+          "confidence": "high|medium|low",
+          "selected_hypothesis": "H_product|H_test|H_spec_conflict|undetermined",
+          "product_violation_evidence": ["positive product counterexample, or empty"],
+          "test_contradiction_evidence": ["positive generated-test counterexample, or empty"],
+          "receiver_scope_analysis": {{
+            "mechanical_identity": "same_receiver|distinct_fresh|not_applicable",
+            "requires_cross_instance_continuity": true,
+            "continuity_witness": "explicit_shared_persistence|unconditional_spec_contract|same_receiver|none",
+            "continuity_witness_expression": "exact shared constructor expression|none_required|empty string",
+            "witness_evidence": ["exact SPEC or test-setup fact; empty when continuity_witness is none"]
+          }},
+          "receiver_lineage_analysis": {{
+            "mechanical_lineage": "constructor_receiver|method_return_value|not_applicable",
+            "method_defined_on_return_value": false,
+            "contract_evidence": ["exact SPEC witness; empty when false"]
+          }},
+          "oracle_conflict_analysis": {{
+            "fixed_and_generated_jointly_satisfiable": true,
+            "fixed_acceptance_explicitly_contradicts_spec": false,
+            "conflict_evidence": ["exact mutually exclusive observations, or empty"],
+            "fixed_spec_contradiction_evidence": ["exact SPEC contradiction, or empty"]
+          }},
+          "project_policy_basis": ["specific SPEC/setup/action/assertion fact"],
+          "safe_next_action": "root_cause_analysis|edit_test_harness|reject|ask_user",
+          "editable_paths": ["project-relative paths"],
+          "readonly_paths": ["project-relative evidence paths"],
           "forbidden_actions": ["actions the next role must not take"],
           "rationale": "one concise sentence"
         }}
@@ -309,10 +628,21 @@ def judge_review_instruction(brief: str, round_index: int, final_round: int) -> 
         is present in Included file contents. If command evidence and file
         contents disagree for a static/proxy check, identify the mismatch
         owner instead of blindly repeating the same product-code diagnosis.
+        Immediately after the verdict line, emit exactly one ownership line:
+        `OWNERSHIP: test_harness|product_bug|spec_conflict|insufficient_context|not_applicable`.
+        Use `test_harness` only for a machine-owned generated test whose setup
+        or assertion conflicts with SPEC.md; fixed acceptance tests are never
+        test_harness. Use `not_applicable` when no ownership dispute exists.
         If the result is acceptable
         and command evidence passes, start with "判定: 承認". If not, start
         with "判定: 修正依頼" and list concrete required fixes.
         Express major review points as short P/C/E/A/V propositions and
         Graph Edges before Required fixes.
+
+        Hard output bounds:
+        - At most 3 proposition entries, 3 graph edges, 3 findings, 3 required fixes, and 3 evidence gaps.
+        - Each entry must be one line and cite an existing evidence identifier or path when available.
+        - Never restate the same fact, failure, method, or path under a new item number.
+        - Stop immediately after the bounded Evidence gaps section; do not narrate your reasoning.
         """
     ).strip()

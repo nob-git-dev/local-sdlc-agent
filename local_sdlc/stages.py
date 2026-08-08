@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import textwrap
 from pathlib import Path
@@ -29,6 +30,7 @@ from .requirements import (
     acceptance_required_covers as _acceptance_required_covers,
     parse_acceptance_criteria as _parse_acceptance_criteria,
 )
+from .stage_planning import stage_plan_from_spec
 from .utils import display_path, unique_ordered
 from .workspace import listed_project_files, normalize_new_files, read_text_if_exists, resolve_spec_path
 
@@ -37,6 +39,9 @@ def parse_acceptance_criteria(spec: str) -> list[dict[str, str]]:
     return _parse_acceptance_criteria(spec)
 
 def synthesize_stage_queue(spec: str, project_files: Sequence[str] = ()) -> list[StageWorkItem]:
+    contracted = stage_plan_from_spec(spec)
+    if contracted is not None:
+        return contracted
     text = spec.lower()
     stages: list[StageWorkItem] = []
 
@@ -94,6 +99,12 @@ def stage_writable_paths(stage: StageWorkItem) -> tuple[str, ...]:
     return stage_required_paths(stage)
 
 
+def stage_repair_scope_paths(stage: StageWorkItem) -> tuple[str, ...]:
+    if stage.repair_scope_paths:
+        return stage.repair_scope_paths
+    return stage_writable_paths(stage)
+
+
 def stage_readonly_evidence_paths(stage: StageWorkItem) -> tuple[str, ...]:
     return stage.readonly_evidence_paths
 
@@ -109,6 +120,7 @@ def stage_work_item_manifest(stage: StageWorkItem) -> dict[str, object]:
         "test_commands": auto_stage_test_commands(stage),
         "required_observables": list(stage_required_observables(stage)),
         "writable_paths": list(stage_writable_paths(stage)),
+        "repair_scope_paths": list(stage_repair_scope_paths(stage)),
         "readonly_evidence_paths": list(stage_readonly_evidence_paths(stage)),
         "api_profile": list(stage.api_profile),
         "max_rounds": stage.max_rounds,
@@ -218,6 +230,17 @@ def stage_brief(base_brief: str, stage: StageWorkItem, completed: Sequence[Stage
     ).strip()
 
 def stage_test_paths(stage: StageWorkItem) -> tuple[str, ...]:
+    if (
+        stage.writable_paths
+        or stage.readonly_evidence_paths
+        or stage.test_commands
+        or stage.required_observables
+    ):
+        return tuple(
+            path
+            for path in stage.suggested_paths
+            if path.startswith("tests/")
+        )
     title = stage.title.lower()
     if "core errors" in title:
         return ("tests/test_core.py",)
@@ -322,7 +345,10 @@ def build_stage_agent_args(
         max_tokens=args.max_tokens,
         enable_thinking=args.enable_thinking,
         stream=args.stream,
-        api_profile=list(unique_ordered([*list(getattr(args, "api_profile", []) or []), *stage.api_profile])),
+        # Stage plans provide workload defaults; an explicit runtime override
+        # must win so model-specific safety/performance tuning can be changed
+        # without rewriting the product specification.
+        api_profile=list(unique_ordered([*stage.api_profile, *list(getattr(args, "api_profile", []) or [])])),
         pm_max_tokens=args.pm_max_tokens,
         coder_max_tokens=args.coder_max_tokens,
         judge_max_tokens=args.judge_max_tokens,
@@ -365,6 +391,7 @@ def build_stage_agent_args(
         protocol_repair_rounds=args.protocol_repair_rounds,
         adaptive_rounds=args.adaptive_rounds,
         root_cause_patch_rounds=args.root_cause_patch_rounds,
+        artifact_plan_repair_rounds=args.artifact_plan_repair_rounds,
         max_goal_actions=getattr(args, "max_goal_actions", DEFAULT_MAX_GOAL_ACTIONS),
         max_stage_actions=getattr(args, "max_stage_actions", DEFAULT_MAX_STAGE_ACTIONS),
         max_recovery_actions=getattr(args, "max_recovery_actions", DEFAULT_MAX_RECOVERY_ACTIONS),
@@ -395,7 +422,40 @@ def read_stage_agent_manifest(stage: StageWorkItem, run_dir: Path, exit_code: in
         api_calls = int(api_calls_raw)
     except (TypeError, ValueError):
         api_calls = 0
-    failure = manifest.get("failure_summary")
+    raw_failure = manifest.get("failure_summary")
+    failure = dict(raw_failure) if isinstance(raw_failure, dict) else {}
+    terminal_failure_type = str(manifest.get("final_failure_type") or "").strip()
+    if exit_code != 0 and terminal_failure_type:
+        prior_failure_type = str(failure.get("failure_type") or "").strip()
+        if prior_failure_type and prior_failure_type != terminal_failure_type:
+            failure["acceptance_failure_type"] = prior_failure_type
+        failure["failure_type"] = terminal_failure_type
+        failure["terminal_failure_type"] = terminal_failure_type
+    repair_advice = manifest.get("repair_advice")
+    repair_focus: list[str] = []
+    if isinstance(repair_advice, dict):
+        raw_focus = repair_advice.get("focus_files", [])
+        if isinstance(raw_focus, list):
+            repair_focus.extend(path for path in raw_focus if isinstance(path, str))
+    repair_scope = set(stage_repair_scope_paths(stage))
+    candidate_records: list[object] = []
+    for key in ("candidate_regressions", "provisional_candidates"):
+        records = manifest.get(key, [])
+        if isinstance(records, list):
+            candidate_records.extend(records)
+    for record in candidate_records:
+        if not isinstance(record, dict):
+            continue
+        for key in ("failure_signature", "failure_family_signature"):
+            signature = record.get(key)
+            if not isinstance(signature, str):
+                continue
+            repair_focus.extend(
+                path
+                for path in re.findall(r"<project>/([A-Za-z0-9_./-]+\.py)", signature)
+                if path in repair_scope
+            )
+    repair_focus_paths = tuple(unique_ordered(repair_focus))
     return StageRunSummary(
         stage_id=stage.stage_id,
         title=stage.title,
@@ -406,7 +466,8 @@ def read_stage_agent_manifest(stage: StageWorkItem, run_dir: Path, exit_code: in
         final_verdict=final_verdict,
         changed_paths=changed_paths,
         required_paths=required_paths,
-        failure_summary=failure if isinstance(failure, dict) else None,
+        repair_focus_paths=repair_focus_paths,
+        failure_summary=failure or None,
     )
 
 def integration_repair_brief(base_brief: str, completed: Sequence[StageRunSummary]) -> str:
@@ -521,7 +582,7 @@ def build_integration_repair_args(
         no_replace_file=False,
         no_extra_files=args.no_extra_files,
         apply=args.apply,
-        precheck=False,
+        precheck=True,
         test_command=list(args.test_command or []),
         command_timeout=args.command_timeout,
         redis_smoke=args.redis_smoke,
@@ -534,6 +595,7 @@ def build_integration_repair_args(
         protocol_repair_rounds=args.protocol_repair_rounds,
         adaptive_rounds=args.adaptive_rounds,
         root_cause_patch_rounds=args.root_cause_patch_rounds,
+        artifact_plan_repair_rounds=args.artifact_plan_repair_rounds,
         max_goal_actions=getattr(args, "max_goal_actions", DEFAULT_MAX_GOAL_ACTIONS),
         max_stage_actions=getattr(args, "max_stage_actions", DEFAULT_MAX_STAGE_ACTIONS),
         max_recovery_actions=getattr(args, "max_recovery_actions", DEFAULT_MAX_RECOVERY_ACTIONS),
@@ -603,8 +665,12 @@ def stage_run_manifest(
         "brief": brief,
         "command": "run-stages",
         "status": final_status,
+        "final_verdict": final_status,
         "stage_count": len(stages),
-        "completed_stage_count": len(completed),
+        "completed_stage_count": len(
+            {item.stage_id for item in completed if item.exit_code == 0}
+        ),
+        "execution_attempt_count": len(completed),
         "api_calls": sum(item.api_calls for item in completed),
         "final_test_commands": list(test_commands),
         "stages": [stage_work_item_manifest(stage) for stage in stages],
@@ -654,7 +720,11 @@ def acceptance_blockers(matrix: Sequence[dict[str, object]]) -> list[dict[str, o
 def failure_summary(final_verdict: str, evidence: Sequence[dict[str, object]], fallback: str | None = None) -> dict[str, object] | None:
     if final_verdict == "approved":
         return None
-    for item in reversed(evidence):
+    failed_items = [item for item in reversed(evidence) if item.get("status") == "fail"]
+    # Aggregate acceptance gates decide completion but should not obscure the
+    # concrete executable failure that explains what must be repaired.
+    primary_items = [item for item in failed_items if item.get("kind") != "acceptance_gate"]
+    for item in [*primary_items, *failed_items]:
         if item.get("status") == "fail":
             return {
                 "failure_type": item.get("failure_type") or fallback or "unknown",

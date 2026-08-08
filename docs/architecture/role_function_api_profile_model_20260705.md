@@ -40,6 +40,7 @@ R = set of roles
 F = set of call functions
 P = set of API profiles
 B = base profile
+M_s = models currently reported by the serving API
 rho: R -> P_role
 phi: F -> P_function
 omega: F -> P_override
@@ -66,6 +67,19 @@ profile(c) = B ⊕ rho(r) ⊕ phi(f) ⊕ omega(f)
 
 `⊕` means field-wise override from left to right. Therefore function settings
 override role defaults, and explicit function overrides override built-ins.
+
+For a named model profile, a call is admissible only when its effective model
+is actually served:
+
+```text
+admissible(c) <=> model(profile(c)) in M_s
+```
+
+The runner obtains `M_s` from `/v1/models` immediately before generation. It
+must not silently substitute another model, start a model server, or assume
+that a function-level model override is available. When `|M_s| = 1`, every
+call necessarily uses that one resident model. The same abstraction continues
+to work when a future endpoint exposes multiple models.
 
 ## Built-in Function Profiles
 
@@ -111,3 +125,19 @@ To avoid configuration sprawl:
 ```
 
 This gives a stable extension point when new functions are added.
+
+## DeepSeek Local Presets
+
+The verified local DeepSeek endpoint separates `reasoning_content` from final
+`content` and honors `chat_template_kwargs.enable_thinking=false`. Two presets
+make the risk choice explicit:
+
+| Preset | Analysis | Machine-readable artifacts | Maximum generated artifact |
+|---|---|---|---:|
+| `deepseek-v4-flash-agent` | thinking off | thinking off | 8192 tokens |
+| `deepseek-v4-flash-agent-deep` | thinking on | thinking off | 8192 tokens |
+
+These budgets target a 16K-class active server context. They do not infer the
+runtime context from the model's training-context claim. Qwen presets remain
+independent and unchanged, so returning to Qwen is a profile selection after
+the externally managed server has been switched.

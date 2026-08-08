@@ -68,6 +68,7 @@ def project_tests_assert_pager_raw_page_contract(project: Path | None, test_path
 
 TEST_HARNESS_WRITE_STRATEGIES = frozenset(
     {
+        "test_oracle_review",
         "replace_test_harness",
         "create_test_harness",
         "test_harness_api_mismatch",
@@ -122,8 +123,23 @@ def project_python_product_paths(project: Path | None) -> list[str]:
         paths.append(rel)
     return unique_ordered(paths)
 
-def module_name_to_project_path(module_name: str) -> str:
-    return module_name.replace(".", "/") + ".py"
+def module_name_to_project_path(module_name: str, project: Path | None = None) -> str:
+    """Resolve a Python module to its file or package initializer.
+
+    Import errors name packages (``from package import Symbol``) without
+    spelling out ``package/__init__.py``. Prefer the package initializer when
+    it exists so recovery focuses the actual public API boundary instead of a
+    non-existent sibling module.
+    """
+    stem = module_name.replace(".", "/")
+    module_path = stem + ".py"
+    package_path = stem + "/__init__.py"
+    if project is not None:
+        if (project / module_path).is_file():
+            return module_path
+        if (project / package_path).is_file():
+            return package_path
+    return module_path
 
 def python_defined_symbols(project: Path | None, rel_path: str) -> list[str]:
     if project is None:
@@ -321,8 +337,26 @@ def inferred_product_focus_from_test_path(test_path: str, existing_paths: Sequen
             "minisqlite/__init__.py",
         ),
     }
-    candidates = list(static_map.get(normalized, ()))
     stem = Path(normalized).stem.removeprefix("test_")
+    existing_product_paths = [
+        path
+        for path in existing_paths
+        if path.endswith(".py") and not path.startswith("tests/")
+    ]
+    if stem and existing_product_paths:
+        exact = [path for path in existing_product_paths if Path(path).stem == stem]
+        if exact:
+            return unique_ordered(exact)
+        compact_stem = compact_identifier(stem)
+        lexical = [
+            path
+            for path in existing_product_paths
+            if compact_identifier(Path(path).stem) == compact_stem
+        ]
+        if lexical:
+            return unique_ordered(lexical)
+
+    candidates = list(static_map.get(normalized, ()))
     if stem and not candidates:
         candidates.extend(
             [
@@ -338,3 +372,36 @@ def inferred_product_focus_from_test_path(test_path: str, existing_paths: Sequen
         existing_candidates = [path for path in candidates if path in existing]
         return unique_ordered(existing_candidates or candidates)
     return unique_ordered(candidates)
+
+
+def project_relative_trace_path(
+    project: Path | None,
+    raw_path: str,
+    existing_paths: Sequence[str] = (),
+) -> str | None:
+    """Map a traceback path from an isolated worktree back to the project."""
+    normalized = raw_path.replace("\\", "/")
+    candidates = list(existing_paths)
+    if not candidates and project is not None:
+        try:
+            candidates = [
+                str(path.relative_to(project))
+                for path in project.rglob("*.py")
+                if "/.sdlc-runner/" not in str(path)
+            ]
+        except OSError:
+            candidates = []
+    matches = [
+        path
+        for path in candidates
+        if normalized == path or normalized.endswith("/" + path)
+    ]
+    if matches:
+        return max(matches, key=len)
+    if "/project/" in normalized:
+        candidate = normalized.rsplit("/project/", 1)[1]
+        if candidate and not candidate.startswith("."):
+            return candidate
+    if "/tests/" in normalized:
+        return "tests/" + normalized.split("/tests/", 1)[1]
+    return None

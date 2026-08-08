@@ -10,10 +10,7 @@
     "max_tokens": 4096,
     "enable_thinking": false,
     "stream": false,
-    "api_profile": [
-      "generate_artifact:max_tokens=49152,temperature=0.05,thinking=off",
-      "repair_artifact:max_tokens=24576,temperature=0,thinking=off"
-    ]
+    "api_profile": []
   },
   "browser": {
     "worker_url": "",

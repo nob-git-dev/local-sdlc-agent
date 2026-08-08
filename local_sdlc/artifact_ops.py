@@ -119,11 +119,192 @@ def normalize_file_header_search_replace_artifacts(text: str) -> str:
 
     return pattern.sub(replace, text)
 
+
+_NEXT_LINE_SEARCH_REPLACE_HEADER = re.compile(
+    r"(?m)^(?P<indent>[ \t]*)BEGIN_SEARCH_REPLACE[ \t]*\n"
+    r"[ \t]*(?P<path>[A-Za-z0-9_.][A-Za-z0-9_./-]*)[ \t]*\n"
+    r"(?=[ \t]*<<<<<<< SEARCH[ \t]*$)"
+)
+
+
+def normalize_next_line_search_replace_headers(text: str) -> str:
+    """Join an unambiguous next-line path to its search/replace marker.
+
+    Recovery is limited to one conservative path token immediately followed by
+    the canonical SEARCH marker.  The ordinary artifact path policy still
+    decides whether that path is writable; this function changes no payload.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        raw_path = match.group("path")
+        try:
+            paths = normalize_project_relative_paths(
+                [raw_path],
+                "search/replace envelope path",
+            )
+        except RunnerError:
+            return match.group(0)
+        if len(paths) != 1:
+            return match.group(0)
+        return (
+            f"{match.group('indent')}BEGIN_SEARCH_REPLACE: {paths[0]}\n"
+        )
+
+    return _NEXT_LINE_SEARCH_REPLACE_HEADER.sub(replace, text)
+
+
+def normalize_terminal_end_search_replace_artifact(text: str) -> str:
+    """Recover an unambiguous block that omits ``>>>>>>> REPLACE``.
+
+    Some models use ``END_SEARCH_REPLACE`` as both the conflict-pair terminator
+    and the outer block terminator.  Recovery is safe only when the response
+    contains exactly one path header, one SEARCH marker, one separator, no
+    standard REPLACE marker, and a single terminal END marker.  The payload is
+    preserved verbatim; only the missing envelope marker is inserted.
+    """
+    if re.search(rf"(?m)^\s*{SEARCH_REPLACE_END_MARKER}\s*$", text):
+        return text
+    if len(re.findall(r"(?m)^\s*BEGIN_SEARCH_REPLACE:\s*[^\n]+$", text)) != 1:
+        return text
+    if len(re.findall(r"(?m)^\s*<<<<<<< SEARCH\s*$", text)) != 1:
+        return text
+    if len(re.findall(r"(?m)^\s*=======\s*$", text)) != 1:
+        return text
+    if len(re.findall(r"(?m)^\s*END_SEARCH_REPLACE\s*$", text)) != 1:
+        return text
+    pattern = re.compile(
+        r"(?ms)^(?P<body>\s*BEGIN_SEARCH_REPLACE:\s*[^\n]+\n"
+        r"\s*<<<<<<< SEARCH\n.*?\n\s*=======\n.*?)\n"
+        r"\s*END_SEARCH_REPLACE\s*$"
+    )
+    match = pattern.match(text)
+    if not match:
+        return text
+    return match.group("body") + "\n>>>>>>> REPLACE\nEND_SEARCH_REPLACE"
+
+
+def normalize_short_search_replace_start_markers(text: str) -> str:
+    """Normalize a five-chevron SEARCH marker in an otherwise exact envelope.
+
+    This changes syntax only. Each path-qualified block must contain exactly one
+    short SEARCH marker, one separator, one canonical REPLACE marker, and no
+    competing conflict-marker line. Ambiguous or incomplete blocks are left for
+    the normal artifact rejection path.
+    """
+    block_pattern = re.compile(
+        r"(?ms)^(?P<header>\s*BEGIN_SEARCH_REPLACE:\s*[^\n]+\n)"
+        r"(?P<body>.*?)"
+        r"(?P<footer>^\s*END_SEARCH_REPLACE\s*$)"
+    )
+
+    def replace_block(match: re.Match[str]) -> str:
+        body = match.group("body")
+        short_markers = list(re.finditer(r"(?m)^(?P<indent>[ \t]*)<<<<< SEARCH[ \t]*$", body))
+        conflict_lines = re.findall(
+            r"(?m)^[ \t]*(?:<{4,}[ \t]+SEARCH|={4,}|>{4,}[ \t]+REPLACE)[ \t]*$",
+            body,
+        )
+        if (
+            len(short_markers) != 1
+            or len(re.findall(r"(?m)^[ \t]*=======[ \t]*$", body)) != 1
+            or len(re.findall(r"(?m)^[ \t]*>>>>>>> REPLACE[ \t]*$", body)) != 1
+            or len(conflict_lines) != 3
+        ):
+            return match.group(0)
+        marker = short_markers[0]
+        normalized_body = (
+            body[: marker.start()]
+            + marker.group("indent")
+            + "<<<<<<< SEARCH"
+            + body[marker.end() :]
+        )
+        return match.group("header") + normalized_body + match.group("footer")
+
+    return block_pattern.sub(replace_block, text)
+
+
+def normalize_duplicated_replace_payloads(text: str) -> str:
+    """Collapse byte-equivalent replacement payloads in one exact envelope.
+
+    Local models sometimes repeat the replacement half after a second
+    ``=======`` marker.  Recovery is mechanical only when the block has an
+    explicit path, one SEARCH and one REPLACE end marker, and every repeated
+    replacement payload is identical after newline trimming.  Distinct
+    alternatives remain invalid because choosing between them would infer
+    intent.
+    """
+    block_pattern = re.compile(
+        rf"(?ms)^(?P<header>\s*BEGIN_SEARCH_REPLACE:\s*[^\n]+\n)"
+        rf"(?P<body>.*?^[ \t]*{SEARCH_REPLACE_END_MARKER}[ \t]*$)"
+        r"(?P<footer>\n[ \t]*END_SEARCH_REPLACE[ \t]*$)?"
+    )
+
+    def replace_block(match: re.Match[str]) -> str:
+        body = match.group("body")
+        search_pattern = r"(?m)^(?P<indent>[ \t]*)<{5,7} SEARCH[ \t]*$"
+        if len(re.findall(search_pattern, body)) != 1:
+            return match.group(0)
+        if len(re.findall(rf"(?m)^[ \t]*{SEARCH_REPLACE_END_MARKER}[ \t]*$", body)) != 1:
+            return match.group(0)
+        separator_matches = list(re.finditer(r"(?m)^[ \t]*=======[ \t]*$", body))
+        if len(separator_matches) < 2:
+            return match.group(0)
+        search_marker = re.search(search_pattern, body)
+        replace_end = re.search(rf"(?m)^[ \t]*{SEARCH_REPLACE_END_MARKER}[ \t]*$", body)
+        if search_marker is None or replace_end is None:
+            return match.group(0)
+        payload_region = body[search_marker.end() : replace_end.start()]
+        parts = re.split(r"(?m)^[ \t]*=======[ \t]*$", payload_region)
+        if len(parts) < 3:
+            return match.group(0)
+        replacements = [part.strip("\n") for part in parts[1:]]
+        if not replacements or any(part != replacements[0] for part in replacements[1:]):
+            return match.group(0)
+        normalized_body = (
+            body[: search_marker.start()]
+            + search_marker.group("indent")
+            + "<<<<<<< SEARCH"
+            + parts[0]
+            + "=======\n"
+            + replacements[0]
+            + "\n"
+            + body[replace_end.start() :]
+        )
+        return match.group("header") + normalized_body + (match.group("footer") or "")
+
+    return block_pattern.sub(replace_block, text)
+
+
 def artifact_candidate_texts(text: str) -> list[str]:
-    normalized_search_replace = normalize_file_header_search_replace_artifacts(text)
-    candidates = [text, normalized_search_replace, strip_markdown_fence(text), strip_markdown_fence(normalized_search_replace)]
+    normalized_file_headers = normalize_inline_file_artifact_headers(text)
+    normalized_next_line_headers = normalize_next_line_search_replace_headers(
+        normalized_file_headers
+    )
+    normalized_short_search_markers = normalize_short_search_replace_start_markers(
+        normalized_next_line_headers
+    )
+    normalized_duplicate_replacements = normalize_duplicated_replace_payloads(
+        normalized_short_search_markers
+    )
+    normalized_search_replace = normalize_file_header_search_replace_artifacts(
+        normalized_duplicate_replacements
+    )
+    normalized_terminal = normalize_terminal_end_search_replace_artifact(normalized_search_replace)
+    candidates = [
+        text,
+        normalized_file_headers,
+        normalized_next_line_headers,
+        normalized_short_search_markers,
+        normalized_duplicate_replacements,
+        normalized_search_replace,
+        normalized_terminal,
+        strip_markdown_fence(text),
+        strip_markdown_fence(normalized_search_replace),
+        strip_markdown_fence(normalized_terminal),
+    ]
     candidates.extend(markdown_fenced_blocks(text))
     candidates.extend(markdown_fenced_blocks(normalized_search_replace))
+    candidates.extend(markdown_fenced_blocks(normalized_terminal))
     return unique_ordered(candidate for candidate in candidates if candidate.strip())
 
 def json_artifact_marker_offsets(text: str) -> list[int]:
@@ -155,7 +336,7 @@ def contains_conflict_markers(text: str) -> bool:
 def contains_artifact_markers(text: str) -> bool:
     return bool(
         re.search(
-            r"(?m)^(BEGIN_(?:APPEND_)?FILE(?::|\s*$)|BEGIN_SEARCH_REPLACE:|END_(?:APPEND_)?FILE(?:\s*:\s*[^\n]+)?\s*$|END_SEARCH_REPLACE$)",
+            r"(?m)^(BEGIN_(?:APPEND_)?FILE(?:\s*:|[ \t]+[A-Za-z0-9_.][A-Za-z0-9_./-]*[ \t]*$|\s*$)|BEGIN_SEARCH_REPLACE:|END_(?:APPEND_)?FILE(?:\s*:\s*[^\n]+)?\s*$|END_SEARCH_REPLACE$)",
             text,
         )
     )
@@ -211,6 +392,54 @@ def absent_api_contracts_from_texts(texts: Sequence[str]) -> list[tuple[str, str
         filtered.append((class_name, attr))
     return filtered
 
+
+def mechanically_absent_api_facts_from_texts(
+    texts: Sequence[str],
+) -> list[tuple[str, str, str | None]]:
+    """Extract mechanically observed absent APIs and their owner paths.
+
+    Unlike :func:`absent_api_contracts_from_texts`, this function does not
+    decide whether restoring an API is allowed.  It records only the probe
+    fact needed to validate a candidate transaction: a call to an absent API
+    is unresolved unless the current project or the same transaction defines
+    that method on its owner class.
+    """
+    facts: list[tuple[str, str, str | None]] = []
+    pending: list[tuple[str, str]] = []
+    owner_paths: list[str] = []
+    for text in texts:
+        if not text:
+            continue
+        for class_name, attr, owner_path in re.findall(
+            r"`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`\s+is absent\s+from\s+`([^`]+)`",
+            text,
+        ):
+            facts.append((class_name, attr, normalize_legacy_file_artifact_path(owner_path)))
+        if re.search(r"(?i)\babsent api(?:\s+from\s+mechanical\s+probe)?\b", text):
+            pending.extend(
+                (class_name, attr)
+                for class_name, attr in re.findall(
+                    r"\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b",
+                    text,
+                )
+            )
+        owner_paths.extend(
+            normalize_legacy_file_artifact_path(path)
+            for path in re.findall(
+                r"(?im)^\s*-?\s*(?:api surface probed from|source file|owner path):\s*`?([^`\n]+?)`?\s*$",
+                text,
+            )
+        )
+
+    known_pairs = {(class_name, attr) for class_name, attr, _path in facts}
+    default_owner = unique_ordered(path for path in owner_paths if path)
+    for class_name, attr in dict.fromkeys(pending):
+        if (class_name, attr) in known_pairs:
+            continue
+        owner_path = default_owner[0] if len(default_owner) == 1 else None
+        facts.append((class_name, attr, owner_path))
+    return list(dict.fromkeys(facts))
+
 def forbidden_edit_symbols_from_texts(texts: Sequence[str]) -> list[str]:
     """Extract mechanically forbidden edit targets from supervisor advice.
 
@@ -242,11 +471,36 @@ def forbidden_edit_symbols_from_texts(texts: Sequence[str]) -> list[str]:
             targets,
             maxsplit=1,
         )[0]
+        # A forbidden path constrains the artifact target, not every identifier
+        # appearing inside a valid edit.  Remove path-shaped targets before
+        # extracting symbols so ``pkg/checkpoint.py`` does not accidentally
+        # forbid imports containing ``pkg`` or ``checkpoint``.
+        targets = re.sub(
+            r"`?(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]*`?",
+            " ",
+            targets,
+        )
         for token in re.findall(r"`?([A-Za-z_][A-Za-z0-9_]*)`?", targets):
             if token.lower() in stopwords:
                 continue
             symbols.append(token)
     return unique_ordered(symbols)
+
+
+def forbidden_edit_paths_from_texts(texts: Sequence[str]) -> list[str]:
+    """Extract project-relative file or directory targets from ``do not edit`` advice."""
+    paths: list[str] = []
+    combined = "\n".join(text for text in texts if text)
+    for match in re.finditer(r"(?i)\bdo not edit\s+(?P<targets>[^\n.]+(?:\.[A-Za-z0-9_-]+)?)", combined):
+        targets = match.group("targets")
+        for raw_path in re.findall(
+            r"`?((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]*)`?",
+            targets,
+        ):
+            normalized = normalize_legacy_file_artifact_path(raw_path)
+            if normalized and normalized not in {".", ".."} and not normalized.startswith("../"):
+                paths.append(normalized)
+    return unique_ordered(paths)
 
 def normalize_legacy_file_artifact_path(raw_path: str) -> str:
     path = raw_path.strip()
@@ -260,6 +514,26 @@ def normalize_legacy_file_artifact_path(raw_path: str) -> str:
         path = path[1:].strip()
     return path
 
+
+_INLINE_FILE_HEADER_WITHOUT_COLON = re.compile(
+    r"(?m)^(?P<header>BEGIN_(?:APPEND_)?FILE)[ \t]+"
+    r"(?P<path>[A-Za-z0-9_.][A-Za-z0-9_./-]*)[ \t]*$"
+)
+
+
+def normalize_inline_file_artifact_headers(text: str) -> str:
+    """Insert a missing colon in an otherwise unambiguous file header.
+
+    Only the reserved marker plus one conservative project-relative path is
+    normalized. Path authorization remains the responsibility of the normal
+    artifact policy, and content is never changed by this repair.
+    """
+
+    return _INLINE_FILE_HEADER_WITHOUT_COLON.sub(
+        lambda match: f"{match.group('header')}: {match.group('path')}",
+        text,
+    )
+
 def normalize_legacy_file_artifact_content(raw_content: str) -> str:
     content = strip_markdown_fence(raw_content)
     lines = content.splitlines()
@@ -272,7 +546,12 @@ def normalize_legacy_file_artifact_content(raw_content: str) -> str:
     return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
 
 def legacy_file_begin_count(text: str) -> int:
-    return len(re.findall(r"(?m)^BEGIN_(?:APPEND_)?FILE(?::|\s*$)", text))
+    return len(
+        re.findall(
+            r"(?m)^BEGIN_(?:APPEND_)?FILE(?:\s*:|[ \t]+[A-Za-z0-9_.][A-Za-z0-9_./-]*[ \t]*$|\s*$)",
+            text,
+        )
+    )
 
 def legacy_file_end_count(text: str) -> int:
     return len(re.findall(r"(?m)^END_(?:APPEND_)?FILE(?:\s*:\s*[^\n]+)?\s*$", text))
@@ -296,7 +575,77 @@ def repaired_json_candidates(candidate: str) -> list[str]:
         fixed_both = re.sub(r'"type"\s*:\s*"type"\s*:\s*"', '"type":"', fixed_commas)
         if fixed_both != fixed_commas:
             repairs.append(fixed_both)
-    return repairs
+    for base in [candidate, *list(repairs)]:
+        completed = complete_json_terminal_closers(base)
+        if completed is None:
+            continue
+        repairs.append(completed)
+        completed_without_trailing_commas = remove_json_trailing_commas(completed)
+        if completed_without_trailing_commas != completed:
+            repairs.append(completed_without_trailing_commas)
+    return unique_ordered(repairs)
+
+
+def complete_json_terminal_closers(candidate: str, max_insertions: int = 4) -> str | None:
+    """Repair only unambiguous missing JSON container closers.
+
+    The function never invents values, keys, quotes, commas, or string bytes.
+    It may insert ``]``/``}`` before an already present ancestor closer or at
+    end-of-input when the lexer is outside a string.  Any extra/mismatched
+    closer or truncated string remains invalid and is rejected by the caller.
+    """
+    stack: list[str] = []
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    insertions = 0
+    closing_for = {"{": "}", "[": "]"}
+
+    for char in candidate:
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            result.append(char)
+            continue
+        if char in closing_for:
+            stack.append(char)
+            result.append(char)
+            continue
+        if char in "}]":
+            matching_index = next(
+                (
+                    index
+                    for index in range(len(stack) - 1, -1, -1)
+                    if closing_for[stack[index]] == char
+                ),
+                None,
+            )
+            if matching_index is None:
+                return None
+            while len(stack) - 1 > matching_index:
+                result.append(closing_for[stack.pop()])
+                insertions += 1
+            stack.pop()
+            result.append(char)
+            continue
+        result.append(char)
+
+    if in_string or escaped:
+        return None
+    while stack:
+        result.append(closing_for[stack.pop()])
+        insertions += 1
+    if insertions == 0 or insertions > max_insertions:
+        return None
+    return "".join(result)
 
 def remove_json_trailing_commas(candidate: str) -> str:
     """Remove JSON trailing commas before object/array closers.
@@ -361,10 +710,24 @@ def merge_artifact_policy_paths(
 def freeze_test_paths_as_readonly(
     allowed_paths: Sequence[str],
     readonly_paths: Sequence[str],
+    existing_paths: Sequence[str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Move tests from writable targets to readonly evidence targets."""
-    frozen = [path for path in allowed_paths if path.startswith("tests/")]
-    allowed = [path for path in allowed_paths if not path.startswith("tests/")]
+    """Move existing tests from writable targets to readonly evidence targets.
+
+    A declared test path that does not exist is still an implementation
+    obligation. Freezing it before the harness has been created makes the
+    obligation impossible to satisfy after a rolled-back candidate. Callers
+    that provide ``existing_paths`` therefore retain missing tests as writable
+    until one has actually been materialized.
+    """
+    existing = set(existing_paths) if existing_paths is not None else None
+    frozen = [
+        path
+        for path in allowed_paths
+        if path.startswith("tests/") and (existing is None or path in existing)
+    ]
+    frozen_set = set(frozen)
+    allowed = [path for path in allowed_paths if path not in frozen_set]
     readonly = unique_ordered([*readonly_paths, *frozen])
     return allowed, readonly
 
@@ -690,16 +1053,30 @@ def malformed_search_replace_full_file_artifacts(
     for candidate in artifact_candidate_texts(text):
         for match in pattern.finditer(candidate):
             body = match.group("body")
-            if contains_conflict_markers(body) or "=======" in body or "Replace with:" in body:
-                continue
             path = normalize_legacy_file_artifact_path(match.group("path"))
             duplicate_path = normalize_legacy_file_artifact_path(match.group("duplicate_path") or "")
+            if not path:
+                continue
             if duplicate_path and duplicate_path != path:
+                continue
+            terminal = re.search(
+                r"\n\s*END_SEARCH_REPLACE(?:\s*:\s*(?P<path>[^\n]*))?\s*\Z",
+                body,
+                flags=re.MULTILINE,
+            )
+            if terminal:
+                terminal_path = normalize_legacy_file_artifact_path(terminal.group("path") or "")
+                if terminal_path and terminal_path != path:
+                    continue
+                body = body[: terminal.start()]
+            if contains_conflict_markers(body) or "=======" in body or "Replace with:" in body:
                 continue
             check_artifact_path(path, policy, "malformed search/replace full-file recovery")
             if not path.endswith(".py"):
                 continue
             content = normalize_legacy_file_artifact_content(strip_markdown_fence(body)).rstrip() + "\n"
+            if contains_artifact_markers(content):
+                continue
             if looks_like_python_function_fragment(content):
                 continue
             if not looks_like_complete_python_module(content):
@@ -817,10 +1194,14 @@ def extract_search_replace_artifacts(text: str, allowed_paths: Sequence[str] | A
         for match in pattern.finditer(candidate):
             path = normalize_legacy_file_artifact_path(match.group("path"))
             check_artifact_path(path, policy, "search/replace")
+            search = clean_artifact_block(match.group("search"))
+            replace = clean_artifact_block(match.group("replace"))
+            if contains_conflict_markers(search) or contains_conflict_markers(replace):
+                continue
             artifact = SearchReplaceArtifact(
                 path=path,
-                search=clean_artifact_block(match.group("search")),
-                replace=clean_artifact_block(match.group("replace")),
+                search=search,
+                replace=replace,
             )
             key = (artifact.path, artifact.search, artifact.replace)
             if key in seen:
@@ -861,6 +1242,8 @@ def multi_pair_search_replace_artifacts(
     for candidate in artifact_candidate_texts(text):
         for block_match in block_pattern.finditer(candidate):
             path = normalize_legacy_file_artifact_path(block_match.group("path"))
+            if not path:
+                continue
             check_artifact_path(path, policy, "multi-pair search/replace")
             body = block_match.group("body")
             pairs = list(pair_pattern.finditer(body))
@@ -912,6 +1295,8 @@ def fenced_conflict_search_replace_artifacts(
     for candidate in artifact_candidate_texts(text):
         for match in pattern.finditer(candidate):
             path = normalize_legacy_file_artifact_path(match.group("path"))
+            if not path:
+                continue
             check_artifact_path(path, policy, "fenced search/replace")
             artifact = SearchReplaceArtifact(
                 path=path,
@@ -948,6 +1333,8 @@ def loose_python_function_replacement_artifacts(
         for match in pattern.finditer(candidate):
             path = normalize_legacy_file_artifact_path(match.group("path"))
             duplicate_path = normalize_legacy_file_artifact_path(match.group("duplicate_path") or "")
+            if not path:
+                continue
             if duplicate_path and duplicate_path != path:
                 continue
             check_artifact_path(path, policy, "loose Python function replacement")

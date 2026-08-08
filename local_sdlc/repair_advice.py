@@ -29,6 +29,65 @@ from .repair_rules.generic import (
     repair_advice_to_manifest,
 )
 
+
+def merge_repair_advice_manifest(
+    previous: dict[str, object],
+    current: RepairAdvice,
+    command_docs: Sequence[tuple[str, str]] = (),
+) -> dict[str, object]:
+    """Merge a recovery decision without forgetting earlier hard evidence.
+
+    Strategy is intentionally replaced by the current supervisor decision,
+    while focus, instructions, and evidence remain monotone.  Mechanical API
+    owner files are moved to the front of context so a retry can verify the
+    real interface before proposing another call site.
+    """
+    previous_focus = [
+        str(item)
+        for item in previous.get("focus_files", [])
+        if isinstance(item, str)
+    ]
+    previous_instructions = [
+        str(item)
+        for item in previous.get("instructions", [])
+        if isinstance(item, str)
+    ]
+    previous_evidence = [
+        str(item)
+        for item in previous.get("evidence", [])
+        if isinstance(item, str)
+    ]
+    absent_facts = mechanically_absent_api_facts_from_texts(
+        [*previous_instructions, *previous_evidence]
+    )
+    owner_paths = [owner_path for _class, _attr, owner_path in absent_facts if owner_path]
+    mechanical_constraints = [
+        (
+            f"Mechanical fact: `{class_name}.{attr}` is absent"
+            + (f" from `{owner_path}`" if owner_path else "")
+            + "; do not call it unless the same candidate defines it on the owner class "
+            "and the specification requires that interface."
+        )
+        for class_name, attr, owner_path in absent_facts
+    ]
+    merged = RepairAdvice(
+        strategy=current.strategy,
+        focus_files=tuple(
+            unique_ordered([*owner_paths, *current.focus_files, *previous_focus])
+        ),
+        instructions=tuple(
+            unique_ordered(
+                [
+                    *current.instructions,
+                    *mechanical_constraints,
+                    *previous_instructions,
+                ]
+            )
+        ),
+        evidence=tuple(unique_ordered([*current.evidence, *previous_evidence])),
+    )
+    return repair_advice_to_manifest(merged, command_docs)
+
 def repair_advice_policy_paths(
     advice: RepairAdvice | None,
     existing_paths: Sequence[str],
@@ -433,16 +492,22 @@ def deterministic_python_syntax_repair_artifact(
 def patch_plan_paths_from_text(
     plan_doc: str,
     existing_paths: Sequence[str],
+    authorized_paths: Sequence[str] = (),
 ) -> dict[str, list[str]]:
     """Parse PATCH_PLAN path fields without trusting the planner blindly.
 
     The planner may abbreviate a unique basename, but it does not get direct
     write authority. The runner uses this parsed result only after resolving a
-    path to a known project-relative file.
+    path to a known project-relative file or an exact runner-authorized new
+    path. Merely naming a new path in the LLM plan never grants authority.
     """
     existing = tuple(str(path) for path in existing_paths)
+    authorized = tuple(
+        path for path in unique_ordered(str(path) for path in authorized_paths) if path
+    )
+    known = tuple(unique_ordered([*existing, *authorized]))
     by_basename: dict[str, list[str]] = {}
-    for path in existing:
+    for path in known:
         by_basename.setdefault(Path(path).name, []).append(path)
 
     def resolve_path(raw_path: str) -> str | None:
@@ -450,7 +515,7 @@ def patch_plan_paths_from_text(
         if not normalized or normalized.lower() in {"(none)", "none", "n/a"}:
             return None
         normalized = normalized.strip("`'\" ")
-        if normalized in existing:
+        if normalized in known:
             return normalized
         basename_matches = by_basename.get(Path(normalized).name, [])
         if len(basename_matches) == 1:
@@ -462,23 +527,97 @@ def patch_plan_paths_from_text(
         "readonly_paths": [],
         "forbidden_paths": [],
     }
-    line_values: dict[str, str] = {}
-    for match in re.finditer(r"(?im)^\s*-\s*(required_path|readonly_paths|forbidden_paths)\s*:\s*(.*?)\s*$", plan_doc):
-        line_values[match.group(1).lower()] = match.group(2).strip()
+    line_values: dict[str, list[str]] = {
+        "required_paths": [],
+        "readonly_paths": [],
+        "forbidden_paths": [],
+    }
+    for match in re.finditer(
+        r"(?im)^\s*-\s*(required_path|required_paths|readonly_paths|forbidden_paths)\s*:\s*(.*?)\s*$",
+        plan_doc,
+    ):
+        field_name = match.group(1).lower()
+        if field_name == "required_path":
+            field_name = "required_paths"
+        line_values[field_name].append(match.group(2).strip())
 
-    required = line_values.get("required_path", "")
-    resolved_required = resolve_path(required)
-    if resolved_required:
-        fields["required_paths"].append(resolved_required)
-
-    for field_name in ("readonly_paths", "forbidden_paths"):
-        raw_value = line_values.get(field_name, "")
-        for item in re.split(r"[,;\n]", raw_value):
-            resolved = resolve_path(item)
-            if resolved:
-                fields[field_name].append(resolved)
+    for field_name in ("required_paths", "readonly_paths", "forbidden_paths"):
+        for raw_value in line_values[field_name]:
+            for item in re.split(r"[,;\n]", raw_value):
+                resolved = resolve_path(item)
+                if resolved:
+                    fields[field_name].append(resolved)
 
     return {key: unique_ordered(value) for key, value in fields.items()}
+
+
+def effective_artifact_format(configured_format: str, modes: set[str]) -> str:
+    """Return the parser format required by the current repair contract.
+
+    A recovery contract may deliberately switch protocols. The parser must
+    follow that per-round contract instead of retaining the parent run's
+    default format and rejecting an otherwise valid recovery artifact.
+    """
+    if {"json_search_replace_recovery", "malformed_search_replace"} & modes:
+        return "json"
+    legacy_only_modes = {
+        "single_artifact_required",
+        "atomic_search_replace_required",
+        "mixed_artifact_formats",
+        "corrupt_unified_diff",
+        "empty_or_skipped_patch",
+        "oversized_python_diff_artifact",
+        "bad_search_replace",
+        "stage_scope_violation",
+        "oversized_python_file_artifact",
+        "json_plan_before_artifact",
+        "semantic_repair_format",
+        "format_repair_protocol",
+    }
+    if legacy_only_modes & modes:
+        return "legacy"
+    return configured_format
+
+
+def missing_file_recovery_target(
+    missing_required_paths: Sequence[str],
+    writable_paths: Sequence[str],
+    stage_generated_test_paths: Sequence[str],
+    repair_strategy: str,
+    failure_modes: set[str],
+) -> str | None:
+    """Choose one pre-authorized missing path for artifact-format recovery.
+
+    A malformed transport cannot be repaired with search/replace when the
+    intended target does not yet exist. Selection never widens authority: the
+    result must be both required and already writable. A declared missing test
+    is preferred only while the supervisor is explicitly constructing that
+    test harness; otherwise product paths come first.
+    """
+
+    if not failure_modes:
+        return None
+    writable = set(str(path) for path in writable_paths)
+    candidates = [
+        path
+        for path in unique_ordered(str(path) for path in missing_required_paths)
+        if path in writable
+    ]
+    if not candidates:
+        return None
+
+    generated_tests = set(str(path) for path in stage_generated_test_paths)
+    if repair_strategy == "create_test_harness":
+        for path in candidates:
+            if path.startswith("tests/") and path in generated_tests:
+                return path
+    for path in candidates:
+        if not path.startswith("tests/"):
+            return path
+    for path in candidates:
+        if path in generated_tests:
+            return path
+    return candidates[0]
 
 def final_failure_focus_from_command_docs(
     command_docs: Sequence[tuple[str, str]],
@@ -585,6 +724,7 @@ def artifact_failure_modes_from_documents(documents: Sequence[tuple[str, str]], 
         "stream_prose_before_artifact",
         "stream_non_artifact_output",
         "stream_json_plan_before_artifact",
+        "stream_json_schema_mismatch",
         "stream_mixed_artifact_formats",
         "stream_multiple_file_artifacts_in_repair",
         "stream_artifact_too_large",
@@ -599,7 +739,18 @@ def artifact_failure_modes_from_documents(documents: Sequence[tuple[str, str]], 
     }
     if any(code in recent_text for code in format_repair_codes):
         modes.add("format_repair_protocol")
-    if "stream_json_plan_before_artifact" in recent_text:
+    if (
+        "stream_repeated_text_runaway" in recent_text
+        or "stream_artifact_malformed_search_replace" in recent_text
+        or "format_repair_malformed_search_replace" in recent_text
+        or "stream_orphan_search_replace" in recent_text
+        or "artifact_orphan_search_replace" in recent_text
+    ):
+        modes.add("json_search_replace_recovery")
+    if (
+        "stream_json_plan_before_artifact" in recent_text
+        or "stream_json_schema_mismatch" in recent_text
+    ):
         modes.add("json_plan_before_artifact")
     if "stream_mixed_artifact_formats" in recent_text or "mixed json file artifacts" in recent_text:
         modes.add("mixed_artifact_formats")
@@ -646,7 +797,11 @@ def artifact_failure_modes_from_documents(documents: Sequence[tuple[str, str]], 
         modes.add("bad_search_replace")
     if "artifact_path_content_mismatch" in recent_text:
         modes.add("path_content_mismatch")
-    if "forbidden_absent_api_addition" in recent_text or "forbidden_absent_api_call" in recent_text:
+    if (
+        "forbidden_absent_api_addition" in recent_text
+        or "forbidden_absent_api_call" in recent_text
+        or "unresolved_absent_api_call" in recent_text
+    ):
         modes.add("forbidden_api_violation")
     if "forbidden_repair_target_edit" in recent_text:
         modes.add("forbidden_repair_target_edit")
@@ -668,6 +823,16 @@ def artifact_failure_modes_from_documents(documents: Sequence[tuple[str, str]], 
 
 def artifact_failure_instruction_from_documents(documents: Sequence[tuple[str, str]], window: int) -> str:
     modes = artifact_failure_modes_from_documents(documents, window)
+    if "json_search_replace_recovery" in modes or "malformed_search_replace" in modes:
+        return "\n".join(
+            [
+                "Artifact failure constraint:",
+                "- Previous marker-based output was malformed or entered a repeated-text loop.",
+                "- Switch protocol for this round: return one JSON artifact envelope only.",
+                '- Exact shape: {"artifacts":[{"type":"search_replace","path":"path/to/file.py","search":"exact old text","replace":"new text"}]}',
+                "- Use valid JSON escaping for newlines and quotes; do not add prose, fences, or a second artifact.",
+            ]
+        )
     instructions: list[str] = []
     if "bad_search_replace" in modes:
         instructions.extend(
@@ -858,6 +1023,28 @@ def artifact_failure_instruction_from_documents(documents: Sequence[tuple[str, s
 def strict_artifact_output_instruction(modes: set[str]) -> tuple[str | None, str | None]:
     if not modes:
         return None, None
+    if "json_search_replace_recovery" in modes or "malformed_search_replace" in modes:
+        instruction = textwrap.dedent(
+            r'''
+            Required output for this repair round:
+            - JSON ATOMIC RECOVERY MODE.
+            - The previous marker-based search/replace was malformed or repeated itself.
+            - Switch artifact protocol; do not retry BEGIN_SEARCH_REPLACE in this round.
+            - The first non-whitespace character must be exactly `{`.
+            - Return exactly this schema with one object:
+              {"artifacts":[{"type":"search_replace","path":"path/to/file.py","search":"exact old text","replace":"new text"}]}
+            - `path` must name one existing writable product file.
+            - `search` must be short, exact, contiguous, and occur exactly once in the current file.
+            - Encode line breaks and quotes as valid JSON string escapes.
+            - Do not return prose, headings, markdown fences, BEGIN_FILE, BEGIN_SEARCH_REPLACE, unified diff, analysis, alternatives, or a second artifact.
+            '''
+        ).strip()
+        contract = (
+            "Return ONLY one JSON search_replace artifact in one artifacts envelope. "
+            "First non-whitespace byte: {. One existing writable file. One edit. "
+            "No prose. No fences. No marker artifacts. No diff."
+        )
+        return instruction, contract
     if "single_artifact_required" in modes:
         instruction = textwrap.dedent(
             """
@@ -952,7 +1139,7 @@ def strict_artifact_output_instruction(modes: set[str]) -> tuple[str | None, str
             "First non-whitespace bytes: BEGIN_FILE:. No diff. No JSON. No prose."
         )
         return instruction, contract
-    if "malformed_search_replace" in modes or "bad_search_replace" in modes:
+    if "bad_search_replace" in modes:
         instruction = textwrap.dedent(
             """
             Required output for this repair round:
