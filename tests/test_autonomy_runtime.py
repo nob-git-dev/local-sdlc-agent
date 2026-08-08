@@ -350,6 +350,41 @@ python3 -m compileall -q package
         self.assertEqual(children[-1].writable_paths, ("pkg/__init__.py",))
         self.assertEqual(children[-1].test_commands, stage.test_commands)
 
+    def test_stage_split_keeps_single_test_with_same_package_code_dependencies(self):
+        stage = self.local_sdlc.StageWorkItem(
+            stage_id="S03",
+            title="Checkpoint resume",
+            goal="Implement checkpoint storage and integrate it with execution.",
+            suggested_paths=(
+                "pkg/__init__.py",
+                "pkg/checkpoint.py",
+                "pkg/executor.py",
+                "tests/test_checkpoint.py",
+                "README.md",
+            ),
+            test_focus=("checkpoint acceptance",),
+            test_commands=("python3 -m unittest tests.test_checkpoint",),
+            writable_paths=(
+                "pkg/__init__.py",
+                "pkg/checkpoint.py",
+                "pkg/executor.py",
+                "tests/test_checkpoint.py",
+                "README.md",
+            ),
+        )
+
+        children = self.local_sdlc.split_stage_work_item(stage, parts=2)
+
+        self.assertEqual(
+            set(children[0].writable_paths),
+            {"pkg/checkpoint.py", "pkg/executor.py", "tests/test_checkpoint.py"},
+        )
+        self.assertEqual(
+            set(children[-1].writable_paths),
+            {"pkg/__init__.py", "README.md"},
+        )
+        self.assertEqual(children[-1].test_commands, stage.test_commands)
+
     def test_stage_recovery_expands_only_to_evidence_path_inside_parent_scope(self):
         stage = self.local_sdlc.StageWorkItem(
             stage_id="S02.2",

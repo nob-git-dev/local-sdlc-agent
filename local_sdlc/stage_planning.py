@@ -216,6 +216,32 @@ def _cohesive_path_groups(paths: Sequence[str]) -> list[list[str]]:
     if not product_paths or not test_paths:
         return [[path] for path in paths]
 
+    if len(test_paths) == 1:
+        test_path = test_paths[0]
+        scores = [_path_affinity(test_path, product_path) for product_path in product_paths]
+        best_score = max(scores, default=0)
+        if best_score > 0:
+            primary_path = product_paths[scores.index(best_score)]
+            primary_parent = Path(primary_path).parent
+            coupled = [
+                path
+                for path in product_paths
+                if Path(path).parent == primary_parent
+                and not _is_integration_boundary_path(path)
+            ]
+            if coupled:
+                coupled_set = set(coupled)
+                groups: list[list[str]] = []
+                coupled_added = False
+                for path in product_paths:
+                    if path in coupled_set:
+                        if not coupled_added:
+                            groups.append([*coupled, test_path])
+                            coupled_added = True
+                        continue
+                    groups.append([path])
+                return groups
+
     groups = [[path] for path in product_paths]
     unmatched_tests: list[str] = []
     for test_path in test_paths:
