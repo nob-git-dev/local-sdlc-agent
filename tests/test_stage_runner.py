@@ -30,6 +30,16 @@ class StageRunnerTests(LocalSDLCTestCase):
 
         self.assertEqual(summary["failure_type"], "runner_configuration_error")
 
+    def test_recovered_llm_timeout_resolves_cli_default_and_never_shrinks(self):
+        self.assertEqual(
+            self.local_sdlc._stage_runner.recovered_llm_timeout(None, 600.0),
+            600.0,
+        )
+        self.assertEqual(
+            self.local_sdlc._stage_runner.recovered_llm_timeout(1200.0, 600.0),
+            1200.0,
+        )
+
     def test_stage_summary_routes_on_terminal_failure_and_executable_focus(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

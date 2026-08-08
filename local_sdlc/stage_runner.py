@@ -57,6 +57,12 @@ def child_runner_error_summary(error: RunnerError) -> dict[str, object]:
     }
 
 
+def recovered_llm_timeout(current_timeout: object, recovery_timeout: object) -> float:
+    """Resolve CLI defaults before monotonically extending a request window."""
+    current = DEFAULT_TIMEOUT if current_timeout is None else float(current_timeout)
+    return max(current, float(recovery_timeout))
+
+
 def command_stage_plan(args: argparse.Namespace) -> int:
     project = args.project.resolve()
     spec_path = resolve_spec_path(project, args.spec_file)
@@ -297,7 +303,7 @@ def command_run_stages(args: argparse.Namespace) -> int:
         child_args.skip_pm = True
         recovery_timeout = decision.metadata.get("timeout_seconds")
         if isinstance(recovery_timeout, (int, float)):
-            child_args.timeout = max(float(child_args.timeout), float(recovery_timeout))
+            child_args.timeout = recovered_llm_timeout(child_args.timeout, recovery_timeout)
         child_args.small_patch = bool(child_args.small_patch or decision.small_patch)
         if decision.artifact_format:
             child_args.artifact_format = decision.artifact_format
