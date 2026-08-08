@@ -373,6 +373,7 @@ def command_agent(args: argparse.Namespace) -> int:
     project_policy_triages: list[dict[str, object]] = [
         item for item in resume_manifest.get("project_policy_triages", []) if isinstance(item, dict)
     ] if resume_manifest else []
+    triage_suspended_writable_paths: list[str] = []
     patch_conformance_reviews: list[dict[str, object]] = [
         item for item in resume_manifest.get("patch_conformance_reviews", []) if isinstance(item, dict)
     ] if resume_manifest else []
@@ -1393,7 +1394,12 @@ def command_agent(args: argparse.Namespace) -> int:
         return record
 
     def authorized_test_edit_paths_from_triages() -> list[str]:
-        return authorized_test_edit_paths(project_policy_triages)
+        pending_triages = [
+            record
+            for record in project_policy_triages
+            if not isinstance(record.get("test_harness_repair_applied_round"), int)
+        ]
+        return authorized_test_edit_paths(pending_triages)
 
     def apply_project_policy_triage_to_advice(
         advice: RepairAdvice,
@@ -2156,17 +2162,35 @@ def command_agent(args: argparse.Namespace) -> int:
         round_transaction_snapshots: dict[str, bytes | None] = {}
         round_changed_paths: list[str] = []
         round_candidate_hypotheses: list[dict[str, object]] = []
+        consumed_triage_records: list[dict[str, object]] = []
         missing_required_paths_before_round = [
             path for path in required_paths if not resolve_project_path(project, path).is_file()
         ]
         active_patch_plan_doc = pending_patch_plan_doc
         write_partial_manifest("round_started", {"current_round": round_index})
+
+        # Test-harness ownership is a bounded transaction. Restore the normal
+        # stage policy before deciding whether an unconsumed triage record must
+        # temporarily narrow this round back to generated tests only.
+        if triage_suspended_writable_paths:
+            readonly_artifact_paths = [
+                path
+                for path in readonly_artifact_paths
+                if path not in triage_suspended_writable_paths
+            ]
+            allowed_artifact_paths = unique_ordered(
+                [*allowed_artifact_paths, *triage_suspended_writable_paths]
+            )
+            triage_suspended_writable_paths = []
+            artifact_policy = ArtifactPathPolicy(
+                allowed_paths=tuple(allowed_artifact_paths),
+                readonly_paths=tuple(readonly_artifact_paths),
+                existing_paths=tuple(existing_project_paths),
+                allow_extra_new_files=not bool(args.no_extra_files),
+            )
         active_repair_strategy = str(latest_repair_advice.get("strategy", "")) if latest_repair_advice else ""
         authorized_triage_tests = authorized_test_edit_paths_from_triages()
-        triaged_test_repair_pending = bool(
-            active_repair_strategy in TEST_HARNESS_WRITE_STRATEGIES
-            and authorized_triage_tests
-        )
+        triaged_test_repair_pending = bool(authorized_triage_tests)
         if triaged_test_repair_pending:
             # An independent ownership decision is binding for the next repair
             # attempt. Product plans and deterministic product edits must not
@@ -2177,6 +2201,9 @@ def command_agent(args: argparse.Namespace) -> int:
             pending_deterministic_repair = None
             root_cause_patch_pending = False
             prior_writable_paths = list(allowed_artifact_paths)
+            triage_suspended_writable_paths = [
+                path for path in prior_writable_paths if path not in authorized_triage_tests
+            ]
             allowed_artifact_paths = unique_ordered(authorized_triage_tests)
             readonly_artifact_paths = unique_ordered(
                 path
@@ -4255,6 +4282,32 @@ def command_agent(args: argparse.Namespace) -> int:
                 break
             continue
 
+        applied_triage_test_paths = set(round_changed_paths).intersection(authorized_triage_tests)
+        if args.apply and triaged_test_repair_pending and applied_triage_test_paths:
+            for triage in project_policy_triages:
+                if isinstance(triage.get("test_harness_repair_applied_round"), int):
+                    continue
+                editable_paths = set(triage_string_list(triage, "editable_paths"))
+                if triage_allows_test_harness_edit(triage) and editable_paths.intersection(
+                    applied_triage_test_paths
+                ):
+                    triage["test_harness_repair_applied_round"] = round_index
+                    triage["test_harness_repair_applied_paths"] = sorted(
+                        editable_paths.intersection(applied_triage_test_paths)
+                    )
+                    consumed_triage_records.append(triage)
+            # The ownership verdict remains in project_policy_triages as audit
+            # evidence, while its repair advice is consumed after one applied
+            # test transaction. Subsequent failures receive fresh advice.
+            latest_repair_advice.clear()
+            write_partial_manifest(
+                "project_policy_triage_consumed",
+                {
+                    "current_round": round_index,
+                    "applied_triage_test_paths": sorted(applied_triage_test_paths),
+                },
+            )
+
         # A binding plan remains active across format/conformance retries, but
         # is consumed once a conforming artifact is successfully applied. Test
         # failures after this point require fresh executable evidence and, when
@@ -4530,6 +4583,9 @@ def command_agent(args: argparse.Namespace) -> int:
         if candidate_regressed and not provisional_test_harness_progress:
             previous_score = last_functional_failure_score
             restored_paths = restore_artifact_targets(project, round_transaction_snapshots)
+            for triage in consumed_triage_records:
+                triage.pop("test_harness_repair_applied_round", None)
+                triage.pop("test_harness_repair_applied_paths", None)
             rollback_mismatches = artifact_snapshot_mismatches(project, round_transaction_snapshots)
             changed_paths = changed_paths_before_round
             rollback_ok = not rollback_mismatches

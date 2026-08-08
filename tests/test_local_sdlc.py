@@ -10009,15 +10009,32 @@ END_SEARCH_REPLACE"""
 
     def test_agent_runs_project_policy_triage_for_generated_test_harness_ownership(self):
         calls = []
+        triage_calls = 0
 
         class FakeClient:
             def __init__(self, _config):
                 pass
 
             def complete(self, messages, agent_level="default", call_function="default", **_kwargs):
+                nonlocal triage_calls
                 joined = "\n".join(str(message.get("content", "")) for message in messages)
                 calls.append((agent_level, call_function, joined))
                 if call_function == "project_policy_triage":
+                    triage_calls += 1
+                    if triage_calls > 2:
+                        return json.dumps(
+                            {
+                                "trigger": "test_harness_ownership",
+                                "case_type": "product_bug",
+                                "confidence": "high",
+                                "project_policy_basis": ["VALUE must equal final"],
+                                "safe_next_action": "repair_product",
+                                "editable_paths": ["minisqlite/storage/btree.py"],
+                                "readonly_paths": ["tests/test_btree.py"],
+                                "forbidden_actions": ["do not edit the corrected generated test"],
+                                "rationale": "The remaining failure is owned by product code.",
+                            }
+                        )
                     return json.dumps(
                         {
                             "trigger": "test_harness_ownership",
@@ -10046,6 +10063,18 @@ END_SEARCH_REPLACE"""
                                 Pager().init_db()
                         =======
                                 Pager()
+                        >>>>>>> REPLACE
+                        END_SEARCH_REPLACE
+                        """
+                    ).strip()
+                if 'VALUE = "mid"' in joined:
+                    return textwrap.dedent(
+                        """
+                        BEGIN_SEARCH_REPLACE: minisqlite/storage/btree.py
+                        <<<<<<< SEARCH
+                        VALUE = "mid"
+                        =======
+                        VALUE = "final"
                         >>>>>>> REPLACE
                         END_SEARCH_REPLACE
                         """
@@ -10082,11 +10111,15 @@ END_SEARCH_REPLACE"""
                 textwrap.dedent(
                     """
                     import unittest
+                    from minisqlite.storage.btree import VALUE
                     from minisqlite.storage.pager import Pager
 
                     class TestBTree(unittest.TestCase):
                         def test_generated_setup_uses_wrong_cross_stage_api(self):
                             Pager().init_db()
+
+                        def test_product_value(self):
+                            self.assertEqual(VALUE, "final")
                     """
                 ).lstrip(),
                 encoding="utf-8",
@@ -10117,7 +10150,7 @@ END_SEARCH_REPLACE"""
                         "minisqlite/storage/pager.py",
                         "--apply",
                         "--max-rounds",
-                        "2",
+                        "3",
                         "--test-command",
                         f"{sys.executable} -m unittest discover -s tests",
                         "--run-dir",
@@ -10129,6 +10162,7 @@ END_SEARCH_REPLACE"""
                 self.local_sdlc.LocalLLMClient = original_client
 
             manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            final_btree = (storage_dir / "btree.py").read_text(encoding="utf-8")
 
         self.assertEqual(result, 0)
         self.assertIn("project_policy_triage", [call[1] for call in calls])
@@ -10136,8 +10170,8 @@ END_SEARCH_REPLACE"""
         self.assertEqual(triage["call_function"], "project_policy_triage")
         self.assertEqual(triage["case_type"], "test_harness")
         self.assertEqual(triage["safe_next_action"], "edit_test_harness")
-        self.assertEqual(manifest["repair_advice"]["strategy"], "replace_test_harness")
-        self.assertIn("tests/test_btree.py", manifest["repair_advice"]["focus_files"])
+        self.assertEqual(triage["test_harness_repair_applied_round"], 2)
+        self.assertEqual(triage["test_harness_repair_applied_paths"], ["tests/test_btree.py"])
         repair_call = next(
             joined
             for _level, function, joined in calls
@@ -10149,6 +10183,18 @@ END_SEARCH_REPLACE"""
             "Writable targets:\n            minisqlite/storage/btree.py",
             repair_call,
         )
+        resumed_product_call = next(
+            joined
+            for _level, function, joined in calls
+            if function in {"repair_artifact", "artifact_writer"}
+            and 'VALUE = "mid"' in joined
+            and "Writable targets:\n            minisqlite/storage/btree.py" in joined
+        )
+        self.assertNotIn(
+            "Writable targets:\n            tests/test_btree.py",
+            resumed_product_call,
+        )
+        self.assertIn('VALUE = "final"', final_btree)
 
     def test_patch_planner_escalation_routes_only_generated_test_to_independent_triage(self):
         calls = []
