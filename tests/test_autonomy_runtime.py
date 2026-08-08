@@ -6,6 +6,72 @@ from tests.helpers import LocalSDLCTestCase
 
 
 class AutonomyRuntimeTests(LocalSDLCTestCase):
+    def test_live_generation_timeout_extends_bounded_request_window(self):
+        stage = self.local_sdlc.StageWorkItem(
+            stage_id="S01",
+            title="Core",
+            goal="Implement core behavior.",
+            suggested_paths=("app.py",),
+            test_focus=("core tests",),
+            writable_paths=("app.py",),
+        )
+        summary = self.local_sdlc.StageRunSummary(
+            stage_id="S01",
+            title="Core",
+            status="failed",
+            run_dir="run/s01",
+            exit_code=1,
+            failure_summary={
+                "failure_type": "llm_generation_timeout",
+                "timeout_seconds": 300.0,
+                "api_health": "alive",
+            },
+        )
+
+        decision = self.local_sdlc.decide_stage_recovery(
+            stage,
+            summary,
+            recovery_count=0,
+            max_recoveries=3,
+        )
+
+        self.assertEqual(decision.action, "extend_llm_timeout")
+        self.assertEqual(decision.reason_code, "live_api_generation_timeout")
+        self.assertEqual(decision.metadata["timeout_seconds"], 600.0)
+        self.assertTrue(decision.resume_failed_worktree)
+
+    def test_generation_timeout_fails_closed_at_bounded_maximum(self):
+        stage = self.local_sdlc.StageWorkItem(
+            stage_id="S01",
+            title="Core",
+            goal="Implement core behavior.",
+            suggested_paths=("app.py",),
+            test_focus=("core tests",),
+            writable_paths=("app.py",),
+        )
+        summary = self.local_sdlc.StageRunSummary(
+            stage_id="S01",
+            title="Core",
+            status="failed",
+            run_dir="run/s01",
+            exit_code=1,
+            failure_summary={
+                "failure_type": "llm_generation_timeout",
+                "timeout_seconds": 1800.0,
+                "api_health": "alive",
+            },
+        )
+
+        decision = self.local_sdlc.decide_stage_recovery(
+            stage,
+            summary,
+            recovery_count=1,
+            max_recoveries=3,
+        )
+
+        self.assertEqual(decision.action, "fail_closed")
+        self.assertEqual(decision.reason_code, "generation_timeout_exhausted")
+
     def test_human_decision_boundary_is_narrow_and_explicit(self):
         self.assertTrue(self.local_sdlc.requires_human_decision("spec_conflict"))
         self.assertTrue(self.local_sdlc.requires_human_decision("budget_extension_required"))

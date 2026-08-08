@@ -11,6 +11,25 @@ from tests.helpers import LocalSDLCTestCase
 
 
 class StageRunnerTests(LocalSDLCTestCase):
+    def test_child_runner_classifies_live_api_timeout_as_recoverable(self):
+        error = self.local_sdlc.RunnerError(
+            "LLM generation request timed out after 300s. "
+            "API health after timeout: alive (/v1/models OK: model)."
+        )
+
+        summary = self.local_sdlc._stage_runner.child_runner_error_summary(error)
+
+        self.assertEqual(summary["failure_type"], "llm_generation_timeout")
+        self.assertEqual(summary["timeout_seconds"], 300.0)
+        self.assertEqual(summary["api_health"], "alive")
+
+    def test_child_runner_keeps_other_runner_errors_as_configuration_failures(self):
+        summary = self.local_sdlc._stage_runner.child_runner_error_summary(
+            self.local_sdlc.RunnerError("invalid artifact format")
+        )
+
+        self.assertEqual(summary["failure_type"], "runner_configuration_error")
+
     def test_stage_summary_routes_on_terminal_failure_and_executable_focus(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

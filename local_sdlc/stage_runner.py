@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import re
 from pathlib import Path
 
 from .models import *
@@ -34,6 +35,26 @@ from .learning_context import (
     knowledge_binding_manifest,
     knowledge_binding_path,
 )
+
+
+def child_runner_error_summary(error: RunnerError) -> dict[str, object]:
+    """Separate a live-API generation timeout from invalid runner configuration."""
+    message = str(error).strip()
+    timeout_match = re.search(
+        r"LLM generation request timed out after ([0-9]+(?:\.[0-9]+)?)s",
+        message,
+    )
+    if timeout_match and "API health after timeout: alive" in message:
+        return {
+            "failure_type": "llm_generation_timeout",
+            "message": message,
+            "timeout_seconds": float(timeout_match.group(1)),
+            "api_health": "alive",
+        }
+    return {
+        "failure_type": "runner_configuration_error",
+        "message": message,
+    }
 
 
 def command_stage_plan(args: argparse.Namespace) -> int:
@@ -179,11 +200,13 @@ def command_run_stages(args: argparse.Namespace) -> int:
             child_stall = read_stall_state(child_run_dir)
             if child_pending or child_blocked or child_stall:
                 return 1, child_pending, child_blocked, read_budget_stop(child_run_dir), child_stall
+            failure_summary = child_runner_error_summary(exc)
+            failure_type = str(failure_summary["failure_type"])
             error_document = write_run_document(
                 child_run_dir,
                 "00-runner-error.md",
                 "# Child Runner Error\n\n"
-                "- failure_type: `runner_configuration_error`\n"
+                f"- failure_type: `{failure_type}`\n"
                 f"- message: {str(exc).strip()}\n",
             )
             partial_manifest: dict[str, object] = {}
@@ -207,14 +230,13 @@ def command_run_stages(args: argparse.Namespace) -> int:
                     {
                         **partial_manifest,
                         "status": "failed",
-                        "final_verdict": "runner_configuration_error",
+                        "final_verdict": failure_type,
                         "api_calls": int(partial_manifest.get("api_calls", 0) or 0),
                         "changed_paths": list(partial_manifest.get("changed_paths", []) or []),
                         "required_paths": list(partial_manifest.get("required_paths", []) or []),
                         "documents": unique_ordered([*partial_documents, error_document.name]),
                         "failure_summary": {
-                            "failure_type": "runner_configuration_error",
-                            "message": str(exc).strip(),
+                            **failure_summary,
                             "evidence_document": error_document.name,
                         },
                     },
@@ -273,6 +295,9 @@ def command_run_stages(args: argparse.Namespace) -> int:
             source_manifest.get("artifact_plan_repair_rounds_used", 0) or 0
         ) + int(child_args.artifact_plan_repair_rounds)
         child_args.skip_pm = True
+        recovery_timeout = decision.metadata.get("timeout_seconds")
+        if isinstance(recovery_timeout, (int, float)):
+            child_args.timeout = max(float(child_args.timeout), float(recovery_timeout))
         child_args.small_patch = bool(child_args.small_patch or decision.small_patch)
         if decision.artifact_format:
             child_args.artifact_format = decision.artifact_format

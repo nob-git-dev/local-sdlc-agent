@@ -326,6 +326,35 @@ def decide_stage_recovery(
             metadata={"failure_type": failure_type},
         )
 
+    if failure_type == "llm_generation_timeout":
+        observed_timeout = float(failure.get("timeout_seconds") or 0.0)
+        if failure.get("api_health") == "alive" and observed_timeout < 1800.0:
+            next_timeout = min(max(observed_timeout * 2.0, 600.0), 1800.0)
+            return StageRecoveryDecision(
+                action="extend_llm_timeout",
+                reason_code="live_api_generation_timeout",
+                rationale=(
+                    "The generation exceeded its request window while the model API remained "
+                    "healthy. Resume the same bounded stage with a larger request window."
+                ),
+                resume_failed_worktree=True,
+                metadata={
+                    "failure_type": failure_type,
+                    "api_health": "alive",
+                    "observed_timeout_seconds": observed_timeout,
+                    "timeout_seconds": next_timeout,
+                },
+            )
+        return StageRecoveryDecision(
+            action="fail_closed",
+            reason_code="generation_timeout_exhausted",
+            rationale=(
+                "The live model API still exceeded the maximum bounded generation window; "
+                "another identical wait is not admitted."
+            ),
+            metadata={"failure_type": failure_type, "timeout_seconds": observed_timeout},
+        )
+
     if evidence_expansion and "expand_repair_scope" not in prior:
         return StageRecoveryDecision(
             action="expand_repair_scope",
@@ -417,6 +446,25 @@ def decide_final_integration_recovery(
             reason_code="runner_configuration_error",
             rationale="Product repair cannot correct a rejected runner configuration.",
             metadata={"failure_type": failure_type},
+        )
+    if failure_type == "llm_generation_timeout":
+        observed_timeout = float((summary.failure_summary or {}).get("timeout_seconds") or 0.0)
+        if observed_timeout < 1800.0:
+            return StageRecoveryDecision(
+                action="extend_llm_timeout",
+                reason_code="live_api_generation_timeout",
+                rationale="Resume final integration with a larger bounded LLM request window.",
+                resume_failed_worktree=True,
+                metadata={
+                    "failure_type": failure_type,
+                    "timeout_seconds": min(max(observed_timeout * 2.0, 600.0), 1800.0),
+                },
+            )
+        return StageRecoveryDecision(
+            action="fail_closed",
+            reason_code="generation_timeout_exhausted",
+            rationale="Final integration exhausted the bounded LLM generation window.",
+            metadata={"failure_type": failure_type, "timeout_seconds": observed_timeout},
         )
     if is_protocol_failure_type(failure_type) and "format_repair" not in prior:
         return StageRecoveryDecision(
